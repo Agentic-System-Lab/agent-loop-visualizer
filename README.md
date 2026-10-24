@@ -31,7 +31,6 @@
 - 網路：第一次下載模型，以及 Wikipedia 工具
 
 ```bash
-cd projects/jimmy/agent-loop-visualizer
 uv sync
 uv run hf download google/gemma-4-E2B-it   # 先下載權重（約 10 GB）；跳過的話，第一次啟動時會自動下載
 uv run streamlit run streamlit_app.py
