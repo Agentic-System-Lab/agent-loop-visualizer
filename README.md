@@ -6,7 +6,7 @@
 - MTP 推測解碼：Gemma 4 E2B 可以在側欄打開（預設關閉），用 [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant) 當草稿模型，一次 forward 產生好幾個 token
 - 授權：[Apache License 2.0](LICENSE)
 
-左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到。兩個模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
+左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到。不同模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
 
 上方的「運作說明」頁把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段。
 
