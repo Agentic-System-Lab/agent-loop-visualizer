@@ -12,14 +12,15 @@ config.json decides which family a model belongs to.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Callable
 
-# The models in the page's model menu: Hugging Face id -> label.
+# The models in the page's model menu: Hugging Face id -> label. A label is the same in both of the page's
+# languages: Streamlit's selectbox sends its label back, and one that changed with the language would become the value.
 MODELS = {
-    "google/gemma-4-E2B-it": "Gemma 4 E2B（Google）",
-    "Qwen/Qwen3.5-0.8B": "Qwen3.5 0.8B（Alibaba）",
+    "google/gemma-4-E2B-it": "Gemma 4 E2B (Google)",
+    "Qwen/Qwen3.5-0.8B": "Qwen3.5 0.8B (Alibaba)",
 }
 
 # MTP drafters: model id -> a small model that guesses the next few tokens from the model's own last hidden
@@ -37,27 +38,32 @@ class Family:
     model_types: tuple[str, ...]  # config.json `model_type` values of this family
 
     # Reading the model's output.
-    parse: Callable[..., dict]  # (raw output, {tool name: parameters schema}) -> thinking, tool_calls, content
+    parse: Callable[..., dict]  # (raw output, {tool name: parameters schema}, language of its errors) -> thinking, tool_calls, content
     thought_prefix: str  # a prompt that ends with this has the model start inside its thinking
     channel_switch: dict[str, str]  # tokens that switch what the model is writing: thought, tool_call, content
-    stop_tokens: dict[str, str]  # tokens that end a generation -> what stopping there means
+    stop_tokens: dict[str, dict[str, str]]  # tokens that end a generation -> language -> what stopping there means
 
     # Writing the conversation back for the chat template.
     reasoning_key: str  # the assistant-message field the chat template reads earlier thinking from
     text_with_calls: bool  # whether text written before a tool call survives re-rendering the history
 
-    # Showing it on the page.
+    # Showing it on the page; the text is in both of the page's languages (i18n.py).
     user_turn: str  # where a user message starts in a prompt; the step card shows the newest one
-    special_groups: list  # (title, subtitle, ((token, name, what it is for), ...)) for each group of control tokens
-    thinking_help: str  # what the thinking toggle does to the prompt
-    tools_note: str  # how the tool schemas appear in the prompt
-    model_note: str = ""
+    special_groups: dict[str, list]  # language -> (title, subtitle, ((token, name, what it is for), ...)) for each group of control tokens
+    thinking_help: dict[str, str]  # what the thinking toggle does to the prompt
+    tools_note: dict[str, str]  # how the tool schemas appear in the prompt
+    model_note: dict[str, str] = field(default_factory=dict)
     sampling: dict | None = None  # recommended temperature / top_p / top_k when a checkpoint ships none
 
     @cached_property
-    def special_tokens(self) -> dict[str, tuple[str, str]]:
-        """Control token -> (name, what it is for)."""
-        return {piece: (name, desc) for _, _, rows in self.special_groups for piece, name, desc in rows}
+    def special_tokens(self) -> dict[str, dict[str, tuple[str, str]]]:
+        """Control token -> language -> (name, what it is for)."""
+        out: dict[str, dict[str, tuple[str, str]]] = {}
+        for lang, groups in self.special_groups.items():
+            for _, _, rows in groups:
+                for piece, name, desc in rows:
+                    out.setdefault(piece, {})[lang] = (name, desc)
+        return out
 
     @cached_property
     def special_re(self) -> re.Pattern:
@@ -81,4 +87,7 @@ def for_model_type(model_type: str) -> Family:
         if model_type in family.model_types:
             return family
     known = ", ".join(t for f in FAMILIES.values() for t in f.model_types)
-    raise ValueError(f"不支援 model_type {model_type!r} 的模型；目前支援：{known}。新增模型家族的方法見 families/__init__.py。")
+    raise ValueError(
+        f"Models of model_type {model_type!r} are not supported; supported: {known}. families/__init__.py says how to add a family. "
+        f"（不支援 model_type {model_type!r} 的模型；目前支援：{known}。新增模型家族的方法見 families/__init__.py。）"
+    )

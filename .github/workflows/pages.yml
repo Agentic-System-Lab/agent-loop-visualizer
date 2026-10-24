@@ -1,5 +1,6 @@
-# Builds the 運作說明 page (guide.py) and publishes it on GitHub Pages. The page looks up its line
-# numbers in the code it is built from, so it is rebuilt on every push to main.
+# Builds the 運作說明 (How it works) page (guide.py) in Chinese and English and publishes it on GitHub
+# Pages: zh/ and en/, plus an index.html that sends a reader to their language. The page looks up its
+# line numbers in the code it is built from, so it is rebuilt on every push to main.
 name: 運作說明 on GitHub Pages
 
 on:

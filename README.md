@@ -1,131 +1,141 @@
-# Agent Loop 可視化
+# Agent Loop Visualizer
 
-此為[Agent Atlas 技術與實戰交流](https://cyyeh.github.io/agent-atlas-learning/)的專案之一。
+English | [繁體中文](README.zh-TW.md)
 
-- 模型：側欄可以選 [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) 或 [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)，在本機用 Hugging Face `transformers` 推論
-- MTP 推測解碼：Gemma 4 E2B 可以在側欄打開（預設關閉），用 [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant) 當草稿模型，一次 forward 產生好幾個 token
-- 授權：[Apache License 2.0](LICENSE)
+One of the projects of [Agent Atlas](https://cyyeh.github.io/agent-atlas-learning/) (in Traditional Chinese).
 
-左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到。不同模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
+- Models: pick [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) or [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) in the sidebar; they run on your machine with Hugging Face `transformers`
+- MTP speculative decoding: for Gemma 4 E2B you can switch it on in the sidebar (it is off by default); it uses [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant) as the drafter, so one forward pass produces several tokens
+- Languages: the page and the How it works guide are in English and Traditional Chinese. They start in your browser's language, the switch at the top right changes it, and the language you pick is remembered for your next visit
+- License: [Apache License 2.0](LICENSE)
 
-[運作說明](https://cyyeh.github.io/agent-loop-visualizer/)把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段。它放在 GitHub Pages 上，app 上方的「運作說明」會在新分頁打開它。
+On the left is a chat like ChatGPT's; on the right the agent loop is drawn step by step: the model reads the context and proposes an action, the harness carries it out, and the result goes back into the context, until it stops. The model runs on your own computer, so every token's probability, the candidate tokens, the special tokens, the prefill and the generation speed are all in view. The models run the same harness, so switching models changes only their text formats, which makes them easy to compare.
 
-![上方可以切換到「運作說明」頁，側欄可以選模型；左邊是對話，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot.png)
+[How it works](https://cyyeh.github.io/agent-loop-visualizer/en/) maps each step of one turn, from sending a question to the reply, to the code that does it, with file names, line numbers and excerpts. It lives on GitHub Pages; How it works at the top of the app opens it in a new tab, in the language the app is in.
 
-## 畫面上看得到什麼
+![The top bar switches to the How it works page, and the sidebar picks the model; on the left is the chat, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates. The screenshot shows the Chinese page.](docs/screenshot.png)
 
-| 畫面 | 看得到的東西 | 對應 unit 01 導讀 |
+## What the page shows
+
+| On the page | What you see | Unit 01 reading (in Chinese) |
 |---|---|---|
-| 迴圈圖 | 目前在脈絡、模型、harness、環境、停止哪一格，正在流動的箭頭 | §4 Agent 就是放在迴圈裡的模型 |
-| 脈絡 | 每一步模型讀到的完整字串：system prompt、工具 schema、對話，以及上一步接回來的工具結果。滑過深色的特殊 token 會說明它的用途 | §1 脈絡有上限、§3 工具定義也是 token |
-| 模型 | 每個生成的 token，顏色越深代表被選中的 token 機率越低。滑過 token 看機率、排名、前 5 名候選，以及 top-k / top-p 剃掉了哪些；特殊 token 另外說明它的用途。打開 MTP 時，草稿模型猜中的 token 有底線，浮窗寫出草稿猜了什麼、有沒有被收下，step 卡片顯示收下幾個、主模型少跑了幾次 forward | §1 LLM 是會抽樣的條件機率分布、解碼設定 |
-| Harness | 從模型自己的格式（Gemma 4 或 Qwen3.5）解析出的工具呼叫、schema 驗證結果、重複呼叫警告、你的允許或拒絕 | §3 模型從不直接碰環境 |
-| 環境 | 工具實際回傳的結果與耗時 | §2 環境與可觀察的狀態 |
-| 停止 | 停止原因和停止 token。Gemma 回答完停在 `<turn\|>`（相當於 end_turn）、要工具時停在 `<\|tool_response>`（相當於 tool_use）；Qwen 兩種都停在 `<\|im_end\|>`。另外還有步數上限、token 上限、使用者中斷 | §5 什麼時候停 |
-| 模型分頁 | 參數量拆解、層數與層的種類、attention heads、脈絡上限、MTP 草稿模型、解碼設定的說明、每一步的 prefill 時間與 tok/s（開 MTP 時加上草稿收下幾個、解碼 forward 幾次），以及 tokenizer 全部特殊 token 的 id 與用途（Gemma 24 個、Qwen 33 個） | §1、§7 Agent 是系統 |
-| 運作說明頁 | 一輪對話的 15 個階段（包括 MTP 怎麼猜、怎麼驗證），每段附上做這件事的程式碼片段和行號。放在 GitHub Pages，行號在產生頁面時從原始碼查出來；每次推上 main 都會重新產生，程式改了會跟著更新 | 全部 |
+| Loop diagram | Which box you are in (context, model, harness, environment, stop) and the arrow that is flowing | §4 An agent is a model in a loop |
+| Context | The whole string the model reads in each step: the system prompt, the tool schemas, the conversation and the tool result added after the last step. Hovering over a dark special token says what it is for | §1 The context has a limit, §3 Tool definitions are tokens too |
+| Model | Every generated token, darker the less likely the chosen token was. Hovering over a token shows its probability, its rank, the top 5 candidates and which ones top-k / top-p cut; a special token also says what it is for. With MTP on, tokens the drafter guessed right are underlined, the popover says what the drafter guessed and whether it was kept, and the step card shows how many were kept and how many forward passes the model saved | §1 An LLM samples from a conditional probability distribution; decoding settings |
+| Harness | The tool calls parsed from the model's own format (Gemma 4 or Qwen3.5), the schema check, warnings about repeated calls, and your Allow or Reject | §3 The model never touches the environment |
+| Environment | What the tool really returned and how long it took | §2 The environment and observable state |
+| Stop | Why it stopped and at which token. Gemma stops at `<turn\|>` after an answer (like end_turn) and at `<\|tool_response>` when it wants a tool (like tool_use); Qwen stops at `<\|im_end\|>` either way. Then there are the step limit, the token limit and the user pressing stop | §5 When to stop |
+| Model tab | The parameter breakdown, the number and kinds of layers, attention heads, the context limit, the MTP drafter, what each decoding setting does, each step's prefill time and tok/s (with MTP, also how many guesses were kept and how many decoding forward passes ran), and the id and purpose of every special token of the tokenizer (24 for Gemma, 33 for Qwen) | §1, §7 An agent is a system |
+| How it works | The 15 stages of one turn (including how MTP guesses and checks), each with the code that does it and its line numbers, in English and in Chinese. It is on GitHub Pages; the line numbers are looked up in the source when the page is built, and it is rebuilt on every push to main, so it follows the code | All of it |
 
-## 快速開始
+## Quick start
 
-需求：
+You need:
 
-- macOS（Apple Silicon，用 MPS）、有 CUDA 的 Linux，或只用 CPU（很慢）
-- 磁碟空間放模型權重：Gemma 4 E2B 約 10 GB，Qwen3.5 0.8B 約 1.8 GB；要用 MTP 再加上 Gemma 的草稿模型約 160 MB
-- 記憶體：Gemma 用 MPS 或 CUDA 時建議 16 GB 以上（bfloat16 權重約 10 GB），只用 CPU 時會以 float32 載入，約 20.5 GB，建議 24 GB 以上；Qwen3.5 0.8B 小得多，8 GB 的機器也跑得動。同一時間只會載入一個模型，換模型時舊的會被放掉
-- Linux + CUDA：鎖定的 torch 是 CUDA 13 版本，`nvidia-smi` 右上角的 CUDA Version 要 13.0 以上。驅動太舊時 torch 會偵測不到 GPU，改用 CPU 執行；側欄上方會顯示目前用的裝置
-- [uv](https://docs.astral.sh/uv/)（會自動裝好 Python 3.12）
-- 網路：第一次下載模型，以及 Wikipedia 工具
+- macOS (Apple Silicon, using MPS), Linux with CUDA, or a CPU alone (very slow)
+- Disk space for the weights: about 10 GB for Gemma 4 E2B, 1.8 GB for Qwen3.5 0.8B, and about 160 MB more for Gemma's drafter if you want MTP
+- Memory: with MPS or CUDA, 16 GB or more for Gemma (the bfloat16 weights take about 10 GB); on a CPU it loads in float32, about 20.5 GB, so 24 GB or more. Qwen3.5 0.8B is much smaller and runs on an 8 GB machine. Only one model is loaded at a time; switching models lets the old one go
+- Linux + CUDA: the pinned torch is built for CUDA 13, so the CUDA Version at the top right of `nvidia-smi` must be 13.0 or newer. With an older driver torch does not see the GPU and runs on the CPU; the top of the sidebar shows the device in use
+- [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you)
+- A network connection: to download the models the first time, and for the Wikipedia tools
 
 ```bash
 uv sync
-uv run hf download google/gemma-4-E2B-it   # 先下載權重（約 10 GB）；跳過的話，第一次選到這個模型時會自動下載
-uv run hf download Qwen/Qwen3.5-0.8B       # 約 1.8 GB
-uv run hf download google/gemma-4-E2B-it-assistant   # MTP 草稿模型，約 160 MB；跳過的話，第一次打開 MTP 時會自動下載
-uv run streamlit run streamlit_app.py      # 預設先載入 Gemma；MODEL_ID=Qwen/Qwen3.5-0.8B 可以先載入 Qwen
+uv run hf download google/gemma-4-E2B-it   # download the weights first (about 10 GB); otherwise they download the first time the model is picked
+uv run hf download Qwen/Qwen3.5-0.8B       # about 1.8 GB
+uv run hf download google/gemma-4-E2B-it-assistant   # the MTP drafter, about 160 MB; otherwise it downloads the first time MTP is switched on
+uv run streamlit run streamlit_app.py      # loads Gemma first; MODEL_ID=Qwen/Qwen3.5-0.8B loads Qwen first
 ```
 
-瀏覽器會打開 http://localhost:8501 。第一次載入 Gemma 加暖機大約 10–20 秒，Qwen 幾秒；之後重新整理頁面不會再載入。側欄最上面的「模型」選單可以換模型，換了會開新對話，解碼設定也換成新模型的建議值，MTP 回到關閉。側欄的「MTP 推測解碼」第一次打開時才載入草稿模型（不到 1 秒），之後一直留在記憶體裡。
+Your browser opens http://localhost:8501, in its own language (English unless the browser is set to Chinese); the 中文 | English switch at the top right changes it, and the next visit starts in the one you picked. Loading Gemma and warming it up takes about 10–20 seconds the first time, Qwen a few seconds; reloading the page does not load it again. The Model menu at the top of the sidebar switches models; switching starts a new conversation, resets the decoding settings to the new model's recommendations and turns MTP off. MTP speculative decoding in the sidebar loads the drafter the first time it is switched on (in under a second), and it stays in memory after that.
 
-> 下載時出現 401，可是模型明明是公開的？多半是本機存的 Hugging Face token 過期了。重新登入（`uv run hf auth login`），或加上 `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` 不送 token。
+> A 401 while downloading, though the model is public? Most likely the Hugging Face token saved on your machine has expired. Log in again (`uv run hf auth login`), or add `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` to send no token.
 
-## 可以試試看的實驗
+## Experiments to try
 
-1. **只是聊天機器人**：在側欄關掉「使用工具」，問「台北現在幾點？」。模型看不到任何工具，只能猜或承認不知道。打開工具再問一次，比較兩次的脈絡分頁。
-2. **抽樣**：同一個問題，temperature 設 0 和 1.5 各跑一次，看 token 的顏色和浮窗裡「剩下的候選」怎麼變。
-3. **停止條件**：步數上限設 1，問一個需要工具的問題，停止原因會變成「達到步數上限」。
-4. **人的位置**：打開「執行工具前先問我」，然後按「拒絕」。擋下來的是 harness，模型只會在下一步的脈絡裡看到一則錯誤觀察。對照導讀 §5 郵件刪除事件：寫在 prompt 裡的「先確認」會被壓縮掉，寫在 harness 裡的不會。
-5. **推理也是 token**：打開「思考模式」，斜體的思考 token 會出現在工具呼叫之前；脈絡分頁裡 system turn 的開頭會多一個 `<|think|>`。
-6. **迴圈會打轉**：問「ReAct 這篇論文是誰提出的？用 Wikipedia 查。」。E2B 常常重複同一個搜尋，harness 會標出「跟之前一模一樣的呼叫」，對照導讀 §4 ReAct 的錯誤分析。
-7. **換模型，harness 不變**：同一個問題分別問 Gemma 和 Qwen，打開脈絡分頁比較：回合標記（`<|turn>` 對 `<|im_start|>`）、工具 schema 放的位置、工具呼叫的寫法（`call:名稱{…}` 對 XML）、工具結果接回的位置都不一樣，但 step 卡片裡的 harness、環境、停止判斷完全相同。
-8. **MTP：猜得中才會快**：在 Gemma 打開「MTP 推測解碼」，分別按「台北現在幾點？紐約呢？」和「Write a Python function to test for primes.」，再問「用三段話介紹台北。」。比較每一步的 tok/s 和底線：工具呼叫幾乎每個 token 都被草稿猜中，英文程式碼約一半，中文長文只有一成左右。把 temperature 設成 0 再開關 MTP 各跑一次，輸出會一模一樣：草稿模型只決定要跑幾次 forward，不決定寫出什麼。
+1. **Just a chatbot**: switch off Use tools in the sidebar and ask "What time is it in Taipei right now?". The model sees no tools, so it can only guess or admit it does not know. Switch tools back on, ask again, and compare the two in the Context tab.
+2. **Sampling**: ask the same question with temperature 0 and with 1.5, and watch how the token colors and the candidates left in the popover change.
+3. **Stop conditions**: set Max steps to 1 and ask something that needs a tool; the stop reason becomes "step limit reached".
+4. **Where the human sits**: switch on Ask me before running a tool, then press Reject. It is the harness that blocks the call; the model only sees an error observation in the next step's context. Compare the mail deletion incident in §5 of the reading: a "confirm first" written in the prompt can get compressed away, one written into the harness cannot.
+5. **Reasoning is tokens too**: switch on Thinking mode, and italic thinking tokens appear before the tool call; in the Context tab, the system turn starts with an extra `<|think|>`.
+6. **The loop goes in circles**: ask "Who proposed the ReAct paper? Look it up on Wikipedia." E2B often repeats the same search, and the harness flags "exactly the same call as before"; compare the error analysis of ReAct in §4 of the reading.
+7. **Switch models, keep the harness**: ask Gemma and Qwen the same question and compare them in the Context tab: the turn markers (`<|turn>` against `<|im_start|>`), where the tool schemas go, how a tool call is written (`call:name{…}` against XML) and where the tool result goes back all differ, yet the harness, environment and stop sections of the step cards are exactly the same.
+8. **MTP is fast only when it guesses right**: with Gemma, switch on MTP speculative decoding, press "What time is it in Taipei right now? And in New York?" and "Write a Python function to test for primes.", then ask "用三段話介紹台北。" (introduce Taipei in three paragraphs, in Chinese). Compare each step's tok/s and underlines: the drafter guesses almost every token of a tool call, about half of English code and only about a tenth of long Chinese text. Set temperature to 0 and run with MTP on and off: the output is exactly the same, because the drafter only decides how many forward passes run, not what gets written.
 
-## 架構
+## Architecture
 
 ```
-streamlit_app.py   版面、session state、模型選單、背景 thread；執行中每 0.5 秒重畫一次
-guide.py           「運作說明」頁：內容、行號查詢，以及產生放上 GitHub Pages 的靜態 HTML
-render.py          把事件列表轉成 HTML：迴圈圖、step 卡片、token 熱度與浮窗、脈絡檢視
-agent.py           harness：組 prompt → 生成 → 解析 → 驗證 →（先問你）→ 執行工具 → 接回脈絡 → 判斷要不要停
-llm.py             本機推論，自己寫的解碼迴圈；MTP 的草稿與驗證也在這裡
-families/          跟著模型走的東西：每個模型家族怎麼寫回合、思考、工具呼叫，哪些 token 會停、各是什麼意思
-  __init__.py      Family 的定義、模型選單 MODELS、MTP 草稿模型 DRAFTERS、依 config.json 的 model_type 找家族
-  gemma4.py        Gemma 4：輸出的 parser 與 24 個特殊 token 的說明
-  qwen3_5.py       Qwen3.5：輸出的 parser 與 33 個特殊 token 的說明
-tools.py           工具：schema（給模型看）加上 Python 函式（給 harness 執行）
-tests/             pytest 測試，見下面「測試」
+streamlit_app.py   layout, session state, model menu, language switch, background thread; redraws every 0.5 s while a run is live
+guide.py           the How it works page: its content in both languages, line lookups, and the static HTML for GitHub Pages
+render.py          turns the event list into HTML: the loop diagram, step cards, token heat and popovers, the context view
+agent.py           the harness: build the prompt → generate → parse → validate → (ask you) → run the tool → back into the context → stop?
+llm.py             local inference with a hand-written decoding loop; MTP's drafting and checking are here too
+i18n.py            the two languages: pick() chooses the text for one, from_locale() picks the default from the browser's language
+families/          everything that goes with the model: how each model family writes turns, thinking and tool calls, which tokens stop it, what each means
+  __init__.py      the Family definition, the model menu MODELS, the MTP drafters DRAFTERS, finding a family by config.json's model_type
+  gemma4.py        Gemma 4: the output parser and notes on its 24 special tokens
+  qwen3_5.py       Qwen3.5: the output parser and notes on its 33 special tokens
+tools.py           tools: the schema (for the model) plus the Python function (for the harness to run)
+tests/             pytest tests; see Tests below
 ```
 
-agent 在背景 thread 執行，每走到一個階段就 append 一個事件；UI 只負責把事件列表畫出來。所以按「停止」或「允許」時 Streamlit 重跑 script，背景的迴圈不會被打斷。
+The agent runs in a background thread and appends an event at every stage; the UI only draws the event list. So when you press Stop or Allow and Streamlit reruns the script, the loop in the background is not interrupted.
 
-「運作說明」是一個靜態頁：`uv run python guide.py _site` 會寫出 `_site/index.html`（樣式全部內嵌，可以直接用瀏覽器打開）。推上 main 時，`.github/workflows/pages.yml` 做同一件事並發佈到 GitHub Pages。
+How it works is a static page: `uv run python guide.py _site` writes `_site/en/index.html` and `_site/zh/index.html` (styles and a small script inlined, so they open straight in a browser), and `_site/index.html`, which sends a reader to the language they last picked on the page's switch, or else their browser's. On a push to main, `.github/workflows/pages.yml` does the same and publishes it to GitHub Pages.
 
-一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→ `tool_start` → `tool_result`，最後是 `run_end`。
+The events of one run, in order: `run_start`, then for each step `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`, with a tool call also `tool_call` → (`approval_request` → `approval`) → `tool_start` → `tool_result`, and finally `run_end`.
 
-### 為什麼自己寫解碼迴圈
+### Two languages
 
-`model.generate()` 不會在每一步把機率分布交出來，所以 `llm.py` 自己跑迴圈：每個 token 做一次 forward pass（帶 KV cache），依序套用 temperature、top-k、top-p，再抽樣。每個 token 因此都能回報：在模型原始分布裡的機率和排名、取樣時的機率、top-k / top-p 之後剩幾個候選，以及前 5 名候選。Greedy 模式下的輸出和 `generate()` 實測一致。
+Every piece of text on the page is written in both languages side by side in the code: `pick(lang, "中文", "English")` in code, and `{"zh": …, "en": …}` in data (the special token notes, the stop reasons, the paragraphs of How it works). Every function in `render.py` takes a `lang`, and the events themselves have no language, so switching the language redraws the same events in the other one, finished turns included. The page starts in the language last picked, kept in a cookie, or else in the browser's `navigator.language` (anything starting with `zh` is Chinese, the rest English); picking one writes the cookie with a small script, because Streamlit can read cookies but not write them.
 
-### MTP 推測解碼
+What the model reads from the harness (wrong arguments, a failed tool, your refusal) is worded in the language the page was in when the turn started, because it becomes the observation word for word; the system prompt is the same in both, so the model's behavior does not depend on the page's language.
 
-解碼時每個 token 都要跑一次完整的 forward，時間主要花在把權重從記憶體讀出來；同一次 forward 多算幾個位置幾乎不會更慢（Gemma 4 E2B 在 Apple M5 上，1 個位置約 56 ms，7 個位置約 70 ms）。所以只要先便宜地猜好接下來幾個 token，主模型就能一次 forward 全部驗證。Google 為 Gemma 4 訓練了這樣的草稿模型（MTP，multi-token prediction），`transformers` 的 `generate(assistant_model=…)` 會用它，但同樣看不到每一步的分布，所以 `llm.py` 把它接進自己的解碼迴圈：
+### Why a hand-written decoding loop
 
-1. **猜**（`_draft`）：草稿模型 `gemma-4-E2B-it-assistant` 約 78M 參數、4 層。它沒有自己的 KV cache，直接讀主模型的 key / value（Gemma 4 E2B 後 20 層本來就共用前面兩層算好的那份），輸入是上一個 token 的 embedding 接上主模型最後一層的 hidden state。一次 greedy 猜 6 個 token（checkpoint 的 `num_assistant_tokens`）。
-2. **驗證**（`_drafted`）：主模型對「剛確定的 token + 6 個猜測」做一次 forward，拿回 7 個位置的分布，依序交給 `_sample()` 檢查。收下的猜測不用另外 forward；第一個被退回的猜測，由主模型自己在那個位置選的 token 取代，後面全部作廢，KV cache 用 `crop()` 退回去；6 個都收下時，最後一個位置還能多給一個 token。
-3. **輸出不變**：greedy 時，猜測剛好是第 1 名才收下，所以輸出和不開 MTP 一樣（`tests/test_real_model.py` 用真的模型比對）。抽樣時，猜測以「temperature、top-k、top-p 處理後它的機率」被收下，沒收下就從其他候選裡抽，每個 token 最後出現的機率完全不變（speculative sampling，`tests/test_llm.py` 用兩萬次抽樣檢查）。
+`model.generate()` does not hand out the probability distribution at each step, so `llm.py` runs the loop itself: one forward pass per token (with a KV cache), then temperature, top-k and top-p in turn, then a sample. So every token can report its probability and rank in the model's own distribution, its probability when sampled, how many candidates were left after top-k / top-p, and the top 5 candidates. In greedy mode the output matches `generate()`, as measured.
 
-收下的比例很看內容。在網頁裡用 Gemma 的預設解碼設定實測（Apple M5）：
+### MTP speculative decoding
 
-| 這一步在寫什麼 | 不開 MTP | 開 MTP | 草稿收下 |
+Decoding runs a full forward pass for every token, and the time goes mostly into reading the weights from memory; computing a few more positions in the same pass is hardly slower (Gemma 4 E2B on an Apple M5: about 56 ms for 1 position, about 70 ms for 7). So if the next few tokens are guessed cheaply first, the model can check them all in one forward pass. Google trained such a drafter for Gemma 4 (MTP, multi-token prediction), and `transformers`' `generate(assistant_model=…)` uses it, but that again hides the distribution at each step, so `llm.py` wires it into its own decoding loop:
+
+1. **Guess** (`_draft`): the drafter `gemma-4-E2B-it-assistant` has about 78M parameters and 4 layers. It has no KV cache of its own and reads the model's keys and values directly (the last 20 layers of Gemma 4 E2B already share those two earlier layers computed); its input is the last token's embedding next to the model's last-layer hidden state. It makes 6 greedy guesses at a time (the checkpoint's `num_assistant_tokens`).
+2. **Check** (`_drafted`): the model runs one forward pass over the token just settled plus the 6 guesses, gets back the distributions at 7 positions and hands them to `_sample()` in order. A kept guess needs no forward pass of its own; the first guess turned down is replaced by the model's own pick at that position, everything after it is dropped, and the KV cache is cut back with `crop()`; when all 6 hold, the last position gives one more token.
+3. **Same output**: in greedy decoding a guess is kept only when it is the top token, so the output is the same as without MTP (`tests/test_real_model.py` compares them with the real model). When sampling, a guess is kept with its probability after temperature, top-k and top-p, and otherwise the token is drawn from the other candidates, so every token comes out exactly as often as without MTP (speculative sampling; `tests/test_llm.py` checks it over twenty thousand samples).
+
+How many guesses are kept depends a lot on the content. Measured in the page with Gemma's default decoding settings (Apple M5):
+
+| What the step writes | Without MTP | With MTP | Guesses kept |
 |---|---|---|---|
-| 工具呼叫（「台北現在幾點？紐約呢？」第 1 步） | 12.6 tok/s | 40.9 tok/s | 34 / 35 |
-| 根據工具結果回答（同一題第 2 步） | 13.0 tok/s | 22.6 tok/s | 42 / 106 |
-| 英文程式碼，約 750 tokens | 8.8 tok/s | 11.6 tok/s（單獨跑 `llm.py`：8.1 → 29.0） | 51% |
-| 中文長文（「用三段話介紹台北。」） | 10.3 tok/s | 10.3 tok/s | 7% |
+| A tool call (step 1 of "台北現在幾點？紐約呢？", "What time is it in Taipei now? And New York?") | 12.6 tok/s | 40.9 tok/s | 34 / 35 |
+| The answer from the tool result (step 2 of the same question) | 13.0 tok/s | 22.6 tok/s | 42 / 106 |
+| English code, about 750 tokens | 8.8 tok/s | 11.6 tok/s (`llm.py` alone: 8.1 → 29.0) | 51% |
+| Long Chinese text ("用三段話介紹台北。") | 10.3 tok/s | 10.3 tok/s | 7% |
 
-### 支援更多模型
+### Supporting more models
 
-harness（`agent.py`）、解碼迴圈（`llm.py`）和畫面（`render.py`）都只寫一次，裡面沒有任何「如果是 Gemma」的分支。每個模型不一樣的地方集中在 `families/` 的一個 `Family` 物件裡：
+The harness (`agent.py`), the decoding loop (`llm.py`) and the page (`render.py`) are written once, without a single "if Gemma" branch. Whatever differs between models is gathered in one `Family` object in `families/`:
 
-- 讀輸出：`parse`（把輸出切成思考、工具呼叫、回覆）、`thought_prefix`、`channel_switch`（哪些 token 切到思考、工具呼叫、回覆）、`stop_tokens`
-- 寫回對話：`reasoning_key`（思考存在哪個欄位，chat template 才讀得到）、`text_with_calls`（工具呼叫前的文字留不留）
-- 畫面：`user_turn`、每個特殊 token 的說明、側欄與模型分頁的說明文字、沒有 generation_config.json 時的建議解碼設定
+- Reading the output: `parse` (splits the output into thinking, tool calls and the reply), `thought_prefix`, `channel_switch` (which tokens switch to thinking, a tool call or the reply), `stop_tokens`
+- Writing the conversation back: `reasoning_key` (the field the thinking is kept in, so the chat template can read it), `text_with_calls` (whether text in front of a tool call is kept)
+- The page: `user_turn`, a note on each special token, the help text for the sidebar and the Model tab, and the recommended decoding settings when there is no generation_config.json; each in English and in Chinese
 
-要加模型：
+To add a model:
 
-1. 同一個家族的另一個 checkpoint（例如更大的 Gemma 4 或 Qwen3.5）：在 `families/__init__.py` 的 `MODELS` 加一行。Gemma 4 的其他 checkpoint 也有對應的 MTP 草稿模型（`google/gemma-4-*-it-assistant`），在 `DRAFTERS` 加一行，側欄的 MTP 開關就能用。
-2. 新的家族：照 `families/qwen3_5.py` 寫一個模組（輸出的 parser 加上特殊 token 的說明），把它的 `Family` 加進 `FAMILIES`。載入模型時會用 checkpoint `config.json` 裡的 `model_type` 自動找到它。`tests/test_chat_template.py` 會拿真的 tokenizer 和 chat template 檢查新家族：每個特殊 token 都有說明、模板寫進歷史的工具呼叫讀得回來、step 卡片標成「新加入」的剛好是工具結果。
+1. Another checkpoint of a family that is already here (a bigger Gemma 4 or Qwen3.5, say): add a line to `MODELS` in `families/__init__.py`. Other Gemma 4 checkpoints have MTP drafters too (`google/gemma-4-*-it-assistant`); add a line to `DRAFTERS` and the sidebar's MTP switch works for them.
+2. A new family: write a module like `families/qwen3_5.py` (a parser for the output plus notes on the special tokens, in both languages) and add its `Family` to `FAMILIES`. Loading a model finds it automatically by the `model_type` in the checkpoint's `config.json`. `tests/test_chat_template.py` checks a new family against the real tokenizer and chat template: every special token has a note, tool calls the template writes into the history parse back, and what the step card marks as new is exactly the tool result.
 
-### 兩個模型的格式
+### The two models' formats
 
-Gemma 4 的字串用 `<|"|>` 這個特殊 token 包起來，key 也不加引號，所以不是 JSON，`families/gemma4.py` 有自己的小 parser：
+Gemma 4 wraps strings in the special token `<|"|>` and leaves keys unquoted, so it is not JSON, and `families/gemma4.py` has its own small parser:
 
 ```
 <|tool_call>call:get_current_time{timezone:<|"|>Asia/Taipei<|"|>}<tool_call|><|tool_response>
 ```
 
-Gemma 寫完工具呼叫會停在 `<|tool_response>`，等 harness 接上結果；回答完則停在 `<turn|>`。這兩個停止 token 正好對應到 Anthropic Messages API 的 `stop_reason: tool_use` 和 `end_turn`。
+After writing a tool call, Gemma stops at `<|tool_response>` to wait for the harness to add the result; after an answer it stops at `<turn|>`. These two stop tokens line up with `stop_reason: tool_use` and `end_turn` in the Anthropic Messages API.
 
-Qwen3.5 用 XML，每個值都是純文字，型別要照工具的 schema 轉（和 vLLM 的 `qwen3_coder` parser 一樣）：
+Qwen3.5 uses XML, and every value is plain text, typed by the tool's schema (as vLLM's `qwen3_coder` parser does):
 
 ```
 <tool_call>
@@ -137,51 +147,52 @@ Asia/Taipei
 </tool_call><|im_end|>
 ```
 
-Qwen 不管回答完或要用工具都停在 `<|im_end|>`，所以 harness 是看「解析出來有沒有工具呼叫」決定要不要結束，而不是看停止 token。工具結果會放進一則新的 `user` 訊息（`<tool_response>…</tool_response>`），而不是像 Gemma 接在同一個 model turn 裡。
+Qwen stops at `<|im_end|>` both after an answer and for a tool, so the harness decides whether to end by whether parsing found a tool call, not by the stop token. The tool result goes into a new `user` message (`<tool_response>…</tool_response>`) instead of the same model turn as with Gemma.
 
-## 測試
+## Tests
 
 ```bash
-uv run pytest                                          # 約 15 秒，不載入模型權重、不連網路
-RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma（含 MTP 草稿模型）和 Qwen，約 40 秒；加 -k Qwen 只跑一個
+uv run pytest                                          # about 25 s; loads no weights and touches no network
+RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # loads the real Gemma (with its MTP drafter) and Qwen, about 40 s; add -k Qwen for one
 ```
 
-大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，介面和 `LocalLLM` 一樣，所以 harness 和網頁可以從頭跑到尾。
+Most tests use the fake model in `tests/fakes.py`: it replays scripted output one token at a time, with the same interface as `LocalLLM`, so the harness and the page run from start to finish.
 
-| 檔案 | 測什麼 |
+| File | What it tests |
 |---|---|
-| `test_gemma4.py` | Gemma 4 的 parser：思考、工具呼叫、回覆的切分；`<\|"\|>` 字串、巢狀參數、各種格式錯誤 |
-| `test_qwen3_5.py` | Qwen3.5 的 parser：XML 工具呼叫、照 schema 轉型別、思考、各種格式錯誤；用 Qwen 格式跑完整個 harness |
-| `test_families.py` | 每個家族都說明了它用到的 token、`model_type` 找得到家族 |
-| `test_tools.py` | schema 驗證與預設值、計算機的 AST 白名單（拒絕 `__import__` 之類）、時區、Wikipedia（HTTP 用假的） |
-| `test_llm.py` | 自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布 |
-| `test_agent.py` | harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止 |
-| `test_render.py` | 一次執行的每一個事件前綴都能畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片 |
-| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用 |
-| `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（本機有快取才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字） |
-| `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到、事件表指向真的送出事件的那一行、HTML 標籤成對；產生的靜態頁有亮色和暗色兩套配色與迴圈圖，並寫出對應的 commit |
-| `test_real_model.py` | 預設跳過。每個模型：greedy 解碼和 `model.generate()` 一致，真的模型能呼叫計算機並回答；Gemma 開 MTP 時 greedy 輸出和不開一模一樣，而且草稿真的有被收下 |
+| `test_gemma4.py` | Gemma 4's parser: splitting thinking, tool calls and the reply; `<\|"\|>` strings, nested arguments, all kinds of format errors, in both languages |
+| `test_qwen3_5.py` | Qwen3.5's parser: XML tool calls, types from the schema, thinking, all kinds of format errors; a whole harness run in Qwen's format |
+| `test_families.py` | Every family explains the tokens it uses, in both languages and for the same tokens; `model_type` finds the family |
+| `test_tools.py` | Schema validation and defaults, the calculator's AST allowlist (rejecting `__import__` and the like), timezones, Wikipedia (with fake HTTP); errors in both languages |
+| `test_llm.py` | The hand-written decoding loop: KV cache, stop tokens, the token limit, interruption, channel switches, Chinese characters split across tokens; the candidates and probabilities of temperature / top-k / top-p; MTP with a scripted fake drafter: kept and rejected guesses, the extra token when all hold, how far the KV cache is cut back, the drafter never seeing dropped guesses, and a check that guesses do not change the distribution when sampling |
+| `test_agent.py` | The harness: event order, tool results back in the context, validation errors, repeated calls, truncated results, every stop reason, Allow / Reject / Stop while waiting; the model reads errors in the turn's language, and the system prompt is the same in both |
+| `test_render.py` | Every prefix of a run's events renders in both languages (the page redraws every 0.5 s mid-run), HTML tags pair up, the loop diagram is valid SVG, model output is always escaped, special token popovers and lists; MTP's underlines, popovers, counts and drafter card; no Chinese left on an English page |
+| `test_app.py` | Drives the whole page with Streamlit's `AppTest`: sending a question, the example buttons, sidebar settings reaching the model, multi-turn chat, the Context and Model tabs, Allow / Reject / Stop, a new chat, resetting the settings, two tabs never running at once, switching models, How it works linking to GitHub Pages in the page's language; MTP off by default, the drafter loaded only when it is switched on, and switched off and disabled for Qwen, which has none; an English browser gets English, the last pick beats the browser's language, switching languages keeps the conversation and the settings, and the model's errors follow the language |
+| `test_chat_template.py` | With each model's real tokenizer and chat template (only when cached locally): every special token is a single token and has a note, tool calls the template writes into the history parse back; a harness run with the real template checks that what the step card marks as new is exactly the tool result (two arguments, thinking mode, text before a tool call) |
+| `test_guide.py` | Every excerpt and line number on How it works resolves, the event table points at the line that really sends each event, HTML tags pair up; each paragraph points at the same code and sections in both languages, with no Chinese left in the English one; the built pages have light and dark palettes and loop diagrams and name their commit, and the root page sends readers to the right language |
+| `test_real_model.py` | Skipped by default. For each model: greedy decoding matches `model.generate()`, and the real model calls the calculator and answers; for Gemma with MTP, greedy output is exactly the same as without it, and the drafter's guesses really are kept |
 
-## 已知限制
+## Known limitations
 
-- 速度：Apple M5（32 GB）上 Gemma 大約 7–13 tok/s，Qwen3.5 0.8B 大約 20–25 tok/s。思考模式一步常有兩、三百個思考 token，要等 30 秒左右。打開 MTP 後，工具呼叫這類好猜的步驟大約快 3 倍，中文長文幾乎沒有差別（見上面「MTP 推測解碼」的表）。
-- MTP 在網頁裡跑長回覆時，加速比單獨跑 `llm.py` 少很多（英文程式碼：單獨跑 8 → 29 tok/s，網頁裡 9 → 12 tok/s），原因還沒查清楚。可能是網頁每 0.5 秒重畫一次、瀏覽器和模型搶同一台機器，而 MTP 每一輪有好幾個很小的草稿 forward，比一般解碼更容易被這些干擾拖慢。
-- MTP 只有 Gemma 4 E2B 能開：`transformers` 目前只支援 Gemma 4 的草稿模型讀主模型 KV cache 的這種做法，Qwen3.5 沒有對應的草稿模型。
-- 開 MTP 時，主模型一次算 7 個位置，數值和一次算 1 個會有極小的差異；greedy 遇到兩個 token 機率幾乎一樣時，偶爾會選到不同的那個。
-- Qwen3.5 的 24 層裡有 18 層是 Gated DeltaNet。transformers 有兩個加速 kernel：`flash-linear-attention`（Triton，只有 Linux wheel）和 `causal-conv1d`（CUDA），Mac 上都裝不了，所以改用 PyTorch 參考實作，結果一樣，只是比較慢；`llm.py` 在 MPS 和 CPU 上把 transformers 這個「改用參考實作」的提示關掉了。在有 CUDA 的 Linux 上，提示會照常出現，可以裝這兩個套件加速。
-- 在 MPS 上，transformers 用多條 thread 載入 Qwen3.5 的權重會卡住，所以 `llm.py` 在 MPS 上改成單一 thread 載入（`HF_DEACTIVATE_ASYNC_LOAD=1`），兩個模型的載入時間都沒有變慢。
-- Qwen3.5 0.8B 官方預設不開思考模式；開了容易一直想下去停不下來，可以把「每步 token 上限」調低。它沒附 generation_config.json，建議的解碼設定寫在 `families/qwen3_5.py`（官方建議的 presence penalty 這裡沒有實作）。
-- 記憶體裡同時只放一個模型。兩個分頁選了不同的模型時，輪流在兩邊操作會一直重新載入，最好所有分頁用同一個模型。
-- 只有一份模型，一次只能跑一個 agent，其他分頁要等。執行中重新整理或關掉分頁，agent 不會跟著停；其他分頁（包括重新整理後的同一頁）會顯示它還在跑，並提供「停止那個 agent」按鈕。
-- 開著「執行工具前先問我」時，等確認超過 5 分鐘沒有回應，harness 會當作拒絕並停止迴圈，停止原因顯示「等待確認逾時」。
-- token 浮窗要等那一步生成完才會出現，生成中只有熱度顏色（特殊 token 的用途說明除外），避免每次重畫都送出大量 HTML。浮窗是純 CSS，太靠近時間軸底部的 token，浮窗可能被切到。
-- 特殊 token 的說明浮窗用 CSS anchor positioning 貼在 token 旁邊，不會被捲動框切到；不支援的瀏覽器會改成直接開在 token 下方，靠近框的底部時可能被切到。
-- 兩個模型都很小：可能用簡體中文回答、重複同一個搜尋、只回答一半的問題，或在思考裡算錯。這些剛好是可以觀察的材料。
-- Wikipedia 工具需要網路。
-- `MODEL_ID` 環境變數決定一開始選哪個模型，也可以指定選單裡沒有的 checkpoint，只要它屬於已經支援的家族（Gemma 4 或 Qwen3.5）；其他家族要先照「支援更多模型」加一個 family。
+- Speed: on an Apple M5 (32 GB), Gemma runs at about 7–13 tok/s and Qwen3.5 0.8B at about 20–25 tok/s. In thinking mode a step often has two or three hundred thinking tokens, about 30 seconds of waiting. With MTP on, easily guessed steps such as tool calls are about 3× faster, and long Chinese text barely changes (see the table under MTP speculative decoding).
+- With long replies in the page, MTP speeds things up much less than in `llm.py` alone (English code: 8 → 29 tok/s alone, 9 → 12 tok/s in the page), for reasons not yet pinned down. Perhaps the page redrawing every 0.5 s and the browser competing with the model for the same machine slow MTP down more than plain decoding, since each MTP round has several small drafter forward passes.
+- Only Gemma 4 E2B can use MTP: `transformers` supports a drafter reading the model's KV cache this way only for Gemma 4, and Qwen3.5 has no matching drafter.
+- With MTP on, the model computes 7 positions at once, which gives very slightly different numbers from computing 1; when two tokens are almost equally likely, greedy decoding may now and then pick the other one.
+- 18 of Qwen3.5's 24 layers are Gated DeltaNet. transformers has two kernels to speed them up, `flash-linear-attention` (Triton, Linux wheels only) and `causal-conv1d` (CUDA), and neither installs on a Mac, so the PyTorch reference implementation runs instead, with the same results, only slower; on MPS and CPU, `llm.py` silences transformers' notice about that fallback. On Linux with CUDA the notice shows as usual, and installing those two packages speeds things up.
+- On MPS, transformers hangs loading Qwen3.5's weights with several threads, so on MPS `llm.py` loads with one thread (`HF_DEACTIVATE_ASYNC_LOAD=1`), which does not make either model load slower.
+- Qwen3.5 0.8B has thinking off by default; on, it easily keeps thinking without stopping, and lowering Max tokens per step helps. It ships no generation_config.json, so its recommended decoding settings are in `families/qwen3_5.py` (the presence penalty it recommends is not implemented here).
+- Only one model is kept in memory. If two tabs pick different models, using them in turn keeps reloading; it is best for every tab to use the same model.
+- There is one copy of the model, so only one agent runs at a time and other tabs wait. Reloading or closing the tab during a run does not stop the agent; other tabs (including the reloaded one) show it is still running and offer a Stop that agent button.
+- With Ask me before running a tool on, if no one answers within 5 minutes the harness takes it as a rejection and stops the loop, with "confirmation timed out" as the stop reason.
+- Token popovers appear only once the step finishes generating; while it generates there are only the heat colors (special tokens still explain themselves), so each redraw does not send a lot of HTML. The popovers are pure CSS, and one for a token too near the bottom of the timeline may be cut off.
+- Special token popovers are placed next to the token with CSS anchor positioning, so a scrolling box does not cut them off; browsers without it open them right under the token, where they may be cut off near the bottom of the box.
+- Both models are small: they may answer in Simplified Chinese, repeat the same search, answer half the question or get their sums wrong while thinking. All of that is material to look at.
+- The Wikipedia tools need the network.
+- The screenshot above shows the Chinese page; there is no screenshot of the English one yet.
+- The `MODEL_ID` environment variable picks the model selected at first; it may also name a checkpoint the menu does not list, as long as it belongs to a supported family (Gemma 4 or Qwen3.5); another family needs one added first, as in Supporting more models.
 
-## 授權
+## License
 
-本專案的程式碼以 [Apache License 2.0](LICENSE) 授權。Gemma 4 模型權重和它的 MTP 草稿模型由 Google 以 Apache 2.0 釋出（見[模型卡](https://huggingface.co/google/gemma-4-E2B-it)、[草稿模型卡](https://huggingface.co/google/gemma-4-E2B-it-assistant)），Qwen3.5 模型權重由 Alibaba 的 Qwen 團隊以 Apache 2.0 釋出（見[模型卡](https://huggingface.co/Qwen/Qwen3.5-0.8B)），都不包含在本專案裡。
+This project's code is licensed under the [Apache License 2.0](LICENSE). The Gemma 4 weights and its MTP drafter are released by Google under Apache 2.0 (see the [model card](https://huggingface.co/google/gemma-4-E2B-it) and the [drafter's card](https://huggingface.co/google/gemma-4-E2B-it-assistant)), and the Qwen3.5 weights by Alibaba's Qwen team under Apache 2.0 (see the [model card](https://huggingface.co/Qwen/Qwen3.5-0.8B)); none of them are included in this project.
 
-AI 使用說明：程式碼由 Claude Code 協助撰寫，並在本機用 gemma-4-E2B-it（含 MTP 草稿模型 gemma-4-E2B-it-assistant）和 Qwen3.5-0.8B 實際執行、用瀏覽器檢查過畫面。
+About the use of AI: the code was written with the help of Claude Code, run on this machine with gemma-4-E2B-it (and its MTP drafter gemma-4-E2B-it-assistant) and Qwen3.5-0.8B, and checked in a browser.

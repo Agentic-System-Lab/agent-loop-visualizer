@@ -33,8 +33,8 @@ def test_model_info_feeds_the_ui(gemma):
     # the reset button writes these into the sliders, so they must be numbers
     for key in ("temperature", "top_p", "top_k"):
         assert isinstance(info["defaults"][key], (int, float)), key
-    assert_balanced(render.model_html(info))
-    assert_balanced(render.special_tokens_html(info))
+    assert_balanced(render.model_html(info, lang="zh"))
+    assert_balanced(render.special_tokens_html(info, lang="zh"))
 
 
 def test_greedy_decoding_matches_generate(gemma):

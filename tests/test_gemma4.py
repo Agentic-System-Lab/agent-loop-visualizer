@@ -136,5 +136,14 @@ def test_whitespace_between_tokens():
     "{a:[1,2}",               # unclosed array
 ])
 def test_malformed_arguments_raise(text):
-    with pytest.raises(ParseError):
+    with pytest.raises(ParseError) as error:
         parse_args(text)
+    zh, en = error.value.text["zh"], error.value.text["en"]
+    assert zh and en and en.isascii()
+
+
+def test_errors_are_worded_in_the_language_asked_for():
+    [call] = parse_output("<|tool_call>call:calculator{expression}<tool_call|>", lang="en")["tool_calls"]
+    assert call["error"].startswith("Expected ':' at character ")
+    [cut] = parse_output("<|tool_call>call:calculator{", lang="en")["tool_calls"]
+    assert cut["error"] == "The tool call has no closing <tool_call|>"

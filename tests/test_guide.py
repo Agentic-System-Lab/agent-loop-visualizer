@@ -1,5 +1,6 @@
 """The 運作說明 page. Its line numbers are looked up from the code by text, so these tests are
-what notice when an edit moves or removes a line the guide talks about."""
+what notice when an edit moves or removes a line the guide talks about. It comes in Chinese and
+in English; both are written side by side, and these tests also check they say the same things."""
 
 import ast
 import re
@@ -9,15 +10,26 @@ import pytest
 
 import guide
 from guide import Code, span, statement_end
+from i18n import LANGS
 from test_render import assert_balanced
 
 CODES = [item for sec in guide.SECTIONS for item in sec.body if isinstance(item, Code)]
-PROSE = [guide.INTRO] + [text for sec in guide.SECTIONS for text in (sec.lead, *sec.body) if not isinstance(text, Code)]
+PROSE = [guide.INTRO] + [text for sec in guide.SECTIONS for text in (sec.title, sec.lead, *sec.body) if not isinstance(text, Code)]
+CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
+
+
+def bilingual():
+    """Every piece of text on the page, as its {"zh": ..., "en": ...} pair."""
+    for item in PROSE:
+        yield from (item if isinstance(item, tuple) else (item,))
+    yield from (code.caption for code in CODES if code.caption)
+    for _, _, _, carries, shows in guide.EVENTS:
+        yield from (carries, shows)
 
 
 def paragraphs():
-    for item in PROSE:
-        yield from (item if isinstance(item, tuple) else (item,))
+    for pair in bilingual():
+        yield from pair.values()
 
 
 @pytest.mark.parametrize("code", CODES, ids=lambda c: f"{c.file}:{c.start[:30]}")
@@ -29,7 +41,7 @@ def test_every_excerpt_starts_and_ends_where_it_says(code):
     if code.end:
         assert any(code.end in line for line in lines[lo - 1:hi])
     excerpt = "\n".join(lines[lo - 1:hi])
-    html = guide.code_html(code)
+    html = guide.code_html(code, "zh")
     assert html.count('class="ln"') == hi - lo + 1
     assert f'<span class="ln">{lo}</span>' in html and f'<span class="ln">{hi}</span>' in html
     assert len(excerpt) > 0
@@ -66,20 +78,43 @@ def test_section_links_point_at_sections():
     for text in paragraphs():
         for key in guide.re.findall(r"\{\{(\w+)\}\}", text):
             assert key in keys, key
-    assert guide.xref_html("record").startswith('<a class="g-xref" href="#g-record">第 ')
+    n = [sec.key for sec in guide.SECTIONS].index("record") + 1
+    assert guide.xref_html("record", "zh").startswith(f'<a class="g-xref" href="#g-record">第 {n} 段「')
+    assert guide.xref_html("record", "en").startswith(f'<a class="g-xref" href="#g-record">§{n} “Writing the tool call')
 
 
-def test_page_html():
-    html = guide.page_html("0123456789abcdef")
+def test_both_languages_say_the_same_things():
+    """A paragraph points at the same lines and the same sections in either language."""
+    pairs = list(bilingual())
+    assert len(pairs) > 150
+    for pair in pairs:
+        assert set(pair) == set(LANGS) and all(pair.values()), pair
+        zh, en = pair["zh"], pair["en"]
+        assert guide.REF_RE.findall(zh) == guide.REF_RE.findall(en), en
+        assert re.findall(r"\{\{(\w+)\}\}", zh) == re.findall(r"\{\{(\w+)\}\}", en), en
+        assert not CJK.search(en), en
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_page_html(lang):
+    html = guide.page_html("0123456789abcdef", lang)
     assert_balanced(html)
     assert html.count('class="g-sec"') == len(guide.SECTIONS) + 1  # plus the event table
     for sec in guide.SECTIONS:
-        assert f'id="g-{sec.key}"' in html and f'href="#g-{sec.key}"' in html
+        assert f'id="g-{sec.key}"' in html and f'href="#g-{sec.key}"' in html  # the same anchors, so a switch keeps your place
+    contents = {"zh": "目錄", "en": "Contents"}[lang]
+    assert f'<nav class="g-toc" aria-label="{contents}"><details><summary>' in html  # closed until you open it
+    assert html.count("<li ") == len(guide.SECTIONS) + 1
     assert html.count('<img class="diagram"') == 2  # one per theme
     assert f'href="{guide.REPO}/tree/0123456789abcdef"><code>0123456</code>' in html
+    assert '<a href="../zh/" hreflang="zh-Hant" lang="zh-Hant" data-lang="zh"' in html and 'data-lang="en"' in html
+    assert html.count('aria-current="page"') == 1 and f'data-lang="{lang}" aria-current="page"' in html
     # Code excerpts and the line shown on hovering a chip may contain [[ or ** themselves.
     prose = re.sub(r"<[^>]+>", "", re.sub(r'<figure class="src">.*?</figure>', "", html, flags=re.S))
     assert not guide.REF_RE.search(prose) and "{{" not in prose and "**" not in prose
+    if lang == "en":  # the code is the same on both pages; everything around it is in English
+        words = prose.replace("中文", "").replace("＃", "")  # the switch's other language, the events' number mark
+        assert not CJK.search(words), words[CJK.search(words).start() - 80:][:160]
 
 
 def test_stylesheet_has_both_palettes():
@@ -92,17 +127,30 @@ def test_stylesheet_has_both_palettes():
 
 
 def test_build(tmp_path):
-    page = guide.build(tmp_path / "site")
-    assert page == tmp_path / "site" / "index.html"
-    doc = page.read_text(encoding="utf-8")
-    assert doc.startswith("<!doctype html>") and "<title>運作說明 · Agent Loop 可視化</title>" in doc
-    assert_balanced(doc)
-    commit = re.search(r'/tree/([0-9a-f]{40})"', doc).group(1)
-    assert commit == subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    site = tmp_path / "site"
+    assert guide.build(site) == [site / "index.html", site / "zh" / "index.html", site / "en" / "index.html"]
+    head = '<!doctype html><html lang="{}">'
+    for lang, title in (("zh", "運作說明 · Agent Loop 可視化"), ("en", "How it works · Agent Loop Visualizer")):
+        doc = (site / lang / "index.html").read_text(encoding="utf-8")
+        assert doc.startswith(head.format(guide.HTML_LANG[lang])) and f"<title>{title}</title>" in doc
+        assert_balanced(doc)
+        assert doc.count("<script>") == 1 and doc.index("<script>") > doc.index('id="g-events"')  # guide.js, after what it works on
+        assert 'localStorage.setItem("lang", a.dataset.lang)' in doc  # the switch remembers the pick for index.html
+        commit = re.search(r'/tree/([0-9a-f]{40})"', doc).group(1)
+        assert commit == subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+
+def test_the_root_page_sends_a_reader_to_their_language(tmp_path):
+    guide.build(tmp_path)
+    root = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert_balanced(root)
+    assert 'localStorage.getItem("lang")' in root and "navigator.language" in root  # their last pick, else their browser's
+    assert 'location.replace(lang + "/" + location.hash)' in root  # a link to a section keeps working
+    assert '<a href="zh/">' in root and '<a href="en/">' in root  # without JavaScript, both are a click away
 
 
 def test_prose_markup_is_escaped():
-    html = guide.prose_html("a <b> `x<y>` **粗** [[agent.py|def run(self):]] {{stop}}")
+    html = guide.prose_html("a <b> `x<y>` **粗** [[agent.py|def run(self):]] {{stop}}", "zh")
     assert html.startswith("a &lt;b&gt; <code>x&lt;y&gt;</code> <b>粗</b> ")
     assert f'>agent.py:{guide.find_line("agent.py", "def run(self):")}</code>' in html
     assert 'title="def run(self):"' in html and 'href="#g-stop"' in html

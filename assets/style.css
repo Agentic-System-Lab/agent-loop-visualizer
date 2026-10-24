@@ -38,7 +38,15 @@
   :is(.st-key-chat_box, .st-key-loop_view, .st-key-context_view, .st-key-model_view) { height: 100% !important; }
 }
 
+/* ---------- language switch: 中文 | English, pinned over the right end of Streamlit's header ---------- */
+
+.st-key-lang_switch { position: fixed; top: 12px; right: 16px; z-index: 999991; width: auto !important; }
+
 /* ---------- chat ---------- */
+
+/* An example question that wraps (most English ones do in a narrow column) reads as a left-aligned card. */
+[class*="st-key-example-"] button { justify-content: flex-start; text-align: left; }
+[class*="st-key-example-"] button p { text-align: left; }
 
 .trace { display: flex; flex-wrap: wrap; gap: 6px; }
 .trace-chip {

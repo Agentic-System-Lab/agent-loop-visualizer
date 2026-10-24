@@ -9,6 +9,7 @@ import json
 import re
 
 from families import Family
+from i18n import pick
 
 STR = '<|"|>'
 THOUGHT_OPEN = "<|channel>thought\n"
@@ -21,12 +22,16 @@ SCALAR_RE = re.compile(r"[^,}\]\s]+")
 
 
 class ParseError(ValueError):
-    pass
+    """What is wrong with the arguments, in both languages; the model reads it in the run's."""
+
+    def __init__(self, zh: str, en: str):
+        super().__init__(zh)
+        self.text = {"zh": zh, "en": en}
 
 
-def parse_output(raw: str, schemas: dict | None = None) -> dict:
+def parse_output(raw: str, schemas: dict | None = None, lang: str = "zh") -> dict:
     """Split one model turn into thinking, tool calls and visible content. Gemma marks each value's
-    type itself, so the tool schemas are not needed."""
+    type itself, so the tool schemas are not needed. Errors are worded in `lang`."""
     text = raw
     thinking = None
     if THOUGHT_OPEN in text:
@@ -41,7 +46,7 @@ def parse_output(raw: str, schemas: dict | None = None) -> dict:
         try:
             call["arguments"] = parse_args(m.group(2))
         except ParseError as e:
-            call["error"] = str(e)
+            call["error"] = e.text[lang]
         calls.append(call)
 
     rest = CALL_RE.sub("", text)
@@ -52,7 +57,7 @@ def parse_output(raw: str, schemas: dict | None = None) -> dict:
             "name": name.group(1) if name else "?",
             "raw_args": tail,
             "arguments": None,
-            "error": "工具呼叫沒有結束標記 <tool_call|>",
+            "error": pick(lang, "工具呼叫沒有結束標記 <tool_call|>", "The tool call has no closing <tool_call|>"),
         })
         rest = head
 
@@ -66,9 +71,10 @@ def parse_args(text: str) -> dict:
     value = parser.value()
     parser.skip_ws()
     if parser.pos != len(parser.text):
-        raise ParseError(f"參數後面還有多餘的字元：{parser.text[parser.pos:][:30]!r}")
+        rest = parser.text[parser.pos:][:30]
+        raise ParseError(f"參數後面還有多餘的字元：{rest!r}", f"Extra characters after the arguments: {rest!r}")
     if not isinstance(value, dict):
-        raise ParseError("參數必須是 {...} 物件")
+        raise ParseError("參數必須是 {...} 物件", "The arguments must be a {...} object")
     return value
 
 
@@ -87,7 +93,7 @@ class _Parser:
     def expect(self, ch: str):
         self.skip_ws()
         if self.peek() != ch:
-            raise ParseError(f"第 {self.pos} 個字元應該是 {ch!r}")
+            raise ParseError(f"第 {self.pos} 個字元應該是 {ch!r}", f"Expected {ch!r} at character {self.pos}")
         self.pos += 1
 
     def value(self):
@@ -107,7 +113,7 @@ class _Parser:
         start = self.pos + len(STR)
         end = self.text.find(STR, start)
         if end < 0:
-            raise ParseError('字串缺少結尾的 <|"|>')
+            raise ParseError('字串缺少結尾的 <|"|>', 'The string has no closing <|"|>')
         self.pos = end + len(STR)
         return self.text[start:end]
 
@@ -115,7 +121,7 @@ class _Parser:
         try:
             value, self.pos = json.JSONDecoder().raw_decode(self.text, self.pos)
         except json.JSONDecodeError as e:
-            raise ParseError(f"字串格式錯誤：{e.msg}") from e
+            raise ParseError(f"字串格式錯誤：{e.msg}", f"Malformed string: {e.msg}") from e
         return value
 
     def key(self) -> str:
@@ -126,7 +132,7 @@ class _Parser:
             return self.json_string()
         m = KEY_RE.match(self.text, self.pos)
         if not m:
-            raise ParseError(f"第 {self.pos} 個字元應該是參數名稱")
+            raise ParseError(f"第 {self.pos} 個字元應該是參數名稱", f"Expected an argument name at character {self.pos}")
         self.pos = m.end()
         return m.group(0)
 
@@ -147,7 +153,7 @@ class _Parser:
             if ch == "}":
                 return out
             if ch != ",":
-                raise ParseError(f"物件裡第 {self.pos - 1} 個字元應該是 ',' 或 '}}'")
+                raise ParseError(f"物件裡第 {self.pos - 1} 個字元應該是 ',' 或 '}}'", f"Expected ',' or '}}' at character {self.pos - 1} of an object")
 
     def arr(self) -> list:
         self.pos += 1
@@ -164,12 +170,12 @@ class _Parser:
             if ch == "]":
                 return out
             if ch != ",":
-                raise ParseError(f"陣列裡第 {self.pos - 1} 個字元應該是 ',' 或 ']'")
+                raise ParseError(f"陣列裡第 {self.pos - 1} 個字元應該是 ',' 或 ']'", f"Expected ',' or ']' at character {self.pos - 1} of an array")
 
     def scalar(self):
         m = SCALAR_RE.match(self.text, self.pos)
         if not m:
-            raise ParseError(f"第 {self.pos} 個字元應該是一個值")
+            raise ParseError(f"第 {self.pos} 個字元應該是一個值", f"Expected a value at character {self.pos}")
         self.pos = m.end()
         token = m.group(0)
         if token in ("true", "false"):
@@ -184,8 +190,8 @@ class _Parser:
         return token
 
 
-# What each control token is for, grouped as the model tab lists them; `backticks` mark literal text.
-GROUPS = [
+# What each control token is for, grouped as the model tab lists them, in each language; `backticks` mark literal text.
+GROUPS = {"zh": [
     ("序列", "整段文字的頭尾", [
         ("<bos>", "序列開頭（beginning of sequence）", "整段脈絡的第一個 token，chat template 一定會把它放在最前面。"),
         ("<eos>", "序列結束（end of sequence）", "整段文字結束。它也是停止 token，不過對話中模型通常會先停在 `<turn|>`。"),
@@ -229,7 +235,51 @@ GROUPS = [
         ("<unk>", "未知（unknown）", "代替 tokenizer 切不出來的字元。Gemma 能把任何字元拆成 byte token，所以幾乎不會出現。"),
         ("<mask>", "遮罩（mask）", "保留的遮罩 token，chat template 不會用到。"),
     ]),
-]
+], "en": [
+    ("Sequence", "where the whole text starts and ends", [
+        ("<bos>", "Beginning of sequence", "The first token of the whole context; the chat template always puts it in front."),
+        ("<eos>", "End of sequence", "The end of the whole text. It is also a stop token, though in a conversation the model usually stops at `<turn|>` first."),
+    ]),
+    ("Turns", "split the conversation into messages", [
+        ("<|turn>", "Start of turn",
+         "Followed by a role, `system`, `user` or `model`, and a newline, it starts a message. The `<|turn>model` at the end of the context asks the model to write next."),
+        ("<turn|>", "End of turn",
+         "A message ends here. When the model writes it, it stops because its reply is done, like `stop_reason: end_turn` in the Messages API."),
+    ]),
+    ("Thinking", "in thinking mode, the reasoning goes in the thought channel", [
+        ("<|think|>", "Thinking on", "At the very start of the system turn, it makes the model reason before it acts. The sidebar's Thinking mode adds this token."),
+        ("<|channel>", "Start of channel", "Followed by the channel name `thought` and a newline, then the model's reasoning (the italic tokens in a step card)."),
+        ("<channel|>", "End of channel", "The reasoning ends here; the reply to the user or a tool call comes after it."),
+    ]),
+    ("Tools", "declaring tools, calling them and their results", [
+        ("<|tool>", "Start of tool declaration",
+         "In the system turn each tool is written as `<|tool>declaration:name{…}<tool|>`, from the tool's JSON Schema. This is how the model learns which tools it has."),
+        ("<tool|>", "End of tool declaration", "One tool's declaration ends here."),
+        ("<|tool_call>", "Start of tool call", "The model is calling a tool and writes `call:name{arguments}` next. The harness starts parsing here."),
+        ("<tool_call|>", "End of tool call", "A tool call is complete; `<|tool_response>` usually follows right after."),
+        ("<|tool_response>", "Start of tool response",
+         "When the model writes it, it stops to wait for the result, like `stop_reason: tool_use`. The harness runs the tool and appends `response:name{value:…}` after it."),
+        ("<tool_response|>", "End of tool response", "The tool result ends here. The model is still in the same model turn and goes on writing after reading it."),
+        ('<|"|>', "String quote (escape)",
+         "Wraps every string in tool declarations, calls and results in place of ordinary quotes, so quotes and brackets inside a string need no escaping."),
+    ]),
+    ("Multimodal", "where images, audio and video go; this app sends text only, so they never appear", [
+        ("<|image|>", "Image",
+         "The chat template writes it where an image goes; the processor expands it into `<|image>`, a run of `<|image|>` and `<image|>`, and the embeddings at those positions become the vision encoder's output."),
+        ("<|image>", "Begin of image", "An image's tokens start here."),
+        ("<image|>", "End of image", "An image's tokens end here."),
+        ("<|audio|>", "Audio",
+         "A placeholder like `<|image|>`: it expands into `<|audio>`, a run of `<|audio|>` and `<audio|>`, which become the audio encoder's output."),
+        ("<|audio>", "Begin of audio", "A clip's audio tokens start here."),
+        ("<audio|>", "End of audio", "A clip's audio tokens end here."),
+        ("<|video|>", "Video", "A video is split into frames, each one `<|image>`, a run of `<|video|>` and `<image|>`, which become the vision encoder's output."),
+    ]),
+    ("Reserved", "kept by the tokenizer; the chat format does not use them", [
+        ("<pad>", "Padding", "Pads sequences of different lengths to one length so they fit in one batch; attention skips it. This app runs one sequence at a time and never needs it."),
+        ("<unk>", "Unknown", "Stands in for characters the tokenizer cannot split. Gemma can break any character into byte tokens, so it hardly ever appears."),
+        ("<mask>", "Mask", "A reserved mask token; the chat template never uses it."),
+    ]),
+]}
 
 GEMMA4 = Family(
     key="gemma4",
@@ -239,9 +289,9 @@ GEMMA4 = Family(
     thought_prefix=THOUGHT_OPEN,
     channel_switch={"<|channel>": "thought", "<channel|>": "content", "<|tool_call>": "tool_call", "<tool_call|>": "content"},
     stop_tokens={
-        "<turn|>": "回合結束，相當於 end_turn",
-        "<|tool_response>": "等工具結果，相當於 tool_use",
-        "<eos>": "序列結束",
+        "<turn|>": {"zh": "回合結束，相當於 end_turn", "en": "end of turn, like end_turn"},
+        "<|tool_response>": {"zh": "等工具結果，相當於 tool_use", "en": "waiting for a tool result, like tool_use"},
+        "<eos>": {"zh": "序列結束", "en": "end of sequence"},
     },
     reasoning_key="reasoning",
     # The template writes a message's text after its tool responses and closes the turn there,
@@ -249,7 +299,16 @@ GEMMA4 = Family(
     text_with_calls=False,
     user_turn="<|turn>user",
     special_groups=GROUPS,
-    thinking_help="在 system prompt 開頭加上 `<|think|>`，模型會先在 thought channel 寫推理再行動。",
-    tools_note="chat template 把每個工具的 JSON Schema 寫成 `<|tool>declaration:名稱{…}<tool|>`，放進 system turn。",
-    model_note="官方標示 2.3B effective：每層各自的 embedding 表（Per-Layer Embeddings）只做查表，不算進有效參數。",
+    thinking_help={
+        "zh": "在 system prompt 開頭加上 `<|think|>`，模型會先在 thought channel 寫推理再行動。",
+        "en": "Puts `<|think|>` at the start of the system prompt, so the model writes its reasoning in the thought channel before it acts.",
+    },
+    tools_note={
+        "zh": "chat template 把每個工具的 JSON Schema 寫成 `<|tool>declaration:名稱{…}<tool|>`，放進 system turn。",
+        "en": "The chat template writes each tool's JSON Schema as `<|tool>declaration:name{…}<tool|>` in the system turn.",
+    },
+    model_note={
+        "zh": "官方標示 2.3B effective：每層各自的 embedding 表（Per-Layer Embeddings）只做查表，不算進有效參數。",
+        "en": "Officially 2.3B effective: each layer's own embedding table (Per-Layer Embeddings) is only looked up, so it does not count as effective parameters.",
+    },
 )

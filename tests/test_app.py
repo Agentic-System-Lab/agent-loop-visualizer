@@ -1,9 +1,11 @@
 """The Streamlit page, driven through streamlit.testing with the fake model in place of Gemma.
 
 Each test clicks and types like a user would, then waits for the agent thread
-before the next rerun, the way the page's half-second refresh would.
+before the next rerun, the way the page's half-second refresh would. The browser
+is a Chinese one unless a test says otherwise, so the page is in Chinese.
 """
 
+import re
 import time
 from pathlib import Path
 
@@ -20,6 +22,8 @@ from llm import Sampling
 
 APP = Path(__file__).resolve().parent.parent / "streamlit_app.py"
 ANSWER = "答案是 42。<turn|>"
+CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
+LANG_COOKIE = "agent_loop_lang"  # streamlit_app.LANG_COOKIE; the app is a script, not a module to import
 
 
 @pytest.fixture
@@ -44,7 +48,17 @@ def models(monkeypatch, outputs):
 
 
 @pytest.fixture
-def new_tab(models):
+def browser(monkeypatch):
+    """What the browser tells the page: its language and its cookies. A test may change them before it opens a tab."""
+    seen = {"locale": "zh-TW", "cookies": {}}
+    context = type(st.context)
+    monkeypatch.setattr(context, "locale", property(lambda self: seen["locale"]))
+    monkeypatch.setattr(context, "cookies", property(lambda self: seen["cookies"]))
+    return seen
+
+
+@pytest.fixture
+def new_tab(models, browser):
     """Open the page in a new browser tab (a new session sharing the cached model)."""
     tabs = []
 
@@ -123,7 +137,17 @@ def captions(at):
 
 
 def tab(at):
-    return next(b for b in at.button_group if b.options == ["迴圈", "脈絡", "模型"])
+    return next(b for b in at.button_group if b.key == "viz_tab")
+
+
+def lang_switch(at):
+    return next(b for b in at.button_group if b.key == "lang")
+
+
+def drawn_text(at) -> str:
+    """Everything the page writes, except the stylesheets it loads."""
+    html = [h.value for h in at.html if "<style" not in h.value and not h.value.lstrip().startswith("/*")]
+    return "\n".join([*html, *captions(at), *(m.value for m in at.markdown), *(i.value for i in at.info), *(w.value for w in at.warning)])
 
 
 # ---------- first load ----------
@@ -144,7 +168,7 @@ def test_first_load(at):
     assert {s.label: s.value for s in at.slider} == {
         "temperature": 1.0, "top-p": 0.95, "top-k": 64, "步數上限": 6, "每步 token 上限": 1024,
     }
-    assert tab(at).value == "迴圈"
+    assert tab(at).value == "loop" and tab(at).options == ["迴圈", "脈絡", "模型"]
     assert 'class="intro"' in page_html(at)
     assert not at.chat_input[0].disabled
     assert at.session_state["runs"] == [] and at.session_state["history"] == []
@@ -259,17 +283,17 @@ def test_model_error_is_shown(at, outputs):
 
 def test_context_view(at, outputs):
     outputs += [tool_call("calculator", expression="6*7"), ANSWER]
-    tab(at).set_value("脈絡").run()
+    tab(at).set_value("context").run()
     assert [i.value for i in at.info] == ["送出問題後，這裡會顯示每一步模型實際讀到的完整字串。"]
-    tab(at).set_value("迴圈").run()
+    tab(at).set_value("loop").run()
 
     ask(at)
     at.button(key="ctx-0-1").click().run()
-    assert tab(at).value == "脈絡"
+    assert tab(at).value == "context"
     steps = next(b for b in at.button_group if b.options == ["Step 1", "Step 2"])
     assert steps.value == 1
     html = page_html(at)
-    assert 'class="ctx-view"' in html and '<mark class="added">' + render.chip("<|turn>", GEMMA4) + "user" in html
+    assert 'class="ctx-view"' in html and '<mark class="added">' + render.chip("<|turn>", GEMMA4, "zh") + "user" in html
 
     steps.set_value(2).run()
     assert '<mark class="added">response:calculator' in page_html(at)
@@ -277,7 +301,7 @@ def test_context_view(at, outputs):
 
 
 def test_model_view(at, outputs):
-    tab(at).set_value("模型").run()
+    tab(at).set_value("model").run()
     html = page_html(at)
     assert "huggingface.co/google/gemma-4-E2B-it" in html
     assert "解碼設定" in html and "動作空間：模型看得到的工具" in html
@@ -292,7 +316,7 @@ def test_model_view(at, outputs):
 
 def test_model_view_shows_tools_off(at):
     next(t for t in at.toggle if t.label == "使用工具").set_value(False)
-    tab(at).set_value("模型").run()
+    tab(at).set_value("model").run()
     assert "目前關閉了「使用工具」" in page_html(at)
 
 
@@ -341,7 +365,7 @@ def test_mtp_loads_the_drafter_and_reaches_the_model(at, models, outputs):
     assert at.session_state["runs"][0].data()["settings"]["mtp"] is True
     assert "MTP 草稿收下" in page_html(at)
 
-    tab(at).set_value("模型").run()
+    tab(at).set_value("model").run()
     html = page_html(at)
     assert "google/gemma-4-E2B-it-assistant" in html and "每次猜 6 個 token" in html
     assert "MTP 推測解碼 <b>開</b>" in html
@@ -366,14 +390,15 @@ def test_reset_turns_mtp_off(at):
 
 # ---------- the guide ----------
 
-def test_guide_is_a_link_to_github_pages(at, monkeypatch):
+@pytest.mark.parametrize("lang, title", [("zh", "運作說明"), ("en", "How it works")])
+def test_guide_is_a_link_to_github_pages_in_the_page_language(at, monkeypatch, lang, title):
     pages = []
     navigation = st.navigation
     monkeypatch.setattr(st, "navigation", lambda p, **kw: pages.extend(p) or navigation(p, **kw))
-    at.run()
+    lang_switch(at).set_value(lang).run()
     assert not at.exception, at.exception
-    guide = next(p for p in pages if p.title == "運作說明")
-    assert guide.external_url == "https://cyyeh.github.io/agent-loop-visualizer/"
+    guide = next(p for p in pages[-2:] if p.title == title)
+    assert guide.external_url == f"https://cyyeh.github.io/agent-loop-visualizer/{lang}/"
 
 
 # ---------- the human in the loop ----------
@@ -499,3 +524,62 @@ def test_toast_when_two_tabs_start_at_once(at, new_tab, outputs):
         assert racing.session_state["runs"] == []
     finally:
         slot.run = leftover
+
+
+# ---------- the page's language ----------
+
+def test_an_english_browser_gets_the_page_in_english(browser, new_tab, outputs):
+    browser["locale"] = "en-US"
+    at = new_tab()
+    assert at.session_state["lang"] == "en" and lang_switch(at).value == "en"
+    assert {t.label for t in at.toggle} == {"Use tools", "Thinking mode", "Ask me before running a tool", "MTP speculative decoding"}
+    assert at.button(key="example-0").label == "What time is it in Taipei right now? And in New York?"
+    assert tab(at).options == ["Loop", "Context", "Model"]
+
+    outputs += [tool_call("calculator", expression="6*7"), "It is 42.<turn|>"]
+    ask(at, "What is 6 times 7?")
+    assert any(c.endswith("stop: no more tool calls") for c in captions(at))
+    for view in ("loop", "context", "model"):
+        tab(at).set_value(view).run()
+        text = re.sub(r'<pre class="ctx-view">.*?</pre>', "", drawn_text(at), flags=re.S)  # the prompt itself has Chinese in it
+        assert not CJK.search(text), text[CJK.search(text).start() - 80:][:160]
+
+
+def test_the_language_picked_last_time_wins_over_the_browser(browser, new_tab):
+    browser["cookies"] = {LANG_COOKIE: "en"}
+    assert new_tab().session_state["lang"] == "en"
+    browser["cookies"] = {LANG_COOKIE: "klingon"}  # not a language the page has: the browser's then
+    assert new_tab().session_state["lang"] == "zh"
+
+
+def test_picking_a_language_remembers_it_in_a_cookie(at):
+    assert "document.cookie" not in "".join(h.value for h in at.html)  # nothing picked, nothing written
+    lang_switch(at).set_value("en").run()
+    [script] = [h.value for h in at.html if "document.cookie" in h.value]
+    assert f"document.cookie = '{LANG_COOKIE}=en; path=/; max-age=31536000; SameSite=Lax';" in script
+    lang_switch(at).set_value("zh").run()
+    assert any(f"'{LANG_COOKIE}=zh;" in h.value for h in at.html)
+
+
+def test_switching_language_keeps_the_conversation_and_the_settings(at, outputs):
+    next(s for s in at.slider if s.label == "temperature").set_value(0.3)
+    next(s for s in at.slider if s.label == "步數上限").set_value(4)
+    at.run()
+    outputs += [tool_call("calculator", expression="6*7"), ANSWER]
+    ask(at)
+    tab(at).set_value("model").run()
+
+    lang_switch(at).set_value("en").run()
+    assert not at.exception, at.exception
+    assert len(at.session_state["runs"]) == 1 and len(at.session_state["history"]) == 4
+    assert at.session_state["model_id"] == "google/gemma-4-E2B-it" and tab(at).value == "model"
+    assert next(s for s in at.slider if s.label == "temperature").value == 0.3
+    assert next(s for s in at.slider if s.label == "Max steps").value == 4
+    assert any(c.endswith("stop: no more tool calls") for c in captions(at))  # the finished turn, drawn again in English
+
+
+def test_the_model_reads_errors_in_the_language_the_turn_started_in(at, outputs):
+    lang_switch(at).set_value("en").run()
+    outputs += [tool_call("calculator"), "Done.<turn|>"]
+    ask(at, "Add it up.")
+    assert '"Missing required argument expression"' in at.session_state["history"][2]["content"]

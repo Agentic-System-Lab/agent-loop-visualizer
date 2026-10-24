@@ -6,6 +6,9 @@ user, executed, and its result goes back into the conversation for the next step
 A reply without a tool call ends the run; so do the step limit, the per-step token
 limit, repeated malformed calls and the stop button. Every stage is emitted as an
 event so the browser can draw it.
+
+A run keeps the page's language from when it started: the errors and refusals the model reads come
+back in it. The system prompt is the same in both languages.
 """
 
 import json
@@ -15,6 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
+from i18n import pick
 from llm import LocalLLM, Sampling
 from tools import TOOLS, ToolError
 
@@ -40,6 +44,7 @@ class RunSettings:
     thinking: bool = False
     use_tools: bool = True
     approve_tools: bool = False
+    lang: str = "zh"  # what the model reads from the harness and the tools is worded in this language
 
 
 def common_prefix(a: str, b: str) -> int:
@@ -123,7 +128,7 @@ class Run:
 
                 # The chat template may open the thinking itself; that part is in the prompt, not in raw.
                 prefix = family.thought_prefix if prompt.endswith(family.thought_prefix) else ""
-                parsed = family.parse(prefix + raw, schemas)
+                parsed = family.parse(prefix + raw, schemas, s.lang)
                 calls = parsed["tool_calls"] if s.use_tools else []
                 self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
 
@@ -178,14 +183,16 @@ class Run:
 
     def _handle_call(self, step: int, cid: str, call: dict, seen: list) -> str:
         """Validate, approve and execute one tool call. Returns the observation text for the model."""
+        lang = self.settings.lang
         tool = TOOLS.get(call["name"])
         args, errors = call["arguments"] or {}, []
         if call["error"]:
-            errors = [f"無法解析工具呼叫：{call['error']}"]
+            errors = [pick(lang, f"無法解析工具呼叫：{call['error']}", f"Could not parse the tool call: {call['error']}")]
         elif tool is None:
-            errors = [f"沒有 {call['name']} 這個工具，可用的工具是 {', '.join(TOOLS)}"]
+            known = ", ".join(TOOLS)
+            errors = [pick(lang, f"沒有 {call['name']} 這個工具，可用的工具是 {known}", f"There is no tool {call['name']}; the tools are {known}")]
         else:
-            args, errors = tool.validate(args)
+            args, errors = tool.validate(args, lang)
 
         key = (call["name"], json.dumps(args, sort_keys=True, ensure_ascii=False))
         repeated = key in seen
@@ -212,11 +219,11 @@ class Run:
             self.emit("approval", step=step, call_id=cid, approved=approved, timed_out=self._timed_out, stopped=stopped)
             if not approved:
                 if self._timed_out:
-                    error = "等待使用者確認逾時，這個工具呼叫沒有執行"
+                    error = pick(lang, "等待使用者確認逾時，這個工具呼叫沒有執行", "No one confirmed the tool call in time, so it did not run")
                 elif stopped:
-                    error = "使用者停止了這次執行，這個工具呼叫沒有執行"
+                    error = pick(lang, "使用者停止了這次執行，這個工具呼叫沒有執行", "The user stopped this run, so the tool call did not run")
                 else:
-                    error = "使用者拒絕執行這個工具呼叫"
+                    error = pick(lang, "使用者拒絕執行這個工具呼叫", "The user refused to run this tool call")
                 return self._observe(step, cid, call["name"], {"error": error}, ok=False, ms=0)
 
         self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
@@ -224,7 +231,7 @@ class Run:
         try:
             result, ok = tool.fn(**args), True
         except ToolError as e:
-            result, ok = {"error": str(e)}, False
+            result, ok = {"error": e.text[lang]}, False
         except Exception as e:
             result, ok = {"error": f"{type(e).__name__}: {e}"}, False
         return self._observe(step, cid, call["name"], result, ok=ok, ms=(time.perf_counter() - start) * 1000)
@@ -261,6 +268,7 @@ def _settings_dict(s: RunSettings) -> dict:
         "thinking": s.thinking,
         "use_tools": s.use_tools,
         "approve_tools": s.approve_tools,
+        "lang": s.lang,
     }
 
 

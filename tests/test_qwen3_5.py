@@ -125,3 +125,10 @@ def test_qwen_thinking_is_kept_as_reasoning_content():
     assert run.messages[1]["reasoning_content"] == "先算" and "reasoning" not in run.messages[1]
     parsed = [e for e in events if e["type"] == "parsed"]
     assert [p["thinking"] for p in parsed] == ["先算", "好"] and parsed[1]["content"] == "是 1。"
+
+
+def test_errors_are_worded_in_the_language_asked_for():
+    [cut] = parse_output("<tool_call>\n<function=calculator>", SCHEMAS, "en")["tool_calls"]
+    assert cut["error"] == "The tool call has no closing </tool_call>"
+    [bad] = parse_output("<tool_call>\n{}\n</tool_call>", lang="en")["tool_calls"]
+    assert bad["error"] == "The tool call has no <function=name>"

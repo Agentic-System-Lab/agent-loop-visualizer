@@ -150,7 +150,7 @@ def test_every_special_token_in_a_prompt_gets_a_chip(model):
     assert pieces  # sanity
     for piece in pieces:
         assert model.family.special_re.fullmatch(piece), piece
-    assert render.special_html(prompt, model.family).count('<span class="sp">') == sum(1 for i in ids if i in special)
+    assert render.special_html(prompt, model.family, "zh").count('<span class="sp">') == sum(1 for i in ids if i in special)
 
 
 # ---------- the harness with the real template ----------

@@ -3,6 +3,9 @@
 A tool has two halves: the schema the model reads (name, description, JSON Schema
 for the arguments; the chat template turns it into text in the system turn), and
 the Python function the harness runs. The model only ever produces the call.
+
+The schemas are in English for every page language. What goes wrong is worded in both of the page's
+languages (i18n.py), and the model reads it in the language its run started in.
 """
 
 import ast
@@ -17,6 +20,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+from i18n import pick
+
 WIKI_HEADERS = {"User-Agent": f"agent-loop-visualizer/0.1 (https://github.com/cyyeh/agent-atlas-learning) httpx/{httpx.__version__}"}
 TYPE_CHECKS = {
     "string": lambda v: isinstance(v, str),
@@ -29,7 +34,12 @@ TYPE_CHECKS = {
 
 
 class ToolError(Exception):
-    pass
+    """An expected failure, such as a timezone it does not know or a page that does not exist, in both
+    languages. Python's own messages (division by zero) are the same in both."""
+
+    def __init__(self, zh: str, en: str | None = None):
+        super().__init__(zh)
+        self.text = {"zh": zh, "en": en or zh}
 
 
 @dataclass
@@ -37,7 +47,7 @@ class Tool:
     name: str
     description: str
     parameters: dict
-    environment: str
+    environment: dict[str, str]  # language -> where the tool runs, as the page names it
     fn: Callable[..., Any]
 
     def schema(self) -> dict:
@@ -46,18 +56,19 @@ class Tool:
             "function": {"name": self.name, "description": self.description, "parameters": self.parameters},
         }
 
-    def validate(self, args: dict) -> tuple[dict, list[str]]:
-        """Check arguments against the schema; return them with defaults filled in, plus any errors."""
+    def validate(self, args: dict, lang: str = "zh") -> tuple[dict, list[str]]:
+        """Check arguments against the schema; return them with defaults filled in, plus any errors in `lang`."""
         props = self.parameters.get("properties", {})
-        errors = [f"缺少必要參數 {k}" for k in self.parameters.get("required", []) if k not in args]
+        errors = [pick(lang, f"缺少必要參數 {k}", f"Missing required argument {k}") for k in self.parameters.get("required", []) if k not in args]
         for key, value in args.items():
             spec = props.get(key)
             if spec is None:
-                errors.append(f"沒有 {key} 這個參數")
+                errors.append(pick(lang, f"沒有 {key} 這個參數", f"There is no argument {key}"))
             elif not TYPE_CHECKS[spec["type"]](value):
-                errors.append(f"{key} 應該是 {spec['type']}，收到 {type(value).__name__}")
+                got = type(value).__name__
+                errors.append(pick(lang, f"{key} 應該是 {spec['type']}，收到 {got}", f"{key} should be {spec['type']}, got {got}"))
             elif "enum" in spec and value not in spec["enum"]:
-                errors.append(f"{key} 只能是 {spec['enum']}")
+                errors.append(pick(lang, f"{key} 只能是 {spec['enum']}", f"{key} must be one of {spec['enum']}"))
         filled = {k: spec["default"] for k, spec in props.items() if "default" in spec}
         filled.update(args)
         return filled, errors
@@ -95,16 +106,16 @@ def _eval(node):
         left, right = _eval(node.left), _eval(node.right)
         # Check the size before computing: ((10**999)**999)**999 would otherwise hang.
         if isinstance(node.op, ast.Pow) and right > 0 and _digits(left) * right > MAX_DIGITS:
-            raise ToolError(f"結果超過 {MAX_DIGITS} 位數")
+            raise ToolError(f"結果超過 {MAX_DIGITS} 位數", f"The result has more than {MAX_DIGITS} digits")
         return BIN_OPS[type(node.op)](left, right)
     if isinstance(node, ast.UnaryOp) and type(node.op) in UNARY_OPS:
         return UNARY_OPS[type(node.op)](_eval(node.operand))
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FUNCS and not node.keywords:
         args = [_eval(a) for a in node.args]
         if node.func.id == "factorial" and args and args[0] > 500:
-            raise ToolError("factorial 的參數太大")
+            raise ToolError("factorial 的參數太大", "The argument of factorial is too large")
         return FUNCS[node.func.id](*args)
-    raise ToolError(f"不支援的運算：{ast.unparse(node)}")
+    raise ToolError(f"不支援的運算：{ast.unparse(node)}", f"Unsupported operation: {ast.unparse(node)}")
 
 
 def calculator(expression: str) -> dict:
@@ -112,19 +123,19 @@ def calculator(expression: str) -> dict:
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as e:
-        raise ToolError(f"算式語法錯誤：{e.msg}") from e
+        raise ToolError(f"算式語法錯誤：{e.msg}", f"Syntax error in the expression: {e.msg}") from e
     try:
         result = _eval(tree)
     except OverflowError as e:  # the message depends on libc: "Result too large" on macOS, "Numerical result out of range" on glibc
-        raise ToolError("結果超出浮點數範圍") from e
+        raise ToolError("結果超出浮點數範圍", "The result is out of floating-point range") from e
     except (ZeroDivisionError, ValueError, TypeError) as e:  # TypeError: sqrt(), factorial(2.5)
         raise ToolError(str(e)) from e
     if isinstance(result, complex):  # (-8) ** (1/3)
-        raise ToolError("結果是複數，只支援實數運算")
+        raise ToolError("結果是複數，只支援實數運算", "The result is a complex number; only real numbers are supported")
     if isinstance(result, float) and not math.isfinite(result):  # 1e308 * 10 overflows without raising; inf - inf is nan
-        raise ToolError("結果超出浮點數範圍")
+        raise ToolError("結果超出浮點數範圍", "The result is out of floating-point range")
     if _digits(result) > MAX_DIGITS:  # products of large powers, e.g. 10**999 * 10**999 * 10**999
-        raise ToolError(f"結果超過 {MAX_DIGITS} 位數")
+        raise ToolError(f"結果超過 {MAX_DIGITS} 位數", f"The result has more than {MAX_DIGITS} digits")
     if isinstance(result, float) and result.is_integer() and abs(result) < 1e15:
         result = int(result)
     return {"expression": expression, "result": result}
@@ -136,7 +147,10 @@ def get_current_time(timezone: str = "Asia/Taipei") -> dict:
     try:
         now = datetime.now(ZoneInfo(timezone))
     except (ZoneInfoNotFoundError, ValueError) as e:
-        raise ToolError(f"不認得時區 {timezone}，請用 IANA 名稱，例如 Asia/Taipei、America/New_York") from e
+        raise ToolError(
+            f"不認得時區 {timezone}，請用 IANA 名稱，例如 Asia/Taipei、America/New_York",
+            f"Unknown timezone {timezone}; use an IANA name such as Asia/Taipei or America/New_York",
+        ) from e
     return {
         "timezone": timezone,
         "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -168,7 +182,10 @@ def read_wikipedia(title: str, lang: str = "en") -> dict:
         follow_redirects=True,
     )
     if resp.status_code == 404:
-        raise ToolError(f"找不到「{title}」這個頁面，可以先用 search_wikipedia 找正確的標題")
+        raise ToolError(
+            f"找不到「{title}」這個頁面，可以先用 search_wikipedia 找正確的標題",
+            f"There is no page titled {title!r}; search_wikipedia finds the exact title",
+        )
     resp.raise_for_status()
     data = resp.json()
     return {
@@ -196,7 +213,7 @@ TOOLS = {
                     },
                 },
             },
-            environment="系統時鐘",
+            environment={"zh": "系統時鐘", "en": "system clock"},
             fn=get_current_time,
         ),
         Tool(
@@ -209,7 +226,7 @@ TOOLS = {
                 },
                 "required": ["expression"],
             },
-            environment="Python 沙箱（AST 白名單）",
+            environment={"zh": "Python 沙箱（AST 白名單）", "en": "Python sandbox (AST allowlist)"},
             fn=calculator,
         ),
         Tool(
@@ -220,7 +237,7 @@ TOOLS = {
                 "properties": {"query": {"type": "string", "description": "Search keywords"}, "lang": LANG},
                 "required": ["query"],
             },
-            environment="Wikipedia API（網路）",
+            environment={"zh": "Wikipedia API（網路）", "en": "Wikipedia API (network)"},
             fn=search_wikipedia,
         ),
         Tool(
@@ -231,7 +248,7 @@ TOOLS = {
                 "properties": {"title": {"type": "string", "description": "Exact page title"}, "lang": LANG},
                 "required": ["title"],
             },
-            environment="Wikipedia API（網路）",
+            environment={"zh": "Wikipedia API（網路）", "en": "Wikipedia API (network)"},
             fn=read_wikipedia,
         ),
     ]

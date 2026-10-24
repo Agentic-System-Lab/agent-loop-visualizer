@@ -6,7 +6,17 @@
 
 body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "Source Sans 3", var(--sans); -webkit-text-size-adjust: 100%; }
 
-.guide { max-width: 980px; margin: 0 auto; padding: 48px 24px 80px; color: var(--ink); }
+/* 中文 | English at the top right, like the app's switch; the current language is the accent one. */
+.g-lang { position: absolute; top: 16px; right: 16px; z-index: 6; display: flex; font-size: 14px; line-height: 1; }
+.g-lang a { padding: 8px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); text-decoration: none; }
+.g-lang a:first-child { border-radius: 8px 0 0 8px; }
+.g-lang a + a { margin-left: -1px; border-radius: 0 8px 8px 0; }
+.g-lang a:hover { background: var(--sunk); }
+.g-lang a[aria-current] { position: relative; border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+/* On a phone the title runs the width of the screen, so the switch takes a row of its own above it. */
+@media (max-width: 640px) { .g-lang { position: static; width: max-content; margin: 16px 16px 0 auto; } }
+
+.guide { --toc-h: 48px; max-width: 980px; margin: 0 auto; padding: 48px 24px 80px; color: var(--ink); }  /* --toc-h: the table of contents' bar */
 .guide h1, .guide h2 { margin: 0; padding: 0; color: var(--ink); scroll-margin-top: 24px; }
 .g-hero { margin: 0 0 8px; }
 .g-kicker { margin: 0 0 6px; font: 700 12px/1 var(--mono); letter-spacing: .14em; color: var(--accent); }
@@ -26,16 +36,37 @@ body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "So
   .g-dark { display: block; }
 }
 
-.g-toc ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 14px; }
+/* The table of contents: one line that sticks to the top of the window, and a list that opens over
+   the page instead of pushing it down. guide.js puts the section you are reading on that line. */
+.g-toc { position: sticky; top: 0; z-index: 5; margin: 8px 0 0; background: var(--page); border-bottom: 1px solid var(--line); }
+.g-toc summary { display: flex; align-items: center; gap: 14px; height: var(--toc-h); padding: 0 4px; cursor: pointer; list-style: none; font-size: 14px; }
+.g-toc summary::-webkit-details-marker { display: none; }
+.g-toc-label { flex: none; display: inline-flex; align-items: center; gap: 8px; font: 700 12px/1 var(--mono); letter-spacing: .14em; color: var(--accent); }
+.g-toc-label::after { content: ""; width: 6px; height: 6px; margin-top: -4px; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(45deg); transition: transform .15s; }
+.g-toc details[open] .g-toc-label::after { margin-top: 3px; transform: rotate(-135deg); }
+.g-toc-now { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); }
+.g-toc-now span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-toc-now .g-num { width: 22px; height: 22px; font-size: 11px; }
+.g-toc-now .g-num + span { color: var(--ink); }
+.g-toc summary:hover .g-toc-now .g-num + span { text-decoration: underline; text-underline-offset: 3px; }
+.g-toc ol {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; max-height: calc(100vh - 72px); max-height: calc(100dvh - 72px);
+  overflow-y: auto; overscroll-behavior: contain; list-style: none; margin: 0; padding: 8px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 16px 40px rgb(0 0 0 / .18);
+}
 .g-toc a { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; color: var(--ink); text-decoration: none; font-size: 14px; }
-.g-toc a:hover { background: var(--sunk); }
+.g-toc a:hover, .g-toc a[aria-current] { background: var(--sunk); }
 .g-toc small { flex: none; margin-left: auto; font: 600 11px var(--mono); color: var(--stage); white-space: nowrap; }
 .g-num {
   flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
   font: 700 12.5px/1 var(--mono); color: var(--surface); background: var(--stage);
 }
 
-.g-sec { margin: 40px 0 0; padding: 28px 0 0; border-top: 1px solid var(--line); scroll-margin-top: 16px; }
+/* A section jumped to stops with its top line under the bar's own, so only one line shows; the first
+   section leaves its line to the bar. */
+.g-sec { margin: 40px 0 0; padding: 28px 0 0; border-top: 1px solid var(--line); scroll-margin-top: var(--toc-h); }
+.g-toc + .g-sec { margin-top: 0; border-top: 0; }
 .g-head { display: flex; gap: 14px; align-items: flex-start; margin: 0 0 14px; }
 .g-head .g-num { width: 34px; height: 34px; font-size: 15px; margin-top: 2px; }
 .g-stage { margin: 0 0 2px; font: 700 11.5px/1.4 var(--mono); letter-spacing: .1em; color: var(--stage); }

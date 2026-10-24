@@ -63,7 +63,7 @@ def test_run_start_reports_settings_and_tools():
     assert start["type"] == "run_start" and len(start["run_id"]) == 12
     assert start["settings"] == {
         "temperature": 0.5, "top_p": 0.9, "top_k": 10, "max_new_tokens": 256, "mtp": False,
-        "max_steps": 3, "thinking": True, "use_tools": True, "approve_tools": True,
+        "max_steps": 3, "thinking": True, "use_tools": True, "approve_tools": True, "lang": "zh",
     }
     assert start["tools"] == list(TOOLS)
 
@@ -414,3 +414,37 @@ def test_common_prefix(a, b, n):
 
 def test_tool_error_class_is_shared():
     assert issubclass(ToolError, Exception)
+
+
+# ---------- the language the model reads from the harness ----------
+
+def test_errors_reach_the_model_in_the_run_language():
+    _, events, fake = record_run([tool_call("calculator"), tool_call("calculator", expression="1/0"), ANSWER], lang="en")
+    assert of_type(events, "run_start")[0]["settings"]["lang"] == "en"
+    missing, zero = of_type(events, "tool_result")
+    assert json.loads(missing["result"]) == {"error": "Missing required argument expression"}
+    assert json.loads(zero["result"]) == {"error": "division by zero"}  # Python's own message, the same in both
+    assert "Missing required argument expression" in fake.prompts[1]  # what the model read in the next step
+
+
+def test_parse_errors_and_unknown_tools_in_english():
+    bad = "<|tool_call>call:calculator{expression}<tool_call|><|tool_response>"
+    _, events, _ = record_run([bad, tool_call("send_email", to="boss"), ANSWER], lang="en")
+    parse, unknown = (c["errors"][0] for c in of_type(events, "tool_call"))
+    assert parse.startswith("Could not parse the tool call: Expected ':'")
+    assert unknown.startswith("There is no tool send_email; the tools are get_current_time, calculator")
+
+
+def test_a_refusal_reaches_the_model_in_the_run_language():
+    run, events, thread = start_in_thread([tool_call("get_current_time"), ANSWER], approve_tools=True, lang="en")
+    wait_for(lambda: of_type(events, "approval_request"))
+    run.decide("call_1_0", False)
+    thread.join(5)
+    [result] = of_type(events, "tool_result")
+    assert json.loads(result["result"]) == {"error": "The user refused to run this tool call"}
+
+
+def test_the_system_prompt_is_the_same_in_both_languages():
+    """The page's language changes the words around the model, not how it is asked to behave."""
+    zh, en = (record_run([ANSWER], lang=lang)[2].renders[0]["messages"][0] for lang in ("zh", "en"))
+    assert zh == en

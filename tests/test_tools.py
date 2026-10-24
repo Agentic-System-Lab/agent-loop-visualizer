@@ -9,6 +9,8 @@ import pytest
 import tools
 from tools import TOOLS, ToolError, calculator, get_current_time, read_wikipedia, search_wikipedia
 
+CJK = re.compile(r"[\u4e00-\u9fff\uff00-\uffef]")
+
 
 # ---------- schema and validation ----------
 
@@ -16,7 +18,7 @@ def test_registry_names_match():
     assert list(TOOLS) == ["get_current_time", "calculator", "search_wikipedia", "read_wikipedia"]
     for name, tool in TOOLS.items():
         assert tool.name == name
-        assert tool.environment
+        assert set(tool.environment) == {"zh", "en"} and all(tool.environment.values())
 
 
 def test_schema_is_openai_function_format():
@@ -60,6 +62,14 @@ def test_validate_reports_wrong_type():
 def test_validate_reports_enum_violation():
     _, errors = TOOLS["read_wikipedia"].validate({"title": "Gemma", "lang": "fr"})
     assert len(errors) == 1 and errors[0].startswith("lang 只能是")
+
+
+def test_validate_speaks_english_when_asked():
+    tool = TOOLS["read_wikipedia"]
+    assert tool.validate({}, "en")[1] == ["Missing required argument title"]
+    assert tool.validate({"title": "x", "n": 1}, "en")[1] == ["There is no argument n"]
+    assert tool.validate({"title": 1}, "en")[1] == ["title should be string, got int"]
+    assert tool.validate({"title": "x", "lang": "fr"}, "en")[1] == ["lang must be one of ['en', 'zh']"]
 
 
 def test_bool_is_not_a_number():
@@ -126,8 +136,9 @@ def test_calculator_keeps_huge_floats_as_float():
     ("(1e308*10) * 0", "超出浮點數範圍"),
 ])
 def test_calculator_errors_are_tool_errors(expr, message):
-    with pytest.raises(ToolError, match=message):
+    with pytest.raises(ToolError, match=message) as error:
         calculator(expr)
+    assert not CJK.search(error.value.text["en"])  # the model of an English page reads it in English
 
 
 def test_calculator_refuses_nested_powers_without_computing_them():
@@ -184,8 +195,9 @@ def test_get_current_time_default_is_taipei():
 
 @pytest.mark.parametrize("tz", ["Taipei", "Mars/Olympus_Mons", "../etc"])
 def test_get_current_time_rejects_unknown_timezone(tz):
-    with pytest.raises(ToolError, match="不認得時區"):
+    with pytest.raises(ToolError, match="不認得時區") as error:
         get_current_time(tz)
+    assert error.value.text["en"].startswith(f"Unknown timezone {tz}; use an IANA name")
 
 
 # ---------- Wikipedia (HTTP mocked, no network) ----------
