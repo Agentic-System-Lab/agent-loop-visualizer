@@ -1,7 +1,5 @@
 # Agent Loop 可視化
 
-- 作者：Jimmy
-- 單元：01（Agent 基礎與 LLM 系統觀）
 - 模型：[google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it)，在本機用 Hugging Face `transformers` 推論
 - 授權：[Apache License 2.0](LICENSE)
 
