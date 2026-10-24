@@ -1,7 +1,7 @@
 [project]
 name = "agent-loop-visualizer"
 version = "0.1.0"
-description = "Chat with a local Gemma 4 E2B agent and watch every step of its loop"
+description = "Chat with a local agent and watch every step of its loop"
 requires-python = ">=3.11"
 dependencies = [
     "accelerate>=1.10",
