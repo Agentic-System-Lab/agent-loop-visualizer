@@ -1,7 +1,14 @@
 """The 運作說明 page: one user turn through the agent loop, with the code behind every part.
 
+It is a static page on GitHub Pages; the app's top bar links to it. Build it with
+
+    uv run python guide.py _site
+
+which writes _site/index.html, one file with the styles inlined. .github/workflows/pages.yml
+builds and publishes it on every push to main.
+
 The content points at code by text, not by line number: Code("agent.py", "def run(self):") is
-looked up in the file every time the page is drawn, so the line numbers on the page follow the
+looked up in the file every time the page is built, so the line numbers on the page follow the
 code when it changes. A start text must match exactly one line of its file; tests/test_guide.py
 checks every reference, so an edit that breaks one fails the tests instead of the page.
 """
@@ -9,6 +16,8 @@ checks every reference, so an edit that breaks one fails the tests instead of th
 import ast
 import html
 import re
+import subprocess
+import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +26,12 @@ from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import PythonLexer
 
+import render
+
 ROOT = Path(__file__).parent
+ASSETS = ROOT / "assets"
+REPO = "https://github.com/cyyeh/agent-loop-visualizer"
+FONTS = "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap"
 STAGES = {
     "ui": ("畫面", "var(--ink-2)"),
     "harness": ("Harness", "var(--c-harness)"),
@@ -184,22 +198,61 @@ def events_html() -> str:
     )
 
 
-def page_html(diagram: str) -> str:
+def diagram_html() -> str:
+    """The loop diagram once per theme; guide.css shows the one that matches the reader's."""
+    return "".join(
+        f'<div class="g-{theme}">'
+        f'{render.diagram_html(None, dark=theme == "dark", counter="每一圈 = 一個 step", model="Gemma 4 · Qwen3.5")}</div>'
+        for theme in ("light", "dark")
+    )
+
+
+def page_html(commit: str) -> str:
+    """The page body; `commit` is the commit its line numbers were looked up in."""
     sections = "".join(section_html(n, sec) for n, sec in enumerate(SECTIONS, 1))
     return (
-        '<div class="guide"><header class="g-hero"><p class="g-kicker">運作說明</p>'
+        '<main class="guide"><header class="g-hero"><p class="g-kicker">運作說明</p>'
         "<h1>一個問題在 agent 迴圈裡怎麼走</h1>"
-        f'<p class="g-intro">{prose_html(INTRO)}</p></header>'
-        f'<div class="g-diagram">{diagram}</div>{toc_html()}{sections}{events_html()}</div>'
+        f'<p class="g-intro">{prose_html(INTRO)}</p>'
+        f'<p class="g-meta"><a href="{REPO}">原始碼和執行方式在 GitHub</a> · 行號對應 commit '
+        f'<a href="{REPO}/tree/{esc(commit)}"><code>{esc(commit[:7])}</code></a></p></header>'
+        f'<div class="g-diagram">{diagram_html()}</div>{toc_html()}{sections}{events_html()}</main>'
     )
+
+
+def stylesheet() -> str:
+    """The palette from style.css, dark.css's for a reader in dark mode, then the page's own rules."""
+    palette = re.search(r"^:root \{.*?^\}", (ASSETS / "style.css").read_text(encoding="utf-8"), re.S | re.M).group()
+    dark = (ASSETS / "dark.css").read_text(encoding="utf-8")
+    return f"{palette}\n@media (prefers-color-scheme: dark) {{\n{dark}}}\n{(ASSETS / 'guide.css').read_text(encoding='utf-8')}"
+
+
+def document_html(commit: str) -> str:
+    return (
+        '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>運作說明 · Agent Loop 可視化</title>"
+        '<meta name="description" content="一輪對話在本機 agent 迴圈裡怎麼走：每個階段都附上程式碼片段和行號。">'
+        f'<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="{FONTS}">'
+        f"<style>\n{stylesheet()}</style></head><body>{page_html(commit)}</body></html>\n"
+    )
+
+
+def build(out: Path) -> Path:
+    """Write the page to out/index.html, with line numbers from the checked-out code."""
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+    out.mkdir(parents=True, exist_ok=True)
+    page = out / "index.html"
+    page.write_text(document_html(commit), encoding="utf-8")
+    return page
 
 
 # ---------- content ----------
 
 INTRO = (
-    "從你按下送出到看到回覆，中間發生的每一件事，照實際執行的順序走一遍。側欄可以選 Gemma 4 E2B 或 Qwen3.5 0.8B，"
+    "從你按下送出到看到回覆，中間發生的每一件事，照實際執行的順序走一遍。app 的側欄可以選 Gemma 4 E2B 或 Qwen3.5 0.8B，"
     "兩個模型跑的是同一個迴圈，不一樣的地方會並排說明。每段都附上做這件事的程式碼；`agent.py:98` 這類標記是檔名和行號，"
-    "滑過去會顯示那一行。行號是打開這一頁時從原始碼查出來的，程式改了也會跟著更新。"
+    "滑過去會顯示那一行。行號是產生這一頁時從原始碼查出來的；每次推上 main，GitHub Actions 都會重新產生，程式改了也會跟著更新。"
 )
 
 SECTIONS = [
@@ -507,3 +560,7 @@ EVENTS = [
     ("error", "agent.py", 'self.emit("error"', "例外的類型和訊息", "聊天區和停止卡片的錯誤訊息"),
     ("run_end", "agent.py", 'self.emit("run_end"', "停止原因、最終回覆、整份訊息列表", "停止卡片；訊息列表成為下一輪的 `history`"),
 ]
+
+
+if __name__ == "__main__":
+    print(build(Path(sys.argv[1] if len(sys.argv) > 1 else "_site")))

@@ -8,7 +8,8 @@ stage to a list. While a run is live, a fragment redraws the page from that list
 every half second. Clicking stop or approve reruns the script but not the thread,
 so the loop keeps going.
 
-A second page, 運作說明 (guide_page.py), walks through the loop with the code behind it.
+The top bar also links to 運作說明, a walk through the loop with the code behind it: a static
+page that guide.py builds and GitHub Pages serves.
 """
 
 import json
@@ -28,6 +29,7 @@ from tools import TOOLS
 DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(families.MODELS)))
 MODELS = {**families.MODELS, DEFAULT_MODEL: families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
 ASSETS = Path(__file__).parent / "assets"
+GUIDE_URL = "https://cyyeh.github.io/agent-loop-visualizer/"  # built from guide.py
 POLL_SECONDS = 0.5
 BOX_HEIGHT = 620  # the chat and each tab scroll in a box this tall; side by side, style.css fits them to the window
 DEFAULTS = {
@@ -368,14 +370,6 @@ def model_panel(llm: LocalLLM, data: dict | None):
 
 # ---------- pages ----------
 
-def keep_widget_values():
-    """Streamlit drops a widget's value while its page is not shown. Writing the values back as plain
-    session state keeps the sidebar settings and the selected view across a visit to the guide."""
-    for key in (*DEFAULTS, "viz_tab", "model_id"):
-        if key in st.session_state:
-            st.session_state[key] = st.session_state[key]
-
-
 def agent_page():
     init_state()
     llm = current_llm()
@@ -405,11 +399,10 @@ def main():
     st.html(ASSETS / "style.css")
     if st.context.theme.type == "dark":
         st.html(ASSETS / "dark.css")
-    keep_widget_values()
     page = st.navigation(
         [
             st.Page(agent_page, title="Agent Loop 可視化", icon=":material/autorenew:", default=True),
-            st.Page("guide_page.py", title="運作說明", icon=":material/menu_book:", url_path="guide"),
+            st.Page(GUIDE_URL, title="運作說明", icon=":material/menu_book:", url_path="guide"),  # opens in a new tab
         ],
         position="top",
     )

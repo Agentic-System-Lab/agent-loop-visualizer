@@ -3,11 +3,11 @@ what notice when an edit moves or removes a line the guide talks about."""
 
 import ast
 import re
+import subprocess
 
 import pytest
 
 import guide
-import render
 from guide import Code, span, statement_end
 from test_render import assert_balanced
 
@@ -70,14 +70,35 @@ def test_section_links_point_at_sections():
 
 
 def test_page_html():
-    html = guide.page_html(render.diagram_html(None, dark=False, counter="每一圈 = 一個 step"))
+    html = guide.page_html("0123456789abcdef")
     assert_balanced(html)
     assert html.count('class="g-sec"') == len(guide.SECTIONS) + 1  # plus the event table
     for sec in guide.SECTIONS:
         assert f'id="g-{sec.key}"' in html and f'href="#g-{sec.key}"' in html
+    assert html.count('<img class="diagram"') == 2  # one per theme
+    assert f'href="{guide.REPO}/tree/0123456789abcdef"><code>0123456</code>' in html
     # Code excerpts and the line shown on hovering a chip may contain [[ or ** themselves.
     prose = re.sub(r"<[^>]+>", "", re.sub(r'<figure class="src">.*?</figure>', "", html, flags=re.S))
     assert not guide.REF_RE.search(prose) and "{{" not in prose and "**" not in prose
+
+
+def test_stylesheet_has_both_palettes():
+    css = guide.stylesheet()
+    assert css.startswith(":root {") and "--c-harness: #6b4c8a;" in css  # light, from style.css
+    dark = css[css.index("@media (prefers-color-scheme: dark)"):]
+    assert "--c-harness: #b9a0e0;" in dark  # dark, from dark.css
+    assert ".g-toc" in css and "stMainBlockContainer" not in css  # the page's rules, none of the app's
+    assert css.count("{") == css.count("}")
+
+
+def test_build(tmp_path):
+    page = guide.build(tmp_path / "site")
+    assert page == tmp_path / "site" / "index.html"
+    doc = page.read_text(encoding="utf-8")
+    assert doc.startswith("<!doctype html>") and "<title>運作說明 · Agent Loop 可視化</title>" in doc
+    assert_balanced(doc)
+    commit = re.search(r'/tree/([0-9a-f]{40})"', doc).group(1)
+    assert commit == subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 
 
 def test_prose_markup_is_escaped():

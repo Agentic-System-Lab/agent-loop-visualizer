@@ -1,0 +1,35 @@
+# Builds the 運作說明 page (guide.py) and publishes it on GitHub Pages. The page looks up its line
+# numbers in the code it is built from, so it is rebuilt on every push to main.
+name: 運作說明 on GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      # The page needs only pygments, not torch and the rest of the app.
+      - run: uv run --no-project --with pygments python guide.py _site
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -364,22 +364,16 @@ def test_reset_turns_mtp_off(at):
     assert mtp_toggle(at).value is False
 
 
-# ---------- the guide page ----------
+# ---------- the guide ----------
 
-def test_guide_page_in_the_app(at):
-    at.switch_page("guide_page.py").run()
+def test_guide_is_a_link_to_github_pages(at, monkeypatch):
+    pages = []
+    navigation = st.navigation
+    monkeypatch.setattr(st, "navigation", lambda p, **kw: pages.extend(p) or navigation(p, **kw))
+    at.run()
     assert not at.exception, at.exception
-    html = page_html(at)
-    assert "一個問題在 agent 迴圈裡怎麼走" in html and 'id="g-events"' in html
-    assert not at.chat_input  # the agent page is not drawn
-
-
-def test_settings_survive_a_visit_to_the_guide(at):
-    next(s for s in at.slider if s.label == "temperature").set_value(0.5).run()
-    next(t for t in at.toggle if t.label == "思考模式").set_value(True).run()
-    at.switch_page("guide_page.py").run()
-    assert not at.exception, at.exception
-    assert at.session_state["temperature"] == 0.5 and at.session_state["thinking"] is True
+    guide = next(p for p in pages if p.title == "運作說明")
+    assert guide.external_url == "https://cyyeh.github.io/agent-loop-visualizer/"
 
 
 # ---------- the human in the loop ----------

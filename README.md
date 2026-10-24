@@ -8,7 +8,7 @@
 
 左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到。不同模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
 
-上方的「運作說明」頁把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段。
+[運作說明](https://cyyeh.github.io/agent-loop-visualizer/)把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段。它放在 GitHub Pages 上，app 上方的「運作說明」會在新分頁打開它。
 
 ![上方可以切換到「運作說明」頁，側欄可以選模型；左邊是對話，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot.png)
 
@@ -23,7 +23,7 @@
 | 環境 | 工具實際回傳的結果與耗時 | §2 環境與可觀察的狀態 |
 | 停止 | 停止原因和停止 token。Gemma 回答完停在 `<turn\|>`（相當於 end_turn）、要工具時停在 `<\|tool_response>`（相當於 tool_use）；Qwen 兩種都停在 `<\|im_end\|>`。另外還有步數上限、token 上限、使用者中斷 | §5 什麼時候停 |
 | 模型分頁 | 參數量拆解、層數與層的種類、attention heads、脈絡上限、MTP 草稿模型、解碼設定的說明、每一步的 prefill 時間與 tok/s（開 MTP 時加上草稿收下幾個、解碼 forward 幾次），以及 tokenizer 全部特殊 token 的 id 與用途（Gemma 24 個、Qwen 33 個） | §1、§7 Agent 是系統 |
-| 運作說明頁 | 一輪對話的 15 個階段（包括 MTP 怎麼猜、怎麼驗證），每段附上做這件事的程式碼片段和行號；行號在打開頁面時從原始碼查出來，程式改了會跟著更新 | 全部 |
+| 運作說明頁 | 一輪對話的 15 個階段（包括 MTP 怎麼猜、怎麼驗證），每段附上做這件事的程式碼片段和行號。放在 GitHub Pages，行號在產生頁面時從原始碼查出來；每次推上 main 都會重新產生，程式改了會跟著更新 | 全部 |
 
 ## 快速開始
 
@@ -63,7 +63,7 @@ uv run streamlit run streamlit_app.py      # 預設先載入 Gemma；MODEL_ID=Qw
 
 ```
 streamlit_app.py   版面、session state、模型選單、背景 thread；執行中每 0.5 秒重畫一次
-guide_page.py      「運作說明」頁；內容與行號查詢在 guide.py
+guide.py           「運作說明」頁：內容、行號查詢，以及產生放上 GitHub Pages 的靜態 HTML
 render.py          把事件列表轉成 HTML：迴圈圖、step 卡片、token 熱度與浮窗、脈絡檢視
 agent.py           harness：組 prompt → 生成 → 解析 → 驗證 →（先問你）→ 執行工具 → 接回脈絡 → 判斷要不要停
 llm.py             本機推論，自己寫的解碼迴圈；MTP 的草稿與驗證也在這裡
@@ -76,6 +76,8 @@ tests/             pytest 測試，見下面「測試」
 ```
 
 agent 在背景 thread 執行，每走到一個階段就 append 一個事件；UI 只負責把事件列表畫出來。所以按「停止」或「允許」時 Streamlit 重跑 script，背景的迴圈不會被打斷。
+
+「運作說明」是一個靜態頁：`uv run python guide.py _site` 會寫出 `_site/index.html`（樣式全部內嵌，可以直接用瀏覽器打開）。推上 main 時，`.github/workflows/pages.yml` 做同一件事並發佈到 GitHub Pages。
 
 一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→ `tool_start` → `tool_result`，最後是 `run_end`。
 
@@ -155,9 +157,9 @@ RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma�
 | `test_llm.py` | 自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布 |
 | `test_agent.py` | harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止 |
 | `test_render.py` | 一次執行的每一個事件前綴都能畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片 |
-| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明頁、到說明頁再回來設定還在；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用 |
+| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用 |
 | `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（本機有快取才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字） |
-| `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到、事件表指向真的送出事件的那一行、HTML 標籤成對 |
+| `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到、事件表指向真的送出事件的那一行、HTML 標籤成對；產生的靜態頁有亮色和暗色兩套配色與迴圈圖，並寫出對應的 commit |
 | `test_real_model.py` | 預設跳過。每個模型：greedy 解碼和 `model.generate()` 一致，真的模型能呼叫計算機並回答；Gemma 開 MTP 時 greedy 輸出和不開一模一樣，而且草稿真的有被收下 |
 
 ## 已知限制

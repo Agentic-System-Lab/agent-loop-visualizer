@@ -1,0 +1,85 @@
+/* The 運作說明 page (guide.py), published on GitHub Pages as a single HTML file.
+   guide.stylesheet() puts the palette from style.css and dark.css in front of these rules. */
+
+:root { --page: #f4f0e6; color-scheme: light dark; }  /* the page backgrounds in .streamlit/config.toml */
+@media (prefers-color-scheme: dark) { :root { --page: #14181d; } }
+
+body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "Source Sans 3", var(--sans); -webkit-text-size-adjust: 100%; }
+
+.guide { max-width: 980px; margin: 0 auto; padding: 48px 24px 80px; color: var(--ink); }
+.guide h1, .guide h2 { margin: 0; padding: 0; color: var(--ink); scroll-margin-top: 24px; }
+.g-hero { margin: 0 0 8px; }
+.g-kicker { margin: 0 0 6px; font: 700 12px/1 var(--mono); letter-spacing: .14em; color: var(--accent); }
+.guide h1 { font-size: 30px; line-height: 1.25; font-weight: 700; }
+.g-intro { max-width: 720px; margin: 10px 0 0; font-size: 15.5px; line-height: 1.75; color: var(--ink-2); }
+.g-meta { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+.g-meta a { color: var(--ink-2); text-underline-offset: 3px; }
+
+/* The loop diagram is an image with its colors baked in (render.PALETTES): one per theme.
+   On a phone it keeps a readable size and scrolls sideways. */
+.g-diagram { margin: 6px 0 4px; overflow-x: auto; }
+.diagram-wrap { padding: 4px 0 2px; }
+.diagram { display: block; width: 100%; min-width: 600px; max-width: 760px; height: auto; margin: 0 auto; }
+.g-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  .g-light { display: none; }
+  .g-dark { display: block; }
+}
+
+.g-toc ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 14px; }
+.g-toc a { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; color: var(--ink); text-decoration: none; font-size: 14px; }
+.g-toc a:hover { background: var(--sunk); }
+.g-toc small { flex: none; margin-left: auto; font: 600 11px var(--mono); color: var(--stage); white-space: nowrap; }
+.g-num {
+  flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  font: 700 12.5px/1 var(--mono); color: var(--surface); background: var(--stage);
+}
+
+.g-sec { margin: 40px 0 0; padding: 28px 0 0; border-top: 1px solid var(--line); scroll-margin-top: 16px; }
+.g-head { display: flex; gap: 14px; align-items: flex-start; margin: 0 0 14px; }
+.g-head .g-num { width: 34px; height: 34px; font-size: 15px; margin-top: 2px; }
+.g-stage { margin: 0 0 2px; font: 700 11.5px/1.4 var(--mono); letter-spacing: .1em; color: var(--stage); }
+.guide h2 { font-size: 22px; line-height: 1.35; font-weight: 700; }
+.g-lead { margin: 4px 0 0; font-size: 15px; line-height: 1.6; color: var(--muted); }
+.g-sec > p, .g-sec > ul { max-width: 780px; font-size: 15px; line-height: 1.8; color: var(--ink-2); }
+.g-sec > p { margin: 0 0 12px; }
+.g-sec > ul { margin: 0 0 14px; padding-left: 22px; }
+.g-sec > ul li { margin: 0 0 6px; }
+.g-sec b { color: var(--ink); }
+.guide code { font: 500 .88em var(--mono); background: var(--sunk); color: var(--ink); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.guide code.ref {
+  background: color-mix(in srgb, var(--stage, var(--c-harness)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--stage, var(--c-harness)) 45%, transparent);
+  font-weight: 600; white-space: nowrap; cursor: help;
+}
+.g-xref { color: var(--stage); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+
+/* A source excerpt with its real line numbers. */
+.src { margin: 4px 0 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.src figcaption { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--sunk); font-size: 13px; }
+.src figcaption b { font: 700 13px var(--mono); color: var(--ink); }
+.src-lines { font: 600 12px var(--mono); color: var(--stage); }
+.src-cap { flex-basis: 100%; color: var(--ink-2); line-height: 1.6; }
+.src pre { margin: 0; padding: 10px 0; overflow-x: auto; font: 12.5px/1.7 var(--mono); color: var(--ink); white-space: pre; background: none; border: 0; }
+.src .ln { display: inline-block; width: 3.6em; padding-right: 14px; text-align: right; color: var(--muted); opacity: .7; user-select: none; }
+.src .k, .src .kn, .src .kd, .src .kr, .src .kc, .src .kp, .src .ow { color: var(--c-harness); font-weight: 600; }
+.src .s, .src .s1, .src .s2, .src .sa, .src .sb, .src .sc, .src .sd, .src .sh, .src .sx, .src .dl { color: var(--c-env); }
+.src .se, .src .si { color: var(--accent); }
+.src .c, .src .c1, .src .cm, .src .ch, .src .cs { color: var(--muted); font-style: italic; }
+.src .m, .src .mi, .src .mf, .src .mh, .src .mo, .src .il { color: var(--c-model); }
+.src .nf, .src .fm, .src .nc { color: var(--c-context); font-weight: 700; }
+.src .nb, .src .bp { color: var(--c-context); }
+.src .nd { color: var(--accent); }
+
+.g-table { overflow-x: auto; }
+.g-table table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 13.5px; line-height: 1.6; }
+.g-table th { text-align: left; font: 600 11.5px var(--mono); letter-spacing: .06em; color: var(--muted); padding: 6px 10px; border-bottom: 1.5px solid var(--line); }
+.g-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); color: var(--ink-2); vertical-align: top; }
+.g-table td:first-child code { font-weight: 700; white-space: nowrap; overflow-wrap: normal; }
+
+@media (max-width: 640px) {
+  .guide { padding: 28px 16px 56px; }
+  .guide h1 { font-size: 24px; }
+  .g-head .g-num { width: 28px; height: 28px; font-size: 13px; }
+  .src pre { font-size: 11.5px; }
+}
