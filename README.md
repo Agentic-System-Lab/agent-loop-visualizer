@@ -1,5 +1,7 @@
 # Agent Loop 可視化
 
+此為[Agent Atlas 技術與實戰交流](https://cyyeh.github.io/agent-atlas-learning/)的專案之一。
+
 - 模型：[google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it)，在本機用 Hugging Face `transformers` 推論
 - 授權：[Apache License 2.0](LICENSE)
 
