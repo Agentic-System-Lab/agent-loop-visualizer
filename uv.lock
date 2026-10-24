@@ -39,6 +39,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "accelerate" },
     { name = "httpx" },
+    { name = "pygments" },
     { name = "streamlit" },
     { name = "torch" },
     { name = "torchvision" },
@@ -55,6 +56,7 @@ dev = [
 requires-dist = [
     { name = "accelerate", specifier = ">=1.10" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "pygments", specifier = ">=2.21.0" },
     { name = "streamlit", specifier = ">=1.66.1" },
     { name = "torch", specifier = ">=2.6" },
     { name = "torchvision", specifier = ">=0.29.1" },

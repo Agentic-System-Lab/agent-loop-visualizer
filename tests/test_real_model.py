@@ -1,17 +1,17 @@
-"""End to end with the real Gemma 4 weights (~10 GB in memory, tens of seconds).
-Opt in with:  RUN_MODEL_TESTS=1 uv run pytest -m model"""
+"""End to end with the real weights of every model in the menu (Gemma 4 E2B ~10 GB in memory,
+Qwen3.5 0.8B ~2 GB; tens of seconds each).
+Opt in with:  RUN_MODEL_TESTS=1 uv run pytest -m model   (add  -k Qwen  for one model)"""
 
 import os
 
 import pytest
 import torch
 
+import families
 import render
 from agent import Run, RunSettings
 from llm import LocalLLM, Sampling
 from test_render import assert_balanced, render_everything
-
-MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-4-E2B-it")
 
 pytestmark = [
     pytest.mark.model,
@@ -19,19 +19,21 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def gemma():
-    return LocalLLM(MODEL_ID)
+@pytest.fixture(scope="module", params=list(families.MODELS))
+def gemma(request):
+    return LocalLLM(request.param)
 
 
 def test_model_info_feeds_the_ui(gemma):
     info = gemma.info
     assert info["context_length"] > 0 and info["layers"] > 0
-    assert {"<turn|>", "<|tool_response>"} <= set(info["stop_tokens"])
+    assert set(gemma.family.stop_tokens) <= set(info["stop_tokens"])
+    assert set(info["special_tokens"]) == set(gemma.family.special_tokens)
     # the reset button writes these into the sliders, so they must be numbers
     for key in ("temperature", "top_p", "top_k"):
         assert isinstance(info["defaults"][key], (int, float)), key
     assert_balanced(render.model_html(info))
+    assert_balanced(render.special_tokens_html(info))
 
 
 def test_greedy_decoding_matches_generate(gemma):

@@ -15,7 +15,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
-from gemma_format import parse_output
 from llm import LocalLLM, Sampling
 from tools import TOOLS, ToolError
 
@@ -83,9 +82,14 @@ class Run:
 
     def run(self):
         s = self.settings
+        family = self.llm.family  # how this model writes its turns, thinking and tool calls
         tools = [t.schema() for t in TOOLS.values()] if s.use_tools else None
+        schemas = {t.name: t.parameters for t in TOOLS.values()}
         system = {"role": "system", "content": SYSTEM_WITH_TOOLS if s.use_tools else SYSTEM_NO_TOOLS}
-        self.emit("run_start", run_id=self.id, settings=_settings_dict(s), tools=list(TOOLS) if s.use_tools else [])
+        self.emit(
+            "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+            settings=_settings_dict(s), tools=list(TOOLS) if s.use_tools else [],
+        )
 
         seen: list[tuple[str, str]] = []
         format_errors = 0
@@ -117,8 +121,9 @@ class Run:
                 raw = done.pop("raw")
                 self.emit("model_end", step=step, raw=raw, **done)
 
-                prefix = "<|channel>thought\n" if prompt.endswith("<|channel>thought\n") else ""
-                parsed = parse_output(prefix + raw)
+                # The chat template may open the thinking itself; that part is in the prompt, not in raw.
+                prefix = family.thought_prefix if prompt.endswith(family.thought_prefix) else ""
+                parsed = family.parse(prefix + raw, schemas)
                 calls = parsed["tool_calls"] if s.use_tools else []
                 self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
 
@@ -135,20 +140,19 @@ class Run:
                 ids = [f"call_{step}_{i}" for i in range(len(calls))]
                 assistant = {
                     "role": "assistant",
-                    # Gemma's template writes a message's text after its tool responses and closes the turn
-                    # there, leaving the next prompt outside the model's turn. Text before a call is dropped.
-                    "content": "",
+                    # Some templates cannot keep text in front of a tool call (see Family.text_with_calls).
+                    "content": parsed["content"] if family.text_with_calls else "",
                     "tool_calls": [
                         {"id": cid, "type": "function", "function": {"name": c["name"], "arguments": c["arguments"] or {}}}
                         for cid, c in zip(ids, calls)
                     ],
                 }
                 if parsed["thinking"]:
-                    assistant["reasoning"] = parsed["thinking"]
+                    assistant[family.reasoning_key] = parsed["thinking"]
                 self.messages.append(assistant)
                 # The template rewrites the model's turn when it re-renders history (sorted arguments,
                 # its own thought markup), so compare the next prompt with this rendering, not prompt + raw.
-                prev_sequence = self.llm.render([system, *self.messages], tools, s.thinking)
+                prev_sequence = self.llm.render([system, *self.messages], tools, s.thinking, generation_prompt=False)
 
                 for cid, call in zip(ids, calls):
                     result = self._handle_call(step, cid, call, seen)

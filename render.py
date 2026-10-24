@@ -10,7 +10,7 @@ import html
 import json
 import re
 
-SPECIAL_RE = re.compile(r"<\|[^<>|\s]*\|?>|<[a-z_]+\|>|<bos>|<eos>|<pad>")
+import families
 
 STOP_REASONS = {
     "no_tool_call": ("模型沒有再呼叫工具", "模型這一步只回覆文字，harness 把它交給使用者，迴圈結束。"),
@@ -21,12 +21,8 @@ STOP_REASONS = {
     "approval_timeout": ("等待確認逾時", "一直沒有人按「允許」或「拒絕」（例如分頁已經關掉或重新整理），harness 當作拒絕並停止迴圈，讓模型可以給其他分頁使用。"),
     "error": ("執行錯誤", "程式發生錯誤，訊息在下面。"),
 }
-STOP_TOKENS = {
-    "<turn|>": "回合結束，相當於 end_turn",
-    "<|tool_response>": "等工具結果，相當於 tool_use",
-    "<eos>": "序列結束",
-}
-PARAM_PARTS = {"language_model": "語言模型", "audio_tower": "音訊編碼器", "vision_tower": "視覺編碼器"}
+LAYER_TYPES = {"sliding_attention": "sliding window", "full_attention": "full attention", "linear_attention": "線性 attention"}
+PARAM_PARTS = {"language_model": "語言模型", "audio_tower": "音訊編碼器", "vision_tower": "視覺編碼器", "visual": "視覺編碼器"}
 
 INTRO = """
 <div class="intro">
@@ -43,7 +39,7 @@ INTRO = """
 
 CONTEXT_LEGEND = """
 <p class="legend">
-  <span class="sp">特殊 token</span>
+  <span><span class="sp">特殊 token</span> 滑過看用途，全部列在「模型」分頁</span>
   <mark class="added">這一步新加入</mark>
   <span class="gen">模型這一步的輸出</span>
 </p>
@@ -81,12 +77,33 @@ def show_piece(piece: str) -> str:
     return piece.replace("▁", "␣").replace("\n", "↵")
 
 
-def special_html(text: str) -> str:
-    """Escape text and turn special tokens such as <|turn> into chips."""
+def prose_html(text: str) -> str:
+    """Escape a description and set its `backticked` parts in monospace."""
+    parts = esc(text).split("`")
+    return "".join(f'<span class="tk">{p}</span>' if i % 2 else p for i, p in enumerate(parts))
+
+
+def meaning_html(piece: str, family: families.Family) -> str:
+    """A special token's name and what it is for; empty for tokens we have no note on."""
+    if piece not in family.special_tokens:
+        return ""
+    name, desc = family.special_tokens[piece]
+    return f"<b>{esc(name)}</b><span>{prose_html(desc)}</span>"
+
+
+def chip(piece: str, family: families.Family) -> str:
+    """A special token as a dark chip; hovering it pops up what the token is for."""
+    meaning = meaning_html(piece, family)
+    tip = f'<span class="sp-tip">{meaning}</span>' if meaning else ""
+    return f'<span class="sp">{esc(piece)}{tip}</span>'
+
+
+def special_html(text: str, family: families.Family) -> str:
+    """Escape text and turn the family's control tokens, such as <|turn>, into chips."""
     out, last = [], 0
-    for m in SPECIAL_RE.finditer(text):
+    for m in family.special_re.finditer(text):
         out.append(esc(text[last:m.start()]))
-        out.append(f'<span class="sp">{esc(m.group(0))}</span>')
+        out.append(chip(m.group(0), family))
         last = m.end()
     out.append(esc(text[last:]))
     return "".join(out)
@@ -102,11 +119,12 @@ def pretty(text: str) -> str:
 # ---------- events -> steps ----------
 
 def build(events: list[dict]) -> dict:
-    data = {"settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+    data = {"model": None, "family": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
     for ev in events:
         kind = ev["type"]
         data["last"], data["t"] = kind, ev["t"]
         if kind == "run_start":
+            data["model"], data["family"] = ev["model"], families.get(ev["family"])
             data["settings"] = ev["settings"]
         elif kind == "step_start":
             data["steps"].append({
@@ -216,7 +234,7 @@ def trace_html(data: dict) -> str:
 
 NODES = [
     ("context", 22, 16, "脈絡 Context", "system · 工具 · 對話"),
-    ("model", 300, 16, "模型 LLM", "gemma-4-E2B-it"),
+    ("model", 300, 16, "模型 LLM", "LLM"),
     ("harness", 300, 152, "Harness", "解析 · 驗證 · 權限"),
     ("env", 22, 152, "環境 Environment", "時鐘 · 計算 · Wikipedia"),
     ("stop", 560, 152, "停止", "回覆使用者"),
@@ -324,9 +342,15 @@ text { font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft Jhe
 """
 
 
-def diagram_html(data: dict | None, dark: bool) -> str:
-    """The loop diagram as an <img>: Streamlit's HTML sanitizer removes inline <svg>."""
+def diagram_html(data: dict | None, dark: bool, counter: str | None = None, model: str | None = None) -> str:
+    """The loop diagram as an <img>: Streamlit's HTML sanitizer removes inline <svg>.
+    `model` names the model when no run says which one it is."""
     st = loop_state(data)
+    if counter:
+        st["counter"] = counter
+    model = (data or {}).get("model") or model
+    if model:
+        st["captions"].setdefault("model", model.split("/")[-1])
     pal = PALETTES["dark" if dark else "light"]
     css = DIAGRAM_CSS
     for key, value in pal.items():
@@ -368,7 +392,12 @@ def heat(p: float) -> str:
     return f"{min(1.0, max(0.0, 1 - p)) * 0.6:.3f}"
 
 
-def tip_html(tok: dict) -> str:
+def special_note(tok: dict, family: families.Family) -> str:
+    meaning = meaning_html(tok["piece"], family) if tok.get("special") else ""
+    return f'<span class="tip-what">{meaning}</span>' if meaning else ""
+
+
+def tip_html(tok: dict, family: families.Family) -> str:
     rows = []
     for c in tok["top"]:
         cls = "c" + (" on" if c["id"] == tok["id"] else "") + ("" if c["kept"] else " cut")
@@ -379,14 +408,16 @@ def tip_html(tok: dict) -> str:
     outside = "" if any(c["id"] == tok["id"] for c in tok["top"]) else f'<span class="tip-foot">抽到排名 #{tok["rank"]} 的 token，不在前 5 名。</span>'
     return (
         f'<span class="tip"><span class="tip-piece">{esc(show_piece(tok["piece"]))}</span>'
-        f'<span class="tip-sub">token id {tok["id"]} · 第 {tok["index"] + 1} 個生成的 token</span>'
+        f'<span class="tip-sub">token id {tok["id"]} · 第 {tok["index"] + 1} 個生成的 token</span>{special_note(tok, family)}'
         f'<span class="tip-grid"><span>模型給的機率</span><b>{pct(tok["p"])}</b><span>排名</span><b>#{tok["rank"]}</b>'
         f'<span>取樣時的機率</span><b>{pct(tok["p_sampled"])}</b><span>剩下的候選</span><b>{tok["kept"]:,}</b></span>'
         f'<span class="tip-label">前 5 名候選（模型原始分布，灰色 = 被剃掉）</span>{"".join(rows)}{outside}</span>'
     )
 
 
-def tokens_html(tokens: list[dict], with_tips: bool) -> str:
+def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family) -> str:
+    """Generated tokens with heat. Finished steps get a popover per token; while a step is still
+    generating, only special tokens get one, and it just says what the token is for."""
     out = []
     for tok in tokens:
         cls = f"tok ch-{tok['channel']}" + (" special" if tok["special"] else "")
@@ -395,7 +426,12 @@ def tokens_html(tokens: list[dict], with_tips: bool) -> str:
         else:
             body = esc(tok["text"] or tok["piece"]).replace("\n", '<span class="nl">↵</span>\n')
             style = f' style="--h:{heat(tok["p"])}"'
-        tip = tip_html(tok) if with_tips else ""
+        if with_tips:
+            tip = tip_html(tok, family)
+        elif note := special_note(tok, family):
+            tip = f'<span class="tip"><span class="tip-piece">{esc(tok["piece"])}</span>{note}</span>'
+        else:
+            tip = ""
         out.append(f'<span class="{cls}"{style}>{body}{tip}</span>')
     return f'<div class="tokens">{"".join(out)}</div>'
 
@@ -408,13 +444,14 @@ def token_legend(s: dict, live: bool) -> str:
     hint = "生成中，完成後可以滑過 token 看候選" if live else "滑過 token 看候選"
     return (
         '<p class="tok-legend"><span class="heat-scale">機率高 <i></i> 低</span>'
-        f'<span><em>斜體</em> = 思考</span><span><span class="mono">等寬</span> = 工具呼叫</span><span>{hint}</span></p>'
+        f'<span><em>斜體</em> = 思考</span><span><span class="mono">等寬</span> = 工具呼叫</span>'
+        f'<span><span class="sp">深色</span> = 特殊 token，滑過看用途</span><span>{hint}</span></p>'
         f'<p class="tok-legend">{how}</p>'
     )
 
 
 def step_html(step: dict, data: dict, live: bool) -> str:
-    s = data["settings"]
+    s, family = data["settings"], data["family"]
     calls = list(step["calls"].values())
     if calls:
         badge = f"呼叫工具 ×{len(calls)}"
@@ -432,7 +469,7 @@ def step_html(step: dict, data: dict, live: bool) -> str:
     if ctx:
         prompt = ctx["prompt"]
         if step["n"] == 1:
-            start = max(prompt.rfind("<|turn>user"), 0)
+            start = max(prompt.rfind(family.user_turn), 0)
             label = "最新的使用者訊息（前面還有 system、工具 schema 與對話歷史）"
         else:
             start = ctx["added_from"]
@@ -445,7 +482,7 @@ def step_html(step: dict, data: dict, live: bool) -> str:
         parts.append(
             '<section class="stage stage-context"><h4 class="stage-title">脈絡 <small>Context · 這一步模型看到的全部</small></h4>'
             f'<p class="meta-line"><b>{ctx["n_tokens"]:,}</b> tokens · 上限的 {pct(share)} · {esc(roles)}</p>'
-            f'<p class="snippet-label">{label}</p><pre class="snippet">{special_html(added)}</pre></section>'
+            f'<p class="snippet-label">{label}</p><pre class="snippet">{special_html(added, family)}</pre></section>'
         )
 
     if step["prefill"]:
@@ -455,14 +492,14 @@ def step_html(step: dict, data: dict, live: bool) -> str:
         if done:
             meta += f' · {done["tok_per_s"]} tok/s'
             if done["stop_piece"]:
-                meta += f'<span class="sep">|</span>停在 <span class="sp">{esc(done["stop_piece"])}</span> {STOP_TOKENS.get(done["stop_piece"], "")}'
+                meta += f'<span class="sep">|</span>停在 {chip(done["stop_piece"], family)} {family.stop_tokens.get(done["stop_piece"], "")}'
             elif done["finish"] == "max_new_tokens":
                 meta += '<span class="sep">|</span>到達 token 上限'
             elif done["finish"] == "user_stopped":
                 meta += '<span class="sep">|</span>使用者中斷'
         parts.append(
             '<section class="stage stage-model"><h4 class="stage-title">模型 <small>LLM · 一次推論，一次一個 token</small></h4>'
-            f'<p class="meta-line">{meta}</p>{token_legend(s, live)}{tokens_html(step["tokens"], with_tips=not live)}</section>'
+            f'<p class="meta-line">{meta}</p>{token_legend(s, live)}{tokens_html(step["tokens"], not live, family)}</section>'
         )
 
     if step["parsed"]:
@@ -477,7 +514,7 @@ def step_html(step: dict, data: dict, live: bool) -> str:
             if c["errors"]:
                 body.append(f'<p class="check bad">✗ {esc("；".join(c["errors"]))} → 把錯誤當作觀察送回模型</p>')
             else:
-                body.append('<p class="check ok">✓ 從 Gemma 格式解析成 JSON，符合工具 schema</p>')
+                body.append(f'<p class="check ok">✓ 從 {esc(family.name)} 格式解析成 JSON，符合工具 schema</p>')
             if c["repeated"]:
                 body.append('<p class="check warn">⚠ 跟之前一模一樣的呼叫：迴圈可能在打轉</p>')
             if c["approval"] == "pending":
@@ -521,7 +558,7 @@ def stop_html(data: dict) -> str:
     last = data["steps"][-1] if data["steps"] else None
     piece = last["done"]["stop_piece"] if last and last["done"] else None
     if end["stop_reason"] == "no_tool_call" and piece:
-        desc += f' 最後停在 <span class="sp">{esc(piece)}</span>（{STOP_TOKENS.get(piece, "")}）。'
+        desc += f' 最後停在 {chip(piece, data["family"])}（{data["family"].stop_tokens.get(piece, "")}）。'
     gen = sum(len(s["tokens"]) for s in data["steps"])
     error = f'<p class="check bad">{esc(data["error"])}</p>' if data["error"] else ""
     cls = "stop-card is-error" if end["stop_reason"] == "error" else "stop-card"
@@ -539,21 +576,22 @@ def context_summary(step: dict) -> str:
     return f"{ctx['n_tokens']:,} / {ctx['context_length']:,} tokens（{pct(ctx['n_tokens'] / ctx['context_length'])}）· {len(ctx['prompt']):,} 字元 · {roles}"
 
 
-def context_html(step: dict) -> str:
+def context_html(step: dict, family: families.Family) -> str:
     prompt = step["context"]["prompt"]
-    start = max(prompt.rfind("<|turn>user"), 0) if step["n"] == 1 else step["context"]["added_from"]
+    start = max(prompt.rfind(family.user_turn), 0) if step["n"] == 1 else step["context"]["added_from"]
     gen = step["done"]["raw"] if step["done"] else "".join(t["text"] for t in step["tokens"])
     return (
-        f'<pre class="ctx-view">{special_html(prompt[:start])}<mark class="added">{special_html(prompt[start:])}</mark>'
-        f'<span class="gen">{special_html(gen)}</span></pre>'
+        f'<pre class="ctx-view">{special_html(prompt[:start], family)}<mark class="added">{special_html(prompt[start:], family)}</mark>'
+        f'<span class="gen">{special_html(gen, family)}</span></pre>'
     )
 
 
 # ---------- model tab ----------
 
 def model_html(info: dict) -> str:
+    family = families.get(info["family"])
     total = info["parameters"]
-    colors = {"language_model": "var(--c-model)", "audio_tower": "var(--c-env)", "vision_tower": "var(--c-context)"}
+    colors = {"language_model": "var(--c-model)", "audio_tower": "var(--c-env)", "vision_tower": "var(--c-context)", "visual": "var(--c-context)"}
     parts = {PARAM_PARTS.get(k, "其他"): 0 for k in info["parameter_parts"]}
     color_of = {}
     for key, n in info["parameter_parts"].items():
@@ -569,18 +607,19 @@ def model_html(info: dict) -> str:
         ("層數", info["layers"]),
         ("hidden size", f"{info['hidden_size']:,}"),
         ("attention heads", f"{info['attention_heads']} Q / {info['kv_heads']} KV"),
-        ("sliding window", f"{info['sliding_window']:,} tokens"),
+        ("層的種類", " · ".join(f"{LAYER_TYPES.get(k, k)} {n}" for k, n in info["layer_types"].items())),
+        ("sliding window", f"{info['sliding_window']:,} tokens" if info["sliding_window"] else ""),
         ("脈絡上限", f"{info['context_length']:,} tokens"),
         ("詞彙量", f"{info['vocab_size']:,}"),
         ("載入時間", f"{info['load_seconds']} s"),
     ]
-    spec_html = "".join(f"<div><dt>{k}</dt><dd>{esc(v)}</dd></div>" for k, v in specs)
-    stops = "".join(f'<li><span class="sp">{esc(p)}</span> {STOP_TOKENS.get(p, "")}</li>' for p in info["stop_tokens"])
+    spec_html = "".join(f"<div><dt>{k}</dt><dd>{esc(v)}</dd></div>" for k, v in specs if v)
+    stops = "".join(f'<li><span class="sp">{esc(p)}</span> {family.stop_tokens.get(p, "")}</li>' for p in info["stop_tokens"])
     return (
         '<div class="card">'
         f'<h4><a href="https://huggingface.co/{esc(info["model_id"])}" target="_blank" rel="noopener">{esc(info["model_id"])}</a></h4>'
-        f'<p class="card-sub">在你的電腦上用 transformers 跑（{esc(info["architecture"])}）。官方標示 2.3B effective：'
-        '每層各自的 embedding 表（Per-Layer Embeddings）只做查表，不算進有效參數。</p>'
+        f'<p class="card-sub">{esc(family.name)} 家族，在你的電腦上用 transformers 跑（{esc(info["architecture"])}）。'
+        f'{prose_html(family.model_note)}</p>'
         f'<dl class="specs">{spec_html}</dl>'
         f'<div class="params-bar">{bar}</div><ul class="params-legend">{legend}</ul>'
         f'<p class="card-sub stops-label">停止 token：生成到這些 token 就交回 harness</p><ul class="stop-list">{stops}</ul>'
@@ -599,7 +638,7 @@ def knobs_html(s: dict, defaults: dict) -> str:
     body = "".join(f"<div><dt>{k} <b>{esc(v)}</b></dt><dd>{d}</dd></div>" for k, v, d in rows)
     return (
         '<div class="card"><h4>解碼設定</h4>'
-        '<p class="card-sub">我們看到的「模型行為」其實是模型 × prompt × 解碼設定（unit 01 第 1 節）。'
+        '<p class="card-sub">我們看到的「模型行為」其實是模型 × prompt × 解碼設定。'
         f'模型建議值：T {defaults["temperature"]}、top-p {defaults["top_p"]}、top-k {defaults["top_k"]}。</p>'
         f'<dl class="knobs">{body}</dl></div>'
     )
@@ -624,7 +663,7 @@ def step_rows(data: dict) -> list[dict]:
     return rows
 
 
-def tools_html(tools: dict, enabled: bool) -> str:
+def tools_html(tools: dict, enabled: bool, family: families.Family) -> str:
     items = []
     for t in tools.values():
         params = ", ".join(
@@ -637,7 +676,36 @@ def tools_html(tools: dict, enabled: bool) -> str:
     note = "" if enabled else '<p class="check warn">目前關閉了「使用工具」，模型這一輪看不到這些工具。</p>'
     return (
         '<div class="card"><h4>動作空間：模型看得到的工具</h4>'
-        '<p class="card-sub">每個工具是一份 JSON Schema，chat template 會把它寫成 <span class="sp">&lt;|tool&gt;</span>declaration:…'
-        '<span class="sp">&lt;tool|&gt;</span> 放進 system turn（可以在「脈絡」分頁看到）。</p>'
+        f'<p class="card-sub">每個工具是一份 JSON Schema。{prose_html(family.tools_note)}可以在「脈絡」分頁看到。</p>'
         f'{note}<ul class="tool-list">{"".join(items)}</ul></div>'
+    )
+
+
+def special_tokens_html(info: dict) -> str:
+    """Every special token of the model's tokenizer, grouped, with its id and what it is for."""
+    family = families.get(info["family"])
+    ids = info["special_tokens"]
+    groups = [(title, sub, [p for p, _, _ in rows if p in ids]) for title, sub, rows in family.special_groups]
+    extra = [p for p in ids if p not in family.special_tokens]
+    if extra:
+        groups.append(("其他", "這個模型另外定義的", extra))
+    sections = []
+    for title, sub, pieces in groups:
+        if not pieces:
+            continue
+        rows = []
+        for p in pieces:
+            name, desc = family.special_tokens.get(p, ("沒有說明", ""))
+            stop = '<i class="stop-tag">停止 token</i>' if p in info["stop_tokens"] else ""
+            rows.append(
+                f'<div><dt><span class="sp">{esc(p)}</span><small>id {ids[p]}</small></dt>'
+                f'<dd><b>{esc(name)}</b>{stop}<span>{prose_html(desc)}</span></dd></div>'
+            )
+        sections.append(f'<h5 class="gloss-head">{esc(title)} <small>{esc(sub)}</small></h5><dl class="glossary">{"".join(rows)}</dl>')
+    return (
+        f'<div class="card"><h4>特殊 token（{len(ids)} 個）</h4>'
+        '<p class="card-sub">tokenizer 保留給格式用的 token，每個都是詞彙表裡的一個 id，不是一串字元。'
+        'chat template 用它們標出訊息、思考和工具；模型也靠寫出它們切換正在寫的東西、決定什麼時候停。'
+        '在「迴圈」和「脈絡」分頁，滑過深色的 token 也會看到這裡的說明。</p>'
+        f'{"".join(sections)}</div>'
     )

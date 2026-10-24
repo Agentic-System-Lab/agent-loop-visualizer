@@ -1,6 +1,6 @@
 import pytest
 
-from gemma_format import ParseError, parse_args, parse_output
+from families.gemma4 import ParseError, parse_args, parse_output
 
 S = '<|"|>'
 

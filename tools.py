@@ -145,7 +145,7 @@ def get_current_time(timezone: str = "Asia/Taipei") -> dict:
     }
 
 
-# --- Wikipedia: the same search / read pair ReAct used on HotpotQA ---
+# --- Wikipedia: after ReAct's Wikipedia actions on HotpotQA (search, lookup, finish), as search and read ---
 
 def search_wikipedia(query: str, lang: str = "en") -> dict:
     resp = httpx.get(

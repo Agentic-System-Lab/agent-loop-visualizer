@@ -1,22 +1,27 @@
-"""Local Gemma 4 inference with a hand-written decoding loop.
+"""Local inference with a hand-written decoding loop.
 
 transformers' generate() hides the distribution at each step, so this module runs
 the loop itself: one forward pass per token, then temperature, top-k and top-p,
 then a sample. Every token comes back with its probability, its rank and the
 strongest alternatives, which is what the visualization shows.
+
+Nothing here is specific to one model: which tokens stop a generation and which
+ones switch between thinking, tool calls and the reply come from the model's family.
 """
 
+import logging
+import os
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
 import torch
-from transformers import AutoModelForMultimodalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForMultimodalLM, AutoTokenizer
+
+import families
 
 TOP_N = 5
-THOUGHT_PREFIX = "<|channel>thought\n"
-# Special tokens that switch which part of the turn the model is writing.
-CHANNEL_SWITCH = {"<|channel>": "thought", "<channel|>": "content", "<|tool_call>": "tool_call", "<tool_call|>": "content"}
 
 
 @dataclass
@@ -35,6 +40,13 @@ def _load(cls, model_id: str, **kwargs):
         return cls.from_pretrained(model_id, **kwargs)
 
 
+def _not_a_kernel_notice(record: logging.LogRecord) -> bool:
+    """transformers notes, once per function, that Qwen3.5's Gated DeltaNet layers run in plain PyTorch because
+    flash-linear-attention and causal-conv1d are missing. Both need CUDA (Triton ships Linux wheels only), so
+    on MPS or CPU there is nothing to install and the notice is dropped."""
+    return "falling back to its reference PyTorch implementation" not in record.getMessage()
+
+
 def pick_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
@@ -48,14 +60,25 @@ class LocalLLM:
         self.model_id = model_id
         self.device = pick_device()
         self.dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
+        if self.device != "cuda":
+            logging.getLogger("transformers.integrations.hub_kernels").addFilter(_not_a_kernel_notice)
+        if self.device == "mps":
+            # Loading weights onto MPS from several threads can hang (seen with Qwen3.5); one thread is fast enough.
+            os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
         start = time.perf_counter()
+        # config.json alone says which family the model belongs to; an unsupported one fails before the weights load.
+        self.family = families.for_model_type(_load(AutoConfig, model_id).model_type)
         self.tokenizer = _load(AutoTokenizer, model_id)
         self.model = _load(AutoModelForMultimodalLM, model_id, dtype=self.dtype, device_map=self.device).eval()
         self.load_seconds = time.perf_counter() - start
 
+        # The generation config's stop tokens, plus the family's: a checkpoint may list only some of them.
+        # Qwen3.5 ships no generation_config.json, and its config.json names <|endoftext|> but not <|im_end|>,
+        # which ends every chat turn.
         eos = self.model.generation_config.eos_token_id
-        self.eos_ids = set(eos if isinstance(eos, list) else [eos])
-        self.special_ids = set(self.tokenizer.all_special_ids) | self.eos_ids
+        self.eos_ids = set(eos if isinstance(eos, list) else [eos]) | self.token_ids(self.family.stop_tokens)
+        # Control tokens count as special even when the tokenizer does not mark them (Qwen's <think>).
+        self.special_ids = set(self.tokenizer.all_special_ids) | self.eos_ids | self.token_ids(self.family.special_tokens)
         text_cfg = getattr(self.model.config, "text_config", self.model.config)
         self.context_length = text_cfg.max_position_embeddings
         self.info = self._describe(text_cfg)
@@ -77,11 +100,26 @@ class LocalLLM:
             "attention_heads": cfg.num_attention_heads,
             "kv_heads": cfg.num_key_value_heads,
             "sliding_window": getattr(cfg, "sliding_window", None),
+            "layer_types": dict(Counter(getattr(cfg, "layer_types", None) or [])),
             "context_length": self.context_length,
             "vocab_size": cfg.vocab_size,
+            "family": self.family.key,
             "stop_tokens": [self.piece(i) for i in sorted(self.eos_ids)],
-            "defaults": {k: getattr(self.model.generation_config, k) for k in ("temperature", "top_p", "top_k")},
+            "special_tokens": {self.piece(i): i for i in sorted(self.special_ids)},
+            "defaults": self._sampling_defaults(),
         }
+
+    def _sampling_defaults(self) -> dict:
+        """The checkpoint's generation_config.json, or the family's recommendation when it ships none."""
+        config = self.model.generation_config
+        if getattr(config, "_from_model_config", False) and self.family.sampling:
+            return dict(self.family.sampling)
+        return {k: getattr(config, k) for k in ("temperature", "top_p", "top_k")}
+
+    def token_ids(self, pieces) -> set[int]:
+        """Ids of the pieces that are single tokens of this tokenizer."""
+        ids = ((p, self.tokenizer.convert_tokens_to_ids(p)) for p in pieces)
+        return {i for p, i in ids if isinstance(i, int) and self.piece(i) == p}
 
     def warmup(self):
         """The first forward passes on MPS compile kernels and take seconds; pay that at load time."""
@@ -92,16 +130,17 @@ class LocalLLM:
     def piece(self, token_id: int) -> str:
         return self.tokenizer.convert_ids_to_tokens(token_id)
 
-    def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool) -> str:
-        """The chat template turns messages and tool schemas into the one string the model reads."""
+    def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
+        """The chat template turns messages and tool schemas into the one string the model reads.
+        With `generation_prompt` it also opens the model's turn, so the model writes next."""
         return self.tokenizer.apply_chat_template(
-            messages, tools=tools or None, tokenize=False, add_generation_prompt=True, enable_thinking=thinking
+            messages, tools=tools or None, tokenize=False, add_generation_prompt=generation_prompt, enable_thinking=thinking
         )
 
     def generate(self, prompt: str, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
         """Yield a prefill event, one event per token, then a done event."""
         ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids.to(self.device)
-        channel = "thought" if prompt.endswith(THOUGHT_PREFIX) else "content"
+        channel = "thought" if prompt.endswith(self.family.thought_prefix) else "content"
         generated: list[int] = []
         text = ""
         finish = "max_new_tokens"
@@ -124,8 +163,8 @@ class LocalLLM:
 
                 piece = self.piece(token_id)
                 special = token_id in self.special_ids
-                if piece in CHANNEL_SWITCH:
-                    channel = CHANNEL_SWITCH[piece]
+                if piece in self.family.channel_switch:
+                    channel = self.family.channel_switch[piece]
                     token_channel = "control"
                 else:
                     token_channel = "control" if special else channel

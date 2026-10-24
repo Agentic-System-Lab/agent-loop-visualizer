@@ -13,6 +13,8 @@ from streamlit.testing.v1 import AppTest
 
 import agent
 import llm
+import render
+from families import GEMMA4, QWEN3_5
 from fakes import FakeLLM, tool_call
 from llm import Sampling
 
@@ -262,7 +264,7 @@ def test_context_view(at, outputs):
     steps = next(b for b in at.button_group if b.options == ["Step 1", "Step 2"])
     assert steps.value == 1
     html = page_html(at)
-    assert 'class="ctx-view"' in html and '<mark class="added"><span class="sp">&lt;|turn&gt;</span>user' in html
+    assert 'class="ctx-view"' in html and '<mark class="added">' + render.chip("<|turn>", GEMMA4) + "user" in html
 
     steps.set_value(2).run()
     assert '<mark class="added">response:calculator' in page_html(at)
@@ -274,6 +276,7 @@ def test_model_view(at, outputs):
     html = page_html(at)
     assert "huggingface.co/google/gemma-4-E2B-it" in html
     assert "解碼設定" in html and "動作空間：模型看得到的工具" in html
+    assert "特殊 token（24 個）" in html
     assert len(at.dataframe) == 0  # no steps yet
 
     outputs += [tool_call("calculator", expression="6*7"), ANSWER]
@@ -286,6 +289,52 @@ def test_model_view_shows_tools_off(at):
     next(t for t in at.toggle if t.label == "使用工具").set_value(False)
     tab(at).set_value("模型").run()
     assert "目前關閉了「使用工具」" in page_html(at)
+
+
+# ---------- switching models ----------
+
+def test_switching_models_starts_over_with_the_new_model(at, models, outputs):
+    ask(at)
+    menu = next(s for s in at.selectbox if s.label == "模型")
+    assert menu.value == "google/gemma-4-E2B-it" and models[-1].family is GEMMA4
+    menu.set_value("Qwen/Qwen3.5-0.8B").run()
+    assert not at.exception, at.exception
+    assert at.session_state["runs"] == [] and at.session_state["history"] == []  # a new conversation
+    assert models[-1].model_id == "Qwen/Qwen3.5-0.8B" and models[-1].family is QWEN3_5
+    assert (at.session_state["temperature"], at.session_state["top_p"], at.session_state["top_k"]) == (1.0, 1.0, 20)
+    assert any("Qwen3.5" in c for c in captions(at))
+
+    outputs.append("你好。<|im_end|>")
+    ask(at, "嗨")
+    assert models[-1].prompts[-1].startswith("<|im_start|>system\n")
+    html = page_html(at)
+    assert "停止：模型沒有再呼叫工具" in html and "&lt;|im_end|&gt;" in html
+
+
+def test_a_changed_setting_survives_reruns_but_not_a_model_switch(at, models):
+    next(s for s in at.slider if s.label == "top-k").set_value(5).run()
+    at.run()
+    assert at.session_state["top_k"] == 5
+    next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    assert at.session_state["top_k"] == 20
+
+
+# ---------- the guide page ----------
+
+def test_guide_page_in_the_app(at):
+    at.switch_page("guide_page.py").run()
+    assert not at.exception, at.exception
+    html = page_html(at)
+    assert "一個問題在 agent 迴圈裡怎麼走" in html and 'id="g-events"' in html
+    assert not at.chat_input  # the agent page is not drawn
+
+
+def test_settings_survive_a_visit_to_the_guide(at):
+    next(s for s in at.slider if s.label == "temperature").set_value(0.5).run()
+    next(t for t in at.toggle if t.label == "思考模式").set_value(True).run()
+    at.switch_page("guide_page.py").run()
+    assert not at.exception, at.exception
+    assert at.session_state["temperature"] == 0.5 and at.session_state["thinking"] is True
 
 
 # ---------- the human in the loop ----------

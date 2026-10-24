@@ -1,5 +1,5 @@
-"""Agent Loop 可視化: chat with a local Gemma 4 E2B agent on the left and watch
-every step of its loop on the right.
+"""Agent Loop 可視化: chat with a local model (Gemma 4 E2B or Qwen3.5 0.8B, picked in the
+sidebar) on the left and watch every step of its agent loop on the right.
 
 Run with:  uv run streamlit run streamlit_app.py
 
@@ -7,6 +7,8 @@ The agent runs in a background thread (agent.Run) and appends one event per loop
 stage to a list. While a run is live, a fragment redraws the page from that list
 every half second. Clicking stop or approve reruns the script but not the thread,
 so the loop keeps going.
+
+A second page, 運作說明 (guide_page.py), walks through the loop with the code behind it.
 """
 
 import json
@@ -16,12 +18,15 @@ from pathlib import Path
 
 import streamlit as st
 
+import families
 import render
 from agent import Run, RunSettings
 from llm import LocalLLM, Sampling
 from tools import TOOLS
 
-MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-4-E2B-it")
+# The model menu; MODEL_ID picks the one selected at first, and may name a model the menu does not list.
+DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(families.MODELS)))
+MODELS = {**families.MODELS, DEFAULT_MODEL: families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
 ASSETS = Path(__file__).parent / "assets"
 POLL_SECONDS = 0.5
 CHAT_HEIGHT = 620
@@ -44,10 +49,21 @@ EXAMPLES = [
 ]
 
 
-@st.cache_resource(show_spinner=f"載入 {MODEL_ID}（第一次約 10–20 秒）…")
-def load_llm() -> LocalLLM:
-    llm = LocalLLM(MODEL_ID)
+@st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
+def load_llm(model_id: str) -> LocalLLM:
+    llm = LocalLLM(model_id)
     llm.warmup()
+    return llm
+
+
+def current_llm() -> LocalLLM:
+    model_id = st.session_state.model_id
+    with st.spinner(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…"):
+        llm = load_llm(model_id)
+    if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding
+        for key, value in llm.info["defaults"].items():
+            st.session_state[key] = value
+        st.session_state.sampling_for = model_id
     return llm
 
 
@@ -82,6 +98,8 @@ class LiveRun:
         try:
             self.run.run()
         finally:
+            if self._slot.run is self:
+                self._slot.run = None  # do not keep the model alive after a switch to another one
             self._slot.lock.release()
 
     @property
@@ -101,6 +119,8 @@ def init_state():
     st.session_state.setdefault("history", [])
     st.session_state.setdefault("view", None)
     st.session_state.setdefault("viz_tab", "迴圈")
+    st.session_state.setdefault("model_id", DEFAULT_MODEL)
+    st.session_state.setdefault("sampling_for", None)
 
 
 def current_settings() -> RunSettings:
@@ -167,23 +187,26 @@ def show_run(run_index: int):
 
 # ---------- sidebar ----------
 
-def sidebar(llm: LocalLLM, live: bool):
+def sidebar(llm: LocalLLM, live: bool, busy: bool):
     info = llm.info
     with st.sidebar:
-        st.caption("Agent Atlas · Unit 01")
         st.markdown("### Agent Loop 可視化")
-        st.caption(f"`{MODEL_ID}` · {info['device'].upper()} · {info['dtype']} · 載入 {info['load_seconds']} s")
+        st.selectbox(
+            "模型", list(MODELS), format_func=MODELS.get, key="model_id", on_change=new_chat, disabled=busy,
+            help="換模型會開始新的對話，解碼設定也換成新模型的建議值。harness、工具和畫面都不變。",
+        )
+        st.caption(f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · 載入 {info['load_seconds']} s")
 
         st.markdown("##### 迴圈")
         st.toggle("使用工具", key="use_tools", help="關掉就只是聊天機器人：模型看不到任何工具。")
-        st.toggle("思考模式", key="thinking", help="在 system prompt 開頭加上 <|think|>，模型會先寫推理再行動。")
+        st.toggle("思考模式", key="thinking", help=llm.family.thinking_help)
         st.toggle("執行工具前先問我", key="approve_tools", help="由 harness 擋下等你確認，而不是寫在 prompt 裡請模型遵守。")
 
         st.markdown("##### 解碼與上限")
         st.slider("temperature", 0.0, 2.0, step=0.05, key="temperature", help="0 = greedy，永遠選機率最高的 token。")
         st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
         st.slider("top-k", 0, 128, key="top_k", help="0 = 不限。")
-        st.slider("步數上限", 1, 12, key="max_steps", help="harness 最多跑幾輪迴圈。")
+        st.slider("步數上限", 1, 12, key="max_steps", help="harness 的迴圈最多跑幾圈（step），跑滿就停。")
         st.slider("每步 token 上限", 64, 2048, step=64, key="max_new_tokens", help="一次推論最多生成幾個 token。")
         st.button("還原成模型建議值", on_click=reset_settings, args=(info["defaults"],), width="stretch")
         st.button("新對話", on_click=new_chat, disabled=live, width="stretch")
@@ -274,11 +297,11 @@ def viz_panel(llm: LocalLLM):
     elif tab == "模型":
         model_panel(llm, data)
     else:
-        loop_panel(index, run, data)
+        loop_panel(index, run, data, llm.model_id)
 
 
-def loop_panel(index: int | None, run: LiveRun | None, data: dict | None):
-    st.html(render.diagram_html(data, dark=st.context.theme.type == "dark"))
+def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_id: str):
+    st.html(render.diagram_html(data, dark=st.context.theme.type == "dark", model=model_id))
     if data is None:
         st.html(render.INTRO)
         return
@@ -309,7 +332,7 @@ def context_panel(index: int | None, data: dict | None):
     )
     step = next((s for s in steps if s["n"] == choice), steps[-1])
     st.caption(render.context_summary(step))
-    st.html(render.CONTEXT_LEGEND + render.context_html(step))
+    st.html(render.CONTEXT_LEGEND + render.context_html(step, data["family"]))
 
 
 def model_panel(llm: LocalLLM, data: dict | None):
@@ -319,22 +342,26 @@ def model_panel(llm: LocalLLM, data: dict | None):
     if data and data["steps"]:
         st.markdown("##### 每一步的推論")
         st.dataframe(render.step_rows(data), hide_index=True, width="stretch")
-    st.html(render.tools_html(TOOLS, enabled=settings["use_tools"]))
+    st.html(render.tools_html(TOOLS, settings["use_tools"], llm.family))
+    st.html(render.special_tokens_html(llm.info))
 
 
-# ---------- page ----------
+# ---------- pages ----------
 
-def main():
-    st.set_page_config(page_title="Agent Loop 可視化", page_icon=":material/autorenew:", layout="wide")
-    st.html(ASSETS / "style.css")
-    if st.context.theme.type == "dark":
-        st.html(ASSETS / "dark.css")
+def keep_widget_values():
+    """Streamlit drops a widget's value while its page is not shown. Writing the values back as plain
+    session state keeps the sidebar settings and the selected view across a visit to the guide."""
+    for key in (*DEFAULTS, "viz_tab", "model_id"):
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
 
+
+def agent_page():
     init_state()
-    llm = load_llm()
+    llm = current_llm()
     own_live = any(run.live for run in st.session_state.runs)
     polling = own_live or other_tab_run() is not None
-    sidebar(llm, own_live)
+    sidebar(llm, own_live, polling)
 
     @st.fragment(run_every=POLL_SECONDS if polling else None)
     def workspace():
@@ -350,6 +377,22 @@ def main():
             viz_panel(llm)
 
     workspace()
+
+
+def main():
+    st.set_page_config(layout="wide")
+    st.html(ASSETS / "style.css")
+    if st.context.theme.type == "dark":
+        st.html(ASSETS / "dark.css")
+    keep_widget_values()
+    page = st.navigation(
+        [
+            st.Page(agent_page, title="Agent Loop 可視化", icon=":material/autorenew:", default=True),
+            st.Page("guide_page.py", title="運作說明", icon=":material/menu_book:", url_path="guide"),
+        ],
+        position="top",
+    )
+    page.run()
 
 
 main()

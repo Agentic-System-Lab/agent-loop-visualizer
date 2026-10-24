@@ -1,11 +1,13 @@
 """The hand-written decoding loop, run against a tiny scripted model and tokenizer."""
 
+import logging
 from types import SimpleNamespace
 
 import pytest
 import torch
 
 import llm
+from families import GEMMA4
 from llm import LocalLLM, Sampling
 
 VOCAB = [
@@ -53,6 +55,7 @@ def make_llm(script=()):
     m.device = "cpu"
     m.tokenizer = Tokenizer()
     m.model = Model(script)
+    m.family = GEMMA4
     m.eos_ids = {ID["<eos>"], ID["<turn|>"], ID["<|tool_response>"]}
     m.special_ids = SPECIAL
     return m
@@ -130,7 +133,7 @@ def test_stopped_before_first_token():
 
 def test_channels_follow_the_switch_tokens():
     script = ["▁think", "<channel|>", "▁Hi", "<|tool_call>", "call", "<tool_call|>", "<|tool_response>"]
-    _, tokens, _ = run(make_llm(script), prompt="x" + llm.THOUGHT_PREFIX)
+    _, tokens, _ = run(make_llm(script), prompt="x" + GEMMA4.thought_prefix)
     assert [t["channel"] for t in tokens] == ["thought", "control", "content", "control", "tool_call", "control", "control"]
     assert [t["special"] for t in tokens] == [False, True, False, True, False, True, True]
 
@@ -269,3 +272,13 @@ def test_pick_device(monkeypatch, cuda, mps, expected):
     monkeypatch.setattr(llm.torch.cuda, "is_available", lambda: cuda)
     monkeypatch.setattr(llm.torch.backends.mps, "is_available", lambda: mps)
     assert llm.pick_device() == expected
+
+
+def test_the_kernel_notice_is_dropped_and_nothing_else():
+    def record(msg):
+        return logging.LogRecord("transformers.integrations.hub_kernels", logging.WARNING, __file__, 1, msg, None, None)
+
+    notice = ("`chunk_gated_delta_rule` is falling back to its reference PyTorch implementation because "
+              "`flash-linear-attention` is not installed. This is correct but much slower; install it for the optimized kernel.")
+    assert not llm._not_a_kernel_notice(record(notice))
+    assert llm._not_a_kernel_notice(record("Could not load the kernel from the hub"))

@@ -12,7 +12,8 @@ import pytest
 import agent
 import render
 from agent import Run, RunSettings
-from fakes import INFO, FakeLLM, record_run, tool_call
+from families import GEMMA4, QWEN3_5
+from fakes import INFO, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
 from llm import Sampling
 from tools import TOOLS
 
@@ -72,6 +73,11 @@ SCENARIOS = {
     "max_steps": lambda: record_run([tool_call("get_current_time")] * 3, max_steps=2)[1],
     "token_limit": lambda: record_run(["很長的回覆" * 5], sampling=Sampling(max_new_tokens=6))[1],
     "error": lambda: record_run([RuntimeError("boom")])[1],
+    "qwen_tool": lambda: record_run(
+        [qwen_tool_call("calculator", expression="6*7"), "答案是 42。<|im_end|>"], family=QWEN3_5)[1],
+    "qwen_thinking": lambda: record_run(
+        ["要算一下\n</think>\n\n" + qwen_tool_call("calculator", expression="1"), "想好了\n</think>\n\n好。<|im_end|>"],
+        family=QWEN3_5, thinking=True)[1],
 }
 
 
@@ -88,13 +94,13 @@ def render_everything(data: dict, live: bool) -> list[str]:
         out.append(render.step_html(step, data, live=live and step is data["steps"][-1]))
         if step["context"]:
             render.context_summary(step)
-            out.append(render.context_html(step))
+            out.append(render.context_html(step, data["family"]))
     if data["end"]:
         render.footer(data)
         out.append(render.stop_html(data))
     if data["settings"]:
         out.append(render.knobs_html(data["settings"], INFO["defaults"]))
-        out.append(render.tools_html(TOOLS, enabled=data["settings"]["use_tools"]))
+        out.append(render.tools_html(TOOLS, data["settings"]["use_tools"], data["family"]))
     render.step_rows(data)
     return [piece for piece in out if piece]
 
@@ -116,7 +122,7 @@ def test_every_prefix_of_a_run_renders(scenario):
 
 def test_build_of_nothing():
     data = render.build([])
-    assert data == {"settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+    assert data == {"model": None, "family": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
 
 
 def test_build_folds_a_tool_run_into_steps():
@@ -280,7 +286,7 @@ def test_step_card_for_a_tool_call():
     assert "最新的使用者訊息" in html
     assert '<span class="fn">calculator</span>' in html
     assert "符合工具 schema" in html
-    assert "停在 <span class=\"sp\">&lt;|tool_response&gt;</span> 等工具結果" in html
+    assert "停在 " + render.chip("<|tool_response>", GEMMA4) + " 等工具結果" in html
     assert "Python 沙箱（AST 白名單）" in html and "&quot;result&quot;: 42" in html
     assert 'class="tip"' in html  # finished step: tooltips are on
 
@@ -370,11 +376,11 @@ def test_token_tooltip():
         "id": 7, "piece": "▁Hi\n", "index": 0, "p": 0.02, "rank": 9, "p_sampled": 0.3, "kept": 12,
         "top": [{"id": 1, "piece": "a", "p": 0.5, "kept": True}, {"id": 2, "piece": "b", "p": 0.2, "kept": False}],
     }
-    html = render.tip_html(tok)
+    html = render.tip_html(tok, GEMMA4)
     assert "␣Hi↵" in html and "#9" in html and "不在前 5 名" in html
     assert 'class="c cut"' in html
     tok["top"].append({"id": 7, "piece": "▁Hi\n", "p": 0.02, "kept": True})
-    html = render.tip_html(tok)
+    html = render.tip_html(tok, GEMMA4)
     assert "不在前 5 名" not in html and 'class="c on"' in html
 
 
@@ -383,9 +389,32 @@ def test_tokens_html_heat_and_newlines():
         {"id": 1, "piece": "a", "text": "a\nb", "special": False, "channel": "content", "p": 1.0},
         {"id": 2, "piece": "<turn|>", "text": "<turn|>", "special": True, "channel": "control", "p": 0.1},
     ]
-    html = render.tokens_html(toks, with_tips=False)
+    html = render.tokens_html(toks, False, GEMMA4)
     assert '--h:0.000' in html and '<span class="nl">↵</span>' in html
-    assert 'class="tok ch-control special">&lt;turn|&gt;</span>' in html
+    assert 'class="tok ch-control special">&lt;turn|&gt;<span class="tip">' in html
+
+
+def test_special_tokens_explain_themselves_while_generating():
+    """While a step is live only special tokens get a popover, and it says what the token is for."""
+    toks = [
+        {"id": 1, "piece": "a", "text": "a", "special": False, "channel": "content", "p": 1.0},
+        {"id": 2, "piece": "<|tool_call>", "text": "<|tool_call>", "special": True, "channel": "control", "p": 0.9},
+    ]
+    html = render.tokens_html(toks, False, GEMMA4)
+    assert html.count('class="tip"') == 1 and "工具呼叫開始" in html
+    assert "模型給的機率" not in html
+
+
+def test_special_token_tooltip_adds_the_meaning():
+    tok = {
+        "id": 106, "piece": "<turn|>", "special": True, "index": 3, "p": 0.9, "rank": 1, "p_sampled": 0.95, "kept": 2,
+        "top": [{"id": 106, "piece": "<turn|>", "p": 0.9, "kept": True}],
+    }
+    html = render.tip_html(tok, GEMMA4)
+    assert '<span class="tip-what"><b>回合結束（end of turn）</b>' in html
+    assert '<span class="tk">stop_reason: end_turn</span>' in html
+    assert "模型給的機率" in html
+    assert "tip-what" not in render.tip_html({**tok, "piece": "▁Hi", "special": False}, GEMMA4)
 
 
 def test_token_legend_explains_the_sampling():
@@ -412,6 +441,7 @@ def test_stop_card(scenario, title):
 def test_stop_card_names_the_stop_token():
     html = render.stop_html(render.build(record_run([ANSWER])[1]))
     assert "最後停在" in html and "相當於 end_turn" in html
+    assert render.chip("<turn|>", GEMMA4) in html
 
 
 def test_stop_card_shows_the_error_message():
@@ -424,10 +454,10 @@ def test_context_highlights_what_is_new():
     _, events, _ = record_run([tool_call("calculator", expression="1"), ANSWER])
     data = render.build(events)
     one, two = data["steps"]
-    html1 = render.context_html(one)
-    assert '<mark class="added"><span class="sp">&lt;|turn&gt;</span>user' in html1
+    html1 = render.context_html(one, GEMMA4)
+    assert '<mark class="added">' + render.chip("<|turn>", GEMMA4) + "user" in html1
     assert '<span class="gen">' in html1 and "calculator" in html1.split('<span class="gen">')[1]
-    html2 = render.context_html(two)
+    html2 = render.context_html(two, GEMMA4)
     assert '<mark class="added">response:calculator' in html2
     summary = render.context_summary(one)
     assert f"/ {INFO['context_length']:,} tokens" in summary and "system 1 · user 1" in summary
@@ -437,7 +467,7 @@ def test_context_of_a_step_still_generating():
     events = record_run([ANSWER])[1]
     data = render.build(events[:7])
     assert data["steps"][0]["done"] is None
-    assert '<span class="gen">' in render.context_html(data["steps"][0])
+    assert '<span class="gen">' in render.context_html(data["steps"][0], GEMMA4)
 
 
 # ---------- model tab ----------
@@ -473,12 +503,33 @@ def test_step_rows():
 
 
 def test_tools_card():
-    html = render.tools_html(TOOLS, enabled=True)
+    html = render.tools_html(TOOLS, True, GEMMA4)
     for name in TOOLS:
         assert f'<span class="fn">{name}</span>' in html
     assert "timezone?: string" in html and "expression: string" in html and "lang?: string" in html
     assert "目前關閉了「使用工具」" not in html
-    assert "目前關閉了「使用工具」" in render.tools_html(TOOLS, enabled=False)
+    assert "目前關閉了「使用工具」" in render.tools_html(TOOLS, False, GEMMA4)
+
+
+def test_special_tokens_card_lists_every_token():
+    html = render.special_tokens_html(INFO)
+    assert "特殊 token（24 個）" in html
+    for piece, token_id in INFO["special_tokens"].items():
+        name, _ = GEMMA4.special_tokens[piece]
+        assert f'<span class="sp">{render.esc(piece)}</span><small>id {token_id}</small>' in html
+        assert f"<b>{render.esc(name)}</b>" in html
+    assert html.count('class="stop-tag"') == len(INFO["stop_tokens"])
+    assert [title for title, _, _ in GEMMA4.special_groups] == ["序列", "回合", "思考", "工具", "多模態", "保留"]
+    assert "其他" not in html
+    assert_balanced(html)
+
+
+def test_special_tokens_card_keeps_tokens_it_cannot_explain():
+    info = {**INFO, "special_tokens": {"<bos>": 2, "<|new|>": 9}, "stop_tokens": []}
+    html = render.special_tokens_html(info)
+    assert "特殊 token（2 個）" in html and "回合" not in html
+    assert "其他" in html and "&lt;|new|&gt;" in html and "沒有說明" in html
+    assert_balanced(html)
 
 
 # ---------- formatting ----------
@@ -504,12 +555,86 @@ def test_heat_is_clamped():
 
 
 def test_special_html_chips_and_escapes():
-    html = render.special_html('<|turn>user\na < b & "c"<turn|><|"|>x<|"|><bos><eos>')
+    html = render.special_html('<|turn>user\na < b & "c"<turn|><|"|>x<|"|><bos><eos>', GEMMA4)
     assert html.count('<span class="sp">') == 6
+    assert html.count('<span class="sp-tip">') == 6  # every chip explains itself on hover
     assert "a &lt; b &amp; &quot;c&quot;" in html
+    assert_balanced(html)
+
+
+@pytest.mark.parametrize("piece", GEMMA4.special_tokens)
+def test_every_explained_token_becomes_a_chip_with_a_tip(piece):
+    assert GEMMA4.special_re.fullmatch(piece)
+    html = render.special_html(f"x{piece}y", GEMMA4)
+    name, _ = GEMMA4.special_tokens[piece]
+    assert html == f"x{render.chip(piece, GEMMA4)}y"
+    assert f'<span class="sp-tip"><b>{render.esc(name)}</b>' in html
+    assert_balanced(html)
+
+
+def test_chip_without_a_note_has_no_tip():
+    assert render.chip("<|new|>", GEMMA4) == '<span class="sp">&lt;|new|&gt;</span>'
+
+
+def test_prose_marks_literal_text():
+    assert render.prose_html("寫 `<|turn>model` 再 `a&b`") == '寫 <span class="tk">&lt;|turn&gt;model</span> 再 <span class="tk">a&amp;b</span>'
 
 
 def test_pretty_json():
     assert render.pretty('{"a": 1}') == '{\n  "a": 1\n}'
     assert render.pretty("not json…(truncated)") == "not json…(truncated)"
     assert render.pretty('{"中": "文"}') == '{\n  "中": "文"\n}'
+
+
+# ---------- another family ----------
+
+def test_a_qwen_run_draws_in_qwen_terms():
+    _, events, _ = record_run([qwen_tool_call("calculator", expression="6*7"), "答案是 42。<|im_end|>"], family=QWEN3_5)
+    data = render.build(events)
+    assert data["family"] is QWEN3_5 and data["model"] == "fake/qwen-test"
+    one, two = data["steps"]
+    html = render.step_html(one, data, live=False)
+    assert "最新的使用者訊息" in html and render.chip("<|im_start|>", QWEN3_5) + "user" in html
+    assert "停在 " + render.chip("<|im_end|>", QWEN3_5) + " 訊息結束；回覆和工具呼叫都停在這裡" in html
+    assert '<span class="fn">calculator</span>' in html and "符合工具 schema" in html
+    assert 'class="tok ch-control special">&lt;tool_call&gt;' in html  # an added token Qwen does not mark special
+    context = render.context_html(two, QWEN3_5)
+    assert '<mark class="added">' + render.chip("<|im_start|>", QWEN3_5) + "user\n" + render.chip("<tool_response>", QWEN3_5) in context
+    assert "最後停在 " + render.chip("<|im_end|>", QWEN3_5) in render.stop_html(data)
+    assert "gemma" not in render.diagram_html(data, dark=False).lower()
+
+
+def test_qwen_thinking_tokens_are_italic_thoughts():
+    _, events, _ = record_run(["想一下\n</think>\n\n好。<|im_end|>"], family=QWEN3_5, thinking=True)
+    tokens = render.build(events)["steps"][0]["tokens"]
+    assert {t["channel"] for t in tokens if t["text"] in "想一下"} == {"thought"}
+    assert next(t for t in tokens if t["piece"] == "</think>")["channel"] == "control"
+    assert {t["channel"] for t in tokens if t["text"] == "好"} == {"content"}
+
+
+def test_qwen_model_card():
+    html = render.model_html(QWEN_INFO)
+    assert "Qwen3.5 家族" in html and "Gated DeltaNet" in html
+    assert "sliding window" not in html  # Qwen3.5 has none
+    assert "線性 attention 18 · full attention 6" in html and "視覺編碼器 0.10B" in html
+    assert html.count('<li><span class="sp">') == 2
+    assert_balanced(html)
+
+
+def test_qwen_special_tokens_card():
+    html = render.special_tokens_html(QWEN_INFO)
+    assert "特殊 token（33 個）" in html and "其他" not in html
+    assert html.count('class="stop-tag"') == 2
+    assert "&lt;think&gt;" in html and "推理寫在 &lt;think&gt; 和 &lt;/think&gt; 之間" in html
+    assert_balanced(html)
+
+
+def test_tools_card_says_how_each_family_writes_the_schemas():
+    assert "&lt;|tool&gt;declaration" in render.tools_html(TOOLS, True, GEMMA4)
+    assert "&lt;tools&gt;…&lt;/tools&gt;" in render.tools_html(TOOLS, True, QWEN3_5)
+
+
+def test_diagram_names_the_model():
+    assert "Qwen3.5-0.8B" in svg_of(render.diagram_html(None, dark=False, model="Qwen/Qwen3.5-0.8B"))
+    started = render.build(record_run([ANSWER])[1][:2])  # before the model box shows live numbers
+    assert "gemma-test" in svg_of(render.diagram_html(started, dark=False, model="Qwen/Qwen3.5-0.8B"))  # the run's model wins
