@@ -1,5 +1,3 @@
-# Colors follow the Unit 01 guide (notes/01-agent-foundations/jimmy/guide.html).
-
 [server]
 showEmailPrompt = false
 # Local only: the app runs a model on this machine, so do not serve it to the network.
