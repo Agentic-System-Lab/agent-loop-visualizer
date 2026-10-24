@@ -1,0 +1,266 @@
+"""The harness: the program around the model.
+
+Each step renders the conversation into one prompt, lets the model generate, and
+reads what came out. A tool call is parsed, validated, optionally approved by the
+user, executed, and its result goes back into the conversation for the next step.
+A reply without a tool call ends the run; so do the step limit, the per-step token
+limit, repeated malformed calls and the stop button. Every stage is emitted as an
+event so the browser can draw it.
+"""
+
+import json
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Callable
+
+from gemma_format import parse_output
+from llm import LocalLLM, Sampling
+from tools import TOOLS, ToolError
+
+MAX_RESULT_CHARS = 2000
+MAX_FORMAT_ERRORS = 3
+APPROVAL_TIMEOUT = 300  # seconds; an unanswered request (say, from a closed tab) must not hold the model forever
+
+SYSTEM_WITH_TOOLS = """You are a helpful assistant running inside an agent loop.
+Call a tool whenever it gives you something you cannot know or compute reliably yourself: the current time, exact arithmetic, or facts to look up on Wikipedia.
+Call one tool at a time and wait for its result. When you have enough information, answer the user directly without calling a tool.
+Reply in the same language and script the user writes in; if the user writes Traditional Chinese, reply in Traditional Chinese.
+使用者用繁體中文時，請用繁體中文回答。"""
+
+SYSTEM_NO_TOOLS = """You are a helpful assistant.
+Reply in the same language and script the user writes in; if the user writes Traditional Chinese, reply in Traditional Chinese.
+使用者用繁體中文時，請用繁體中文回答。"""
+
+
+@dataclass
+class RunSettings:
+    sampling: Sampling = field(default_factory=Sampling)
+    max_steps: int = 6
+    thinking: bool = False
+    use_tools: bool = True
+    approve_tools: bool = False
+
+
+def common_prefix(a: str, b: str) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+class Run:
+    def __init__(self, llm: LocalLLM, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None]):
+        self.id = uuid.uuid4().hex[:12]
+        self.llm = llm
+        self.settings = settings
+        self.messages = [*history, {"role": "user", "content": user_text}]
+        self._emit = emit
+        self._start = time.perf_counter()
+        self._stop = threading.Event()
+        self._timed_out = False
+        self._decisions: dict[str, bool] = {}
+        self._decided = threading.Condition()
+
+    # --- controls called from the web server ---
+
+    def stop(self):
+        self._stop.set()
+        with self._decided:
+            self._decided.notify_all()
+
+    def decide(self, call_id: str, approved: bool):
+        with self._decided:
+            self._decisions[call_id] = approved
+            self._decided.notify_all()
+
+    # --- the loop ---
+
+    def emit(self, event_type: str, **data):
+        self._emit({"type": event_type, "t": round((time.perf_counter() - self._start) * 1000), **data})
+
+    def run(self):
+        s = self.settings
+        tools = [t.schema() for t in TOOLS.values()] if s.use_tools else None
+        system = {"role": "system", "content": SYSTEM_WITH_TOOLS if s.use_tools else SYSTEM_NO_TOOLS}
+        self.emit("run_start", run_id=self.id, settings=_settings_dict(s), tools=list(TOOLS) if s.use_tools else [])
+
+        seen: list[tuple[str, str]] = []
+        format_errors = 0
+        prev_sequence = ""
+        stop_reason, final = "max_steps", ""
+
+        try:
+            for step in range(1, s.max_steps + 1):
+                self.emit("step_start", step=step)
+                prompt = self.llm.render([system, *self.messages], tools, s.thinking)
+                added_from = common_prefix(prompt, prev_sequence) if prev_sequence else 0
+                self.emit(
+                    "context",
+                    step=step,
+                    prompt=prompt,
+                    n_tokens=len(self.llm.tokenizer(prompt, add_special_tokens=False).input_ids),
+                    added_from=added_from,
+                    context_length=self.llm.context_length,
+                    roles=_role_counts([system, *self.messages]),
+                )
+
+                done = None
+                for ev in self.llm.generate(prompt, s.sampling, self._stop.is_set):
+                    kind = ev.pop("type")
+                    if kind == "done":
+                        done = ev
+                    else:
+                        self.emit(kind, step=step, **ev)
+                raw = done.pop("raw")
+                self.emit("model_end", step=step, raw=raw, **done)
+
+                prefix = "<|channel>thought\n" if prompt.endswith("<|channel>thought\n") else ""
+                parsed = parse_output(prefix + raw)
+                calls = parsed["tool_calls"] if s.use_tools else []
+                self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
+
+                if done["finish"] == "user_stopped":
+                    stop_reason, final = "user_stopped", parsed["content"]
+                    self.messages.append({"role": "assistant", "content": final})
+                    break
+                if not calls:
+                    stop_reason = "max_new_tokens" if done["finish"] == "max_new_tokens" else "no_tool_call"
+                    final = parsed["content"]
+                    self.messages.append({"role": "assistant", "content": final})
+                    break
+
+                ids = [f"call_{step}_{i}" for i in range(len(calls))]
+                assistant = {
+                    "role": "assistant",
+                    # Gemma's template writes a message's text after its tool responses and closes the turn
+                    # there, leaving the next prompt outside the model's turn. Text before a call is dropped.
+                    "content": "",
+                    "tool_calls": [
+                        {"id": cid, "type": "function", "function": {"name": c["name"], "arguments": c["arguments"] or {}}}
+                        for cid, c in zip(ids, calls)
+                    ],
+                }
+                if parsed["thinking"]:
+                    assistant["reasoning"] = parsed["thinking"]
+                self.messages.append(assistant)
+                # The template rewrites the model's turn when it re-renders history (sorted arguments,
+                # its own thought markup), so compare the next prompt with this rendering, not prompt + raw.
+                prev_sequence = self.llm.render([system, *self.messages], tools, s.thinking)
+
+                for cid, call in zip(ids, calls):
+                    result = self._handle_call(step, cid, call, seen)
+                    if call["error"]:
+                        format_errors += 1
+                    else:
+                        format_errors = 0
+                    self.messages.append({"role": "tool", "tool_call_id": cid, "name": call["name"], "content": result})
+                    if self._stop.is_set():
+                        break
+
+                if self._stop.is_set():
+                    stop_reason = "approval_timeout" if self._timed_out else "user_stopped"
+                    break
+                if format_errors >= MAX_FORMAT_ERRORS:
+                    stop_reason = "format_errors"
+                    break
+        except Exception as e:  # surface model or tool crashes in the UI instead of a silent hang
+            self.emit("error", message=f"{type(e).__name__}: {e}")
+            stop_reason = "error"
+
+        self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)
+
+    def _handle_call(self, step: int, cid: str, call: dict, seen: list) -> str:
+        """Validate, approve and execute one tool call. Returns the observation text for the model."""
+        tool = TOOLS.get(call["name"])
+        args, errors = call["arguments"] or {}, []
+        if call["error"]:
+            errors = [f"無法解析工具呼叫：{call['error']}"]
+        elif tool is None:
+            errors = [f"沒有 {call['name']} 這個工具，可用的工具是 {', '.join(TOOLS)}"]
+        else:
+            args, errors = tool.validate(args)
+
+        key = (call["name"], json.dumps(args, sort_keys=True, ensure_ascii=False))
+        repeated = key in seen
+        seen.append(key)
+        self.emit(
+            "tool_call",
+            step=step,
+            call_id=cid,
+            name=call["name"],
+            arguments=args,
+            raw_args=call["raw_args"],
+            errors=errors,
+            repeated=repeated,
+            environment=tool.environment if tool else None,
+        )
+        if errors:
+            return self._observe(step, cid, call["name"], {"error": "; ".join(errors)}, ok=False, ms=0)
+
+        if self.settings.approve_tools:
+            self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)
+            approved = self._wait_for_decision(cid)
+            # Nobody answered when the wait timed out or the run was stopped; only then is it not a rejection.
+            stopped = cid not in self._decisions and not self._timed_out
+            self.emit("approval", step=step, call_id=cid, approved=approved, timed_out=self._timed_out, stopped=stopped)
+            if not approved:
+                if self._timed_out:
+                    error = "等待使用者確認逾時，這個工具呼叫沒有執行"
+                elif stopped:
+                    error = "使用者停止了這次執行，這個工具呼叫沒有執行"
+                else:
+                    error = "使用者拒絕執行這個工具呼叫"
+                return self._observe(step, cid, call["name"], {"error": error}, ok=False, ms=0)
+
+        self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
+        start = time.perf_counter()
+        try:
+            result, ok = tool.fn(**args), True
+        except ToolError as e:
+            result, ok = {"error": str(e)}, False
+        except Exception as e:
+            result, ok = {"error": f"{type(e).__name__}: {e}"}, False
+        return self._observe(step, cid, call["name"], result, ok=ok, ms=(time.perf_counter() - start) * 1000)
+
+    def _observe(self, step: int, cid: str, name: str, result: dict, ok: bool, ms: float) -> str:
+        text = json.dumps(result, ensure_ascii=False)
+        truncated = len(text) > MAX_RESULT_CHARS
+        if truncated:
+            text = text[:MAX_RESULT_CHARS] + "…(truncated)"
+        self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1))
+        return text
+
+    def _wait_for_decision(self, cid: str) -> bool:
+        deadline = time.monotonic() + APPROVAL_TIMEOUT
+        with self._decided:
+            while cid not in self._decisions and not self._stop.is_set():
+                left = deadline - time.monotonic()
+                if left <= 0:  # treat as rejected and end the run
+                    self._timed_out = True
+                    self._stop.set()
+                    break
+                self._decided.wait(timeout=min(left, 0.5))
+            return self._decisions.get(cid, False)
+
+
+def _settings_dict(s: RunSettings) -> dict:
+    return {
+        "temperature": s.sampling.temperature,
+        "top_p": s.sampling.top_p,
+        "top_k": s.sampling.top_k,
+        "max_new_tokens": s.sampling.max_new_tokens,
+        "max_steps": s.max_steps,
+        "thinking": s.thinking,
+        "use_tools": s.use_tools,
+        "approve_tools": s.approve_tools,
+    }
+
+
+def _role_counts(messages: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for m in messages:
+        counts[m["role"]] = counts.get(m["role"], 0) + 1
+    return counts

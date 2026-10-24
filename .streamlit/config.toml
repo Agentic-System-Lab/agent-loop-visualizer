@@ -1,0 +1,30 @@
+# Colors follow the Unit 01 guide (notes/01-agent-foundations/jimmy/guide.html).
+
+[server]
+showEmailPrompt = false
+# Local only: the app runs a model on this machine, so do not serve it to the network.
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme.light]
+primaryColor = "#b73d23"
+backgroundColor = "#f4f0e6"
+secondaryBackgroundColor = "#ebe5d6"
+textColor = "#18212b"
+borderColor = "#d8d0bf"
+linkColor = "#2f5191"
+codeBackgroundColor = "#ebe5d6"
+
+[theme.dark]
+primaryColor = "#e3795f"
+backgroundColor = "#14181d"
+secondaryBackgroundColor = "#252c36"
+textColor = "#e8e3d8"
+borderColor = "#333a44"
+linkColor = "#93b3f0"
+codeBackgroundColor = "#252c36"

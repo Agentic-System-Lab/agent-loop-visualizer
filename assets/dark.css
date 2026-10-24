@@ -1,0 +1,16 @@
+/* Injected after style.css when Streamlit's theme is dark. */
+:root {
+  --surface: #1a1f26;
+  --sunk: #252c36;
+  --ink: #e8e3d8;
+  --ink-2: #c4beb2;
+  --muted: #9aa1aa;
+  --line: #333a44;
+  --accent: #e3795f;
+  --c-context: #93b3f0;
+  --c-model: #e3795f;
+  --c-harness: #b9a0e0;
+  --c-env: #6fbfa8;
+  --c-stop: #c4beb2;
+  --heat: 227 121 95;
+}
