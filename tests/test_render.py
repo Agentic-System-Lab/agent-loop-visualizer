@@ -13,7 +13,7 @@ import agent
 import render
 from agent import Run, RunSettings
 from families import GEMMA4, QWEN3_5
-from fakes import INFO, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
+from fakes import DRAFTER, INFO, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
 from llm import Sampling
 from tools import TOOLS
 
@@ -73,6 +73,7 @@ SCENARIOS = {
     "max_steps": lambda: record_run([tool_call("get_current_time")] * 3, max_steps=2)[1],
     "token_limit": lambda: record_run(["很長的回覆" * 5], sampling=Sampling(max_new_tokens=6))[1],
     "error": lambda: record_run([RuntimeError("boom")])[1],
+    "mtp": lambda: record_run([tool_call("calculator", expression="6*7"), "答案是 42。<turn|>"], sampling=Sampling(mtp=True))[1],
     "qwen_tool": lambda: record_run(
         [qwen_tool_call("calculator", expression="6*7"), "答案是 42。<|im_end|>"], family=QWEN3_5)[1],
     "qwen_thinking": lambda: record_run(
@@ -421,6 +422,62 @@ def test_token_legend_explains_the_sampling():
     assert "greedy" in render.token_legend({"temperature": 0}, live=False)
     legend = render.token_legend({"temperature": 0.7, "top_k": 0, "top_p": 0.9}, live=False)
     assert "logits ÷ T 0.7" in legend and "留前 全部 個" in legend and "0.9" in legend
+
+
+# ---------- MTP ----------
+
+def test_drafted_tokens_are_underlined_and_explained():
+    data = render.build(SCENARIOS["mtp"]())
+    step = data["steps"][0]
+    kept = [t for t in step["tokens"] if t.get("draft", {}).get("accepted")]
+    html = render.step_html(step, data, live=False)
+    assert html.split('<div class="tokens">')[1].count(' drafted"') == len(kept) > 0
+    assert "MTP：草稿猜中" in html and "MTP：草稿被退回" in html and '<span class="tk">␣guess</span>' in html
+    assert "LLM · 一次推論；草稿模型先猜" in html
+    mtp = step["done"]["mtp"]
+    assert f'MTP 草稿收下 <b>{mtp["accepted"]}</b> / {mtp["drafted"]}' in html
+    assert f'解碼 forward {mtp["forwards"]} 次（不開 MTP 要 {step["done"]["n_tokens"] - 1} 次）' in html
+
+
+def test_drafted_tokens_are_underlined_while_generating():
+    events = SCENARIOS["mtp"]()
+    data = render.build(events[: next(i for i, e in enumerate(events) if e["type"] == "model_end")])
+    html = render.step_html(data["steps"][0], data, live=True)
+    assert " drafted\"" in html and "MTP：草稿猜中" not in html  # no popovers yet
+    assert "MTP 草稿收下" not in html
+
+
+def test_without_mtp_nothing_mentions_it():
+    data = render.build(SCENARIOS["tool"]())
+    html = render.step_html(data["steps"][0], data, live=False)
+    assert "drafted" not in html and "MTP" not in html
+
+
+def test_token_legend_explains_mtp_only_when_it_is_on():
+    on = render.token_legend({"temperature": 1, "mtp": True}, live=False)
+    assert '<span class="tok drafted">底線</span>' in on and "同一次 forward" in on
+    assert "MTP" not in render.token_legend({"temperature": 1}, live=False)
+
+
+def test_knobs_say_whether_mtp_is_on():
+    s = {"temperature": 0.7, "top_k": 0, "top_p": 0.9, "max_new_tokens": 512, "max_steps": 4}
+    assert "MTP 推測解碼 <b>關</b>" in render.knobs_html(s, INFO["defaults"])
+    assert "MTP 推測解碼 <b>開</b>" in render.knobs_html({**s, "mtp": True}, INFO["defaults"])
+
+
+def test_model_card_names_the_drafter():
+    assert "MTP 草稿模型" not in render.model_html(INFO)
+    waiting = render.model_html({**INFO, "drafter_id": DRAFTER["model_id"]})
+    assert "huggingface.co/fake/gemma-test-assistant" in waiting and "打開側欄的「MTP 推測解碼」就會載入" in waiting
+    loaded = render.model_html({**INFO, "drafter_id": DRAFTER["model_id"], "drafter": DRAFTER})
+    assert "77.7M 參數 · 4 層" in loaded and "每次猜 6 個 token" in loaded
+    assert_balanced(waiting)
+    assert_balanced(loaded)
+
+
+def test_step_rows_with_mtp():
+    rows = render.step_rows(render.build(SCENARIOS["mtp"]()))
+    assert rows[0]["MTP 收下"].count("/") == 1 and rows[0]["解碼 forward"] > 0
 
 
 # ---------- stop card ----------

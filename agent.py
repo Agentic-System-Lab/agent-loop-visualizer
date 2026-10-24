@@ -256,6 +256,7 @@ def _settings_dict(s: RunSettings) -> dict:
         "top_p": s.sampling.top_p,
         "top_k": s.sampling.top_k,
         "max_new_tokens": s.sampling.max_new_tokens,
+        "mtp": s.sampling.mtp,
         "max_steps": s.max_steps,
         "thinking": s.thinking,
         "use_tools": s.use_tools,

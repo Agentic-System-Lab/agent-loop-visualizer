@@ -1,6 +1,7 @@
 """The hand-written decoding loop, run against a tiny scripted model and tokenizer."""
 
 import logging
+from collections import Counter
 from types import SimpleNamespace
 
 import pytest
@@ -235,6 +236,183 @@ def test_rank_counts_strictly_more_likely_tokens(monkeypatch):
     chosen, d = make_llm()._sample(logits_for(PROBS), Sampling(temperature=1.0, top_k=0, top_p=1.0))
     assert chosen == 3 and d["rank"] == 4
     assert any(c["id"] == 3 for c in d["top"])
+
+
+# ---------- MTP ----------
+
+class Cache:
+    """Only the length matters: how many positions the model has read, and what was cropped."""
+
+    def __init__(self):
+        self.length, self.recording, self.crops = 0, False, []
+
+    def activate_past_recording(self):
+        self.recording = True
+
+    def get_seq_length(self):
+        return self.length
+
+    def crop(self, n):
+        self.crops.append(n)
+        self.length += n
+
+
+class Target:
+    """At every position the model is sure of the next token of `script` (generated tokens start after the prompt).
+    Hidden states and shared keys carry the position they belong to, so tests can see what the drafter was given."""
+
+    def __init__(self, script, prompt_len):
+        self.script, self.prompt_len, self.calls = list(script), prompt_len, []
+
+    def next_piece(self, position):
+        i = position + 1 - self.prompt_len
+        return self.script[i] if i < len(self.script) else "<eos>"
+
+    def __call__(self, input_ids, past_key_values=None, use_cache=True, logits_to_keep=1, **extra):
+        cache = self.cache = past_key_values or Cache()
+        start, n = cache.length, input_ids.shape[-1]
+        cache.length += n
+        self.calls.append({"input_ids": input_ids.tolist(), "keep": logits_to_keep, **extra})
+        logits = torch.zeros(n, len(VOCAB))
+        for i in range(n):
+            logits[i, ID[self.next_piece(start + i)]] = 30.0
+        positions = torch.arange(start, start + n, dtype=torch.float32)
+        keys = torch.arange(cache.length, dtype=torch.float32).view(1, 1, -1, 1)
+        return SimpleNamespace(
+            logits=logits[-logits_to_keep:].unsqueeze(0), past_key_values=cache,
+            hidden_states=(positions.view(1, n, 1),), shared_kv_states={"full_attention": (keys, keys)},
+        )
+
+    def get_input_embeddings(self):
+        return lambda ids: ids.float().view(1, 1, 1)
+
+
+class Drafter:
+    """Guesses the scripted tokens, except the wrong guesses given for some of them (by generated index)."""
+
+    def __init__(self, target, wrong=None):
+        self.target, self.wrong, self.calls = target, wrong or {}, []
+
+    def __call__(self, inputs_embeds, position_ids, shared_kv_states):
+        position = int(position_ids)
+        nth = sum(1 for c in self.calls if c["position"] == position)  # guesses already made from this position
+        self.calls.append({
+            "position": position, "token": int(inputs_embeds[0, 0, 0]), "hidden": float(inputs_embeds[0, 0, 1]),
+            "last_key": int(shared_kv_states["full_attention"][0][0, 0, -1, 0]),
+        })
+        index = position + 1 + nth - self.target.prompt_len
+        piece = self.wrong.get(index) or self.target.next_piece(position + nth)
+        logits = torch.zeros(len(VOCAB))
+        logits[ID[piece]] = 1.0
+        return SimpleNamespace(logits=logits.view(1, 1, -1), last_hidden_state=torch.full((1, 1, 1), -1.0))
+
+
+def make_mtp_llm(script, prompt="abc", draft_tokens=3, wrong=None):
+    m = make_llm()
+    m.model = Target(script, len(prompt))
+    m.drafter = Drafter(m.model, wrong)
+    m.draft_tokens = draft_tokens
+    return m
+
+
+MTP = Sampling(temperature=0, mtp=True)
+SCRIPT = ["▁Hi", "!", "▁think", "!", "▁Hi", "<turn|>"]
+
+
+def marks(tokens):
+    return [("kept" if t["draft"]["accepted"] else "turned down") if "draft" in t else None for t in tokens]
+
+
+def test_mtp_checks_the_guesses_and_replaces_the_first_one_turned_down():
+    m = make_mtp_llm(SCRIPT, wrong={2: "call"})
+    _, tokens, done = run(m, prompt="abc", sampling=MTP)
+    assert [t["piece"] for t in tokens] == SCRIPT  # the same tokens as decoding one at a time
+    assert marks(tokens) == [None, "kept", "turned down", "kept", "kept", "kept"]
+    assert tokens[2]["draft"]["piece"] == "call"
+    assert done["mtp"] == {"drafted": 6, "accepted": 4, "forwards": 2}
+    assert done["finish"] == "stop_token" and done["raw"] == " Hi! think! Hi<turn|>"
+
+    calls = m.model.calls
+    assert len(calls) == 3  # prefill and two checks
+    assert calls[1]["input_ids"] == [[ID[p] for p in ["▁Hi", "!", "call", "!"]]] and calls[1]["keep"] == 4
+    assert all(c["output_hidden_states"] and c["return_shared_kv_states"] for c in calls)
+    # The two guesses after the one turned down leave the cache, and the drafter never sees their keys.
+    assert m.model.cache.recording and m.model.cache.crops == [-2]
+    assert [c["last_key"] for c in m.drafter.calls] == [c["position"] - 1 for c in m.drafter.calls]
+    # The second round drafts from the replacement, with the hidden state of the last guess kept.
+    second = next(c for c in m.drafter.calls if c["position"] == 5)
+    assert second["token"] == ID["▁think"] and second["hidden"] == 4.0
+
+
+def test_mtp_takes_one_more_token_when_every_guess_holds():
+    m = make_mtp_llm(SCRIPT, draft_tokens=2)
+    _, tokens, done = run(m, prompt="abc", sampling=MTP)
+    assert [t["piece"] for t in tokens] == SCRIPT
+    assert marks(tokens) == [None, "kept", "kept", None, "kept", "kept"]  # the fourth came free with the second guess
+    assert done["mtp"] == {"drafted": 4, "accepted": 4, "forwards": 2}
+
+
+def test_mtp_rounds_over_a_longer_reply():
+    script = ["▁Hi", "!", "▁think", "!", "▁Hi", "!", "▁think", "<turn|>"]
+    m = make_mtp_llm(script, wrong={2: "call"})
+    _, tokens, done = run(m, prompt="abc", sampling=MTP)
+    assert [t["piece"] for t in tokens] == script
+    assert marks(tokens) == [None, "kept", "turned down", "kept", "kept", "kept", None, "kept"]
+    assert m.model.cache.crops == [-2, 0]  # nothing to drop when every guess held
+    assert [c["position"] for c in m.drafter.calls] == [3, 3, 3, 5, 5, 5, 9]  # drafting stops at a stop token
+    assert done["mtp"] == {"drafted": 7, "accepted": 5, "forwards": 3}
+
+
+def test_mtp_stops_at_the_token_limit():
+    m = make_mtp_llm(["▁Hi", "!"] * 10)
+    _, tokens, done = run(m, prompt="abc", sampling=Sampling(temperature=0, mtp=True, max_new_tokens=5))
+    assert len(tokens) == 5 and done["finish"] == "max_new_tokens"
+
+
+def test_mtp_is_off_without_a_drafter():
+    m = make_llm(["▁Hi", "<turn|>"])
+    m.drafter = None
+    _, tokens, done = run(m, sampling=MTP)
+    assert done["mtp"] is None and all("draft" not in t for t in tokens)
+
+
+def test_greedy_keeps_a_guess_only_when_it_is_the_top_token():
+    m = make_llm()
+    assert m._sample(logits_for(PROBS), GREEDY, draft=0)[0] == 0
+    assert m._sample(logits_for(PROBS), GREEDY, draft=1)[0] == 0
+
+
+def test_a_guess_turned_down_is_never_drawn_again(monkeypatch):
+    monkeypatch.setattr(llm.torch, "rand", lambda *a: torch.tensor(0.99))  # above p(guess): turned down
+    seen = {}
+
+    def multinomial(weights, n):
+        seen["weights"] = weights.tolist()
+        return torch.tensor([0])
+
+    monkeypatch.setattr(llm.torch, "multinomial", multinomial)
+    chosen, d = make_llm()._sample(logits_for(PROBS), Sampling(temperature=1.0, top_k=0, top_p=1.0), draft=1)
+    assert seen["weights"][1] == 0 and seen["weights"][0] == pytest.approx(0.5)
+    assert chosen == 0 and d["p_sampled"] == pytest.approx(0.5)  # its probability before the guess was removed
+
+
+def test_a_guess_cut_by_top_k_is_never_kept():
+    torch.manual_seed(0)
+    m = make_llm()
+    picks = {m._sample(logits_for(PROBS), Sampling(temperature=1.0, top_k=2, top_p=1.0), draft=3)[0] for _ in range(200)}
+    assert picks == {0, 1}
+
+
+@pytest.mark.parametrize("draft", [0, 1, 4])
+def test_checking_a_guess_leaves_the_distribution_unchanged(draft):
+    """Speculative sampling is exact: whatever the drafter guessed, each token comes out with its own probability."""
+    torch.manual_seed(1)
+    m = make_llm()
+    s = Sampling(temperature=1.0, top_k=0, top_p=1.0)
+    n = 20000
+    counts = Counter(m._sample(logits_for(PROBS), s, draft=draft)[0] for _ in range(n))
+    for token, p in enumerate(PROBS):
+        assert counts[token] / n == pytest.approx(p, abs=0.012), token
 
 
 # ---------- loading helpers ----------

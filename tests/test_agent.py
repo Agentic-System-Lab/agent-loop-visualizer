@@ -62,7 +62,7 @@ def test_run_start_reports_settings_and_tools():
     start = events[0]
     assert start["type"] == "run_start" and len(start["run_id"]) == 12
     assert start["settings"] == {
-        "temperature": 0.5, "top_p": 0.9, "top_k": 10, "max_new_tokens": 256,
+        "temperature": 0.5, "top_p": 0.9, "top_k": 10, "max_new_tokens": 256, "mtp": False,
         "max_steps": 3, "thinking": True, "use_tools": True, "approve_tools": True,
     }
     assert start["tools"] == list(TOOLS)

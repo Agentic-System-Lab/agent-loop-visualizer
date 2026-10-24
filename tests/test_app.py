@@ -134,8 +134,13 @@ def test_first_load(at):
         "(37.5 × 12) 的平方根，再加上 2 的 20 次方，是多少？",
         "ReAct 這篇論文是誰提出的？用 Wikipedia 查。",
         "Gemma 是哪家公司開發的？第一版什麼時候發布？",
+        "What time is it in Paris right now?",
+        "Who created the Transformer? Ask Wikipedia.",
+        "Write a Python function to test for primes.",
     ]
-    assert {t.label: t.value for t in at.toggle} == {"使用工具": True, "思考模式": False, "執行工具前先問我": False}
+    assert {t.label: t.value for t in at.toggle} == {
+        "使用工具": True, "思考模式": False, "執行工具前先問我": False, "MTP 推測解碼": False,
+    }
     assert {s.label: s.value for s in at.slider} == {
         "temperature": 1.0, "top-p": 0.95, "top-k": 64, "步數上限": 6, "每步 token 上限": 1024,
     }
@@ -317,6 +322,46 @@ def test_a_changed_setting_survives_reruns_but_not_a_model_switch(at, models):
     assert at.session_state["top_k"] == 5
     next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
     assert at.session_state["top_k"] == 20
+
+
+# ---------- MTP ----------
+
+def mtp_toggle(at):
+    return next(t for t in at.toggle if t.label == "MTP 推測解碼")
+
+
+def test_mtp_loads_the_drafter_and_reaches_the_model(at, models, outputs):
+    assert not mtp_toggle(at).disabled and models[0].drafter is None  # off by default, nothing loaded
+    mtp_toggle(at).set_value(True).run()
+    assert models[0].drafter is not None
+
+    outputs += [tool_call("calculator", expression="6*7"), ANSWER]
+    ask(at)
+    assert [s.mtp for s in models[0].samplings] == [True, True]
+    assert at.session_state["runs"][0].data()["settings"]["mtp"] is True
+    assert "MTP 草稿收下" in page_html(at)
+
+    tab(at).set_value("模型").run()
+    html = page_html(at)
+    assert "google/gemma-4-E2B-it-assistant" in html and "每次猜 6 個 token" in html
+    assert "MTP 推測解碼 <b>開</b>" in html
+    [table] = at.dataframe
+    assert "MTP 收下" in table.value.columns
+
+
+def test_mtp_is_off_for_a_model_without_a_drafter(at, models):
+    mtp_toggle(at).set_value(True).run()
+    next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    assert not at.exception, at.exception
+    assert at.session_state["mtp"] is False and mtp_toggle(at).disabled
+    ask(at, "嗨")
+    assert models[-1].samplings[-1].mtp is False
+
+
+def test_reset_turns_mtp_off(at):
+    mtp_toggle(at).set_value(True).run()
+    click(at, "還原成模型建議值")
+    assert mtp_toggle(at).value is False
 
 
 # ---------- the guide page ----------

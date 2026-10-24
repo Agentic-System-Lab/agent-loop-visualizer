@@ -397,6 +397,22 @@ def special_note(tok: dict, family: families.Family) -> str:
     return f'<span class="tip-what">{meaning}</span>' if meaning else ""
 
 
+def draft_note(tok: dict) -> str:
+    """What MTP did at this position: the drafter's guess was kept, or turned down and replaced."""
+    draft = tok.get("draft")
+    if not draft:
+        return ""
+    if draft["accepted"]:
+        return (
+            '<span class="tip-draft"><b>MTP：草稿猜中</b>草稿模型先猜了這個 token，主模型在同一次 forward 裡驗證後收下'
+            "（greedy 時它得是第 1 名；抽樣時收下的機率就是取樣時的機率）。</span>"
+        )
+    return (
+        f'<span class="tip-draft"><b>MTP：草稿被退回</b>草稿模型猜的是 <span class="tk">{esc(show_piece(draft["piece"]))}</span>，'
+        "主模型沒有收下，這個 token 由主模型自己選（greedy 取第 1 名，抽樣時從其他候選裡抽），後面的猜測一起作廢。</span>"
+    )
+
+
 def tip_html(tok: dict, family: families.Family) -> str:
     rows = []
     for c in tok["top"]:
@@ -408,7 +424,7 @@ def tip_html(tok: dict, family: families.Family) -> str:
     outside = "" if any(c["id"] == tok["id"] for c in tok["top"]) else f'<span class="tip-foot">抽到排名 #{tok["rank"]} 的 token，不在前 5 名。</span>'
     return (
         f'<span class="tip"><span class="tip-piece">{esc(show_piece(tok["piece"]))}</span>'
-        f'<span class="tip-sub">token id {tok["id"]} · 第 {tok["index"] + 1} 個生成的 token</span>{special_note(tok, family)}'
+        f'<span class="tip-sub">token id {tok["id"]} · 第 {tok["index"] + 1} 個生成的 token</span>{special_note(tok, family)}{draft_note(tok)}'
         f'<span class="tip-grid"><span>模型給的機率</span><b>{pct(tok["p"])}</b><span>排名</span><b>#{tok["rank"]}</b>'
         f'<span>取樣時的機率</span><b>{pct(tok["p_sampled"])}</b><span>剩下的候選</span><b>{tok["kept"]:,}</b></span>'
         f'<span class="tip-label">前 5 名候選（模型原始分布，灰色 = 被剃掉）</span>{"".join(rows)}{outside}</span>'
@@ -421,6 +437,8 @@ def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family) ->
     out = []
     for tok in tokens:
         cls = f"tok ch-{tok['channel']}" + (" special" if tok["special"] else "")
+        if (tok.get("draft") or {}).get("accepted"):
+            cls += " drafted"
         if tok["special"]:
             body, style = esc(tok["piece"]), ""
         else:
@@ -442,11 +460,16 @@ def token_legend(s: dict, live: bool) -> str:
     else:
         how = f"每一步：logits ÷ T {s.get('temperature')} → 留前 {s.get('top_k') or '全部'} 個 → 累積機率到 {s.get('top_p')} 為止 → 抽樣。"
     hint = "生成中，完成後可以滑過 token 看候選" if live else "滑過 token 看候選"
+    drafted = '<span><span class="tok drafted">底線</span> = MTP 草稿猜中</span>' if s.get("mtp") else ""
+    mtp = (
+        '<p class="tok-legend">MTP：每個沒有底線的 token 之後，草稿模型先猜接下來幾個，主模型一次 forward 全部驗證；'
+        "一串底線加上後面那個沒有底線的 token，是主模型同一次 forward 的產出。</p>"
+    ) if s.get("mtp") else ""
     return (
         '<p class="tok-legend"><span class="heat-scale">機率高 <i></i> 低</span>'
         f'<span><em>斜體</em> = 思考</span><span><span class="mono">等寬</span> = 工具呼叫</span>'
-        f'<span><span class="sp">深色</span> = 特殊 token，滑過看用途</span><span>{hint}</span></p>'
-        f'<p class="tok-legend">{how}</p>'
+        f'<span><span class="sp">深色</span> = 特殊 token，滑過看用途</span>{drafted}<span>{hint}</span></p>'
+        f'<p class="tok-legend">{how}</p>{mtp}'
     )
 
 
@@ -497,8 +520,15 @@ def step_html(step: dict, data: dict, live: bool) -> str:
                 meta += '<span class="sep">|</span>到達 token 上限'
             elif done["finish"] == "user_stopped":
                 meta += '<span class="sep">|</span>使用者中斷'
+            if mtp := done.get("mtp"):
+                rate = f'（{pct(mtp["accepted"] / mtp["drafted"])}）' if mtp["drafted"] else ""
+                meta += (
+                    f'<span class="sep">|</span>MTP 草稿收下 <b>{mtp["accepted"]}</b> / {mtp["drafted"]}{rate} · '
+                    f'主模型解碼 forward {mtp["forwards"]} 次（不開 MTP 要 {max(done["n_tokens"] - 1, 0)} 次）'
+                )
+        how = "一次推論；草稿模型先猜，主模型一次驗證好幾個 token" if s.get("mtp") else "一次推論，一次一個 token"
         parts.append(
-            '<section class="stage stage-model"><h4 class="stage-title">模型 <small>LLM · 一次推論，一次一個 token</small></h4>'
+            f'<section class="stage stage-model"><h4 class="stage-title">模型 <small>LLM · {how}</small></h4>'
             f'<p class="meta-line">{meta}</p>{token_legend(s, live)}{tokens_html(step["tokens"], not live, family)}</section>'
         )
 
@@ -623,7 +653,24 @@ def model_html(info: dict) -> str:
         f'<dl class="specs">{spec_html}</dl>'
         f'<div class="params-bar">{bar}</div><ul class="params-legend">{legend}</ul>'
         f'<p class="card-sub stops-label">停止 token：生成到這些 token 就交回 harness</p><ul class="stop-list">{stops}</ul>'
-        '</div>'
+        f'{drafter_html(info)}</div>'
+    )
+
+
+def drafter_html(info: dict) -> str:
+    """The MTP drafter that goes with the model, if it has one."""
+    drafter_id = info.get("drafter_id")
+    if not drafter_id:
+        return ""
+    link = f'<a href="https://huggingface.co/{esc(drafter_id)}" target="_blank" rel="noopener">{esc(drafter_id)}</a>'
+    d = info.get("drafter")
+    if not d:
+        return f'<p class="card-sub stops-label">MTP 草稿模型：{link}。打開側欄的「MTP 推測解碼」就會載入。</p>'
+    return (
+        f'<p class="card-sub stops-label">MTP 草稿模型：{link} · {fmt_params(d["parameters"])} 參數 · {d["layers"]} 層 · '
+        f'hidden size {d["hidden_size"]} · 每次猜 {d["draft_tokens"]} 個 token · 載入 {d["load_seconds"]} s。'
+        "它沒有自己的 KV cache：Gemma 4 後段的層本來就共用前面兩層算好的 key / value，草稿模型也讀同一份，"
+        "再加上主模型最後一層的 hidden state，所以猜一個 token 只花主模型一次 forward 的一小部分時間。</p>"
     )
 
 
@@ -632,6 +679,8 @@ def knobs_html(s: dict, defaults: dict) -> str:
         ("temperature", s["temperature"], "logits 除以 T 再 softmax。小於 1 讓分布更尖，大於 1 更平；0 等於 greedy。"),
         ("top-k", s["top_k"] or "不限", "只保留機率最高的 k 個候選。"),
         ("top-p", s["top_p"], "從機率最高的開始累加，總和達到 p 就停（nucleus sampling）。"),
+        ("MTP 推測解碼", "開" if s.get("mtp") else "關",
+         "草稿模型先猜接下來幾個 token，主模型一次 forward 全部驗證。收下的 token 跟不開時的分布一樣，只是少跑幾次 forward。"),
         ("每步 token 上限", s["max_new_tokens"], "一次推論最多生成幾個 token，到了就截斷（相當於 max_tokens）。"),
         ("步數上限", s["max_steps"], "harness 的迴圈上限，跑滿就停（相當於最大迭代次數）。"),
     ]
@@ -660,6 +709,10 @@ def step_rows(data: dict) -> list[dict]:
             "平均機率": round(sum(probs) / len(probs), 3) if probs else None,
             "停止": done.get("stop_piece") or done.get("finish"),
         })
+        if data["settings"].get("mtp"):
+            mtp = done.get("mtp") or {}
+            rows[-1]["MTP 收下"] = f'{mtp["accepted"]}/{mtp["drafted"]}' if mtp else None
+            rows[-1]["解碼 forward"] = mtp.get("forwards")
     return rows
 
 

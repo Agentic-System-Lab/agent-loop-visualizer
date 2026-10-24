@@ -1,9 +1,10 @@
 """A stand-in for llm.LocalLLM that replays scripted model outputs.
 
 It speaks the same interface as the real thing (render, tokenizer, generate, family,
-info), renders prompts in a simplified form of its family's chat format (Gemma 4 or
-Qwen3.5) and streams each scripted reply token by token, so the harness and the UI run
-end to end without loading any weights.
+info, load_drafter), renders prompts in a simplified form of its family's chat format
+(Gemma 4 or Qwen3.5) and streams each scripted reply token by token, so the harness and
+the UI run end to end without loading any weights. With MTP on, it marks the tokens in a
+fixed pattern as the drafter's: two kept guesses, then one turned down.
 """
 
 import json
@@ -41,6 +42,12 @@ INFO = {
         "<|audio|>": 258881, "<image|>": 258882, "<audio|>": 258883, "<|video|>": 258884,
     },
     "defaults": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
+    "drafter_id": None,
+    "drafter": None,
+}
+DRAFTER = {
+    "model_id": "fake/gemma-test-assistant", "parameters": 77_700_000, "layers": 4, "hidden_size": 256,
+    "draft_tokens": 6, "load_seconds": 0.1,
 }
 QWEN_INFO = {
     **INFO,
@@ -114,7 +121,9 @@ class FakeLLM:
         self.outputs = outputs if outputs is not None else []  # shared on purpose: tests append to it
         self.tokenizer = FakeTokenizer(self.family)
         self.context_length = info["context_length"]
-        self.info = {**info, "model_id": self.model_id}
+        self.drafter_id = families.DRAFTERS.get(self.model_id)
+        self.drafter = None
+        self.info = {**info, "model_id": self.model_id, "drafter_id": self.drafter_id}
         self.renders: list[dict] = []
         self.prompts: list[str] = []
         self.samplings: list = []
@@ -123,6 +132,11 @@ class FakeLLM:
 
     def warmup(self):
         pass
+
+    def load_drafter(self):
+        if self.drafter_id and self.drafter is None:
+            self.drafter = "drafter"
+            self.info["drafter"] = {**DRAFTER, "model_id": self.drafter_id}
 
     def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
         self.renders.append({"messages": [dict(m) for m in messages], "tools": tools, "thinking": thinking})
@@ -187,6 +201,7 @@ class FakeLLM:
         family = self.family
         channel = "thought" if prompt.endswith(family.thought_prefix) else "content"
         emitted, finish = [], "max_new_tokens"
+        drafting = sampling.mtp and self.drafter is not None
         start = time.perf_counter()
         for piece in pieces(raw, family)[: sampling.max_new_tokens]:
             if should_stop():
@@ -199,6 +214,9 @@ class FakeLLM:
                 token_channel = "control" if special else channel
             emitted.append(piece)
             tid = self._id(piece)
+            # after the first token, over and over: two guesses held, the third turned down and replaced
+            n = len(emitted) - 1
+            draft = {} if not drafting or n == 0 else {"draft": {"piece": piece if n % 3 else "▁guess", "accepted": n % 3 != 0}}
             yield {
                 "type": "token",
                 "index": len(emitted) - 1,
@@ -217,11 +235,14 @@ class FakeLLM:
                     {"id": 1, "piece": "▁alt", "p": 0.05, "kept": True},
                     {"id": 2, "piece": "▁other", "p": 0.01, "kept": False},
                 ],
+                **draft,
             }
             if piece in family.stop_tokens:
                 finish = "stop_token"
                 break
         decode_s = max(time.perf_counter() - start, 1e-6)
+        accepted = sum(1 for n in range(1, len(emitted)) if n % 3)
+        rounds = (len(emitted) + 1) // 3
         yield {
             "type": "done",
             "finish": finish,
@@ -229,6 +250,7 @@ class FakeLLM:
             "n_tokens": len(emitted),
             "decode_ms": round(decode_s * 1000, 1),
             "tok_per_s": round(len(emitted) / decode_s, 1),
+            "mtp": {"drafted": accepted + rounds, "accepted": accepted, "forwards": rounds} if drafting else None,
             "raw": "".join(emitted),
         }
 
@@ -249,6 +271,9 @@ def record_run(outputs: list, user: str = "台北現在幾點？", history: list
     from llm import Sampling
 
     fake = FakeLLM(list(outputs), family=family)
+    if sampling and sampling.mtp:  # a model with a drafter, already loaded
+        fake.drafter_id = fake.info["drafter_id"] = DRAFTER["model_id"]
+        fake.load_drafter()
     events: list[dict] = []
     run = Run(fake, history or [], user, RunSettings(sampling=sampling or Sampling(), **settings), events.append)
     run.run()

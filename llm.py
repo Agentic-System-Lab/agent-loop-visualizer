@@ -7,17 +7,21 @@ strongest alternatives, which is what the visualization shows.
 
 Nothing here is specific to one model: which tokens stop a generation and which
 ones switch between thinking, tool calls and the reply come from the model's family.
+
+With MTP switched on, a small drafter guesses the next few tokens and one forward pass
+checks them all (_drafted); every token still comes from the model's distribution.
 """
 
 import logging
 import os
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
 import torch
-from transformers import AutoConfig, AutoModelForMultimodalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoTokenizer
 
 import families
 
@@ -30,6 +34,7 @@ class Sampling:
     top_p: float = 0.95
     top_k: int = 64
     max_new_tokens: int = 1024
+    mtp: bool = False  # let the MTP drafter guess ahead, once it is loaded (LocalLLM.load_drafter)
 
 
 def _load(cls, model_id: str, **kwargs):
@@ -65,6 +70,9 @@ class LocalLLM:
         if self.device == "mps":
             # Loading weights onto MPS from several threads can hang (seen with Qwen3.5); one thread is fast enough.
             os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
+        self.drafter_id = families.DRAFTERS.get(model_id)
+        self.drafter = None  # loaded the first time MTP is switched on
+        self._drafter_lock = threading.Lock()
         start = time.perf_counter()
         # config.json alone says which family the model belongs to; an unsupported one fails before the weights load.
         self.family = families.for_model_type(_load(AutoConfig, model_id).model_type)
@@ -107,6 +115,8 @@ class LocalLLM:
             "stop_tokens": [self.piece(i) for i in sorted(self.eos_ids)],
             "special_tokens": {self.piece(i): i for i in sorted(self.special_ids)},
             "defaults": self._sampling_defaults(),
+            "drafter_id": self.drafter_id,
+            "drafter": None,
         }
 
     def _sampling_defaults(self) -> dict:
@@ -121,11 +131,30 @@ class LocalLLM:
         ids = ((p, self.tokenizer.convert_tokens_to_ids(p)) for p in pieces)
         return {i for p, i in ids if isinstance(i, int) and self.piece(i) == p}
 
-    def warmup(self):
+    def warmup(self, mtp: bool = False):
         """The first forward passes on MPS compile kernels and take seconds; pay that at load time."""
         prompt = self.render([{"role": "user", "content": "Hi"}], None, False)
-        for _ in self.generate(prompt, Sampling(max_new_tokens=2), lambda: False):
+        for _ in self.generate(prompt, Sampling(max_new_tokens=16 if mtp else 2, mtp=mtp), lambda: False):
             pass
+
+    def load_drafter(self):
+        """Load the MTP drafter that goes with this model (families.DRAFTERS), if any, and warm it up."""
+        with self._drafter_lock:
+            if self.drafter is not None or self.drafter_id is None:
+                return
+            start = time.perf_counter()
+            self.drafter = _load(AutoModelForCausalLM, self.drafter_id, dtype=self.dtype, device_map=self.device).eval()
+            self.draft_tokens = self.drafter.generation_config.num_assistant_tokens  # guesses per forward pass
+            self.warmup(mtp=True)
+            cfg = self.drafter.config.get_text_config()
+            self.info["drafter"] = {
+                "model_id": self.drafter_id,
+                "parameters": self.drafter.num_parameters(),
+                "layers": cfg.num_hidden_layers,
+                "hidden_size": cfg.hidden_size,
+                "draft_tokens": self.draft_tokens,
+                "load_seconds": round(time.perf_counter() - start, 1),
+            }
 
     def piece(self, token_id: int) -> str:
         return self.tokenizer.convert_ids_to_tokens(token_id)
@@ -141,24 +170,24 @@ class LocalLLM:
         """Yield a prefill event, one event per token, then a done event."""
         ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids.to(self.device)
         channel = "thought" if prompt.endswith(self.family.thought_prefix) else "content"
+        drafting = sampling.mtp and self.drafter is not None
+        mtp = {"drafted": 0, "accepted": 0, "forwards": 0} if drafting else None
         generated: list[int] = []
         text = ""
         finish = "max_new_tokens"
 
         with torch.inference_mode():
             start = time.perf_counter()
-            out = self.model(input_ids=ids, use_cache=True, logits_to_keep=1)
-            past = out.past_key_values
-            logits = out.logits[0, -1].float().cpu()
+            out = self._forward(ids, None, 1, drafting)
             prefill_ms = (time.perf_counter() - start) * 1000
             yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
 
             decode_start = time.perf_counter()
-            for _ in range(sampling.max_new_tokens):
+            tokens = self._drafted(out, sampling, mtp) if drafting else self._one_at_a_time(out, sampling)
+            for token_id, details in tokens:
                 if should_stop():
                     finish = "user_stopped"
                     break
-                token_id, details = self._sample(logits, sampling)
                 generated.append(token_id)
 
                 piece = self.piece(token_id)
@@ -188,11 +217,8 @@ class LocalLLM:
                 if token_id in self.eos_ids:
                     finish = "stop_token"
                     break
-                out = self.model(
-                    input_ids=torch.tensor([[token_id]], device=self.device), past_key_values=past, use_cache=True, logits_to_keep=1
-                )
-                past = out.past_key_values
-                logits = out.logits[0, -1].float().cpu()
+                if len(generated) == sampling.max_new_tokens:
+                    break
 
         decode_s = time.perf_counter() - decode_start
         yield {
@@ -202,11 +228,75 @@ class LocalLLM:
             "n_tokens": len(generated),
             "decode_ms": round(decode_s * 1000, 1),
             "tok_per_s": round(len(generated) / decode_s, 1) if decode_s > 0 else None,
+            "mtp": mtp,
             "raw": self.tokenizer.decode(generated, skip_special_tokens=False),
         }
 
-    def _sample(self, logits: torch.Tensor, s: Sampling) -> tuple[int, dict]:
-        """Pick the next token and report the model's distribution and what the settings did to it."""
+    def _forward(self, ids: torch.Tensor, past, keep: int, drafting: bool = False):
+        """One forward pass over `ids`, with the cache of everything before them; logits for the last `keep` positions.
+        The drafter also reads the model's last hidden state and the keys and values its later layers share."""
+        extra = {"output_hidden_states": True, "return_shared_kv_states": True} if drafting else {}
+        return self.model(input_ids=ids, past_key_values=past, use_cache=True, logits_to_keep=keep, **extra)
+
+    def _one_at_a_time(self, out, s: Sampling) -> Iterator[tuple[int, dict]]:
+        """Plain decoding: sample a token, feed it back with the cache for the next position's logits, repeat."""
+        while True:
+            token_id, details = self._sample(out.logits[0, -1].float().cpu(), s)
+            yield token_id, details
+            out = self._forward(torch.tensor([[token_id]], device=self.device), out.past_key_values, 1)
+
+    def _drafted(self, out, s: Sampling, stats: dict) -> Iterator[tuple[int, dict]]:
+        """MTP decoding. After each token the drafter guesses the next few, and one forward pass over the token and the
+        guesses gives the model's distribution at every guessed position. _sample checks the guesses in order: each
+        one it keeps is a token for free, the first one it turns down is replaced by the model's own pick, and the
+        rest are dropped. When every guess holds, the last position gives one more token."""
+        past = out.past_key_values
+        past.activate_past_recording()  # so the sliding-window layers can still drop guesses that were turned down
+        hidden, shared = out.hidden_states[-1][:, -1:], out.shared_kv_states
+        token_id, details = self._sample(out.logits[0, -1].float().cpu(), s)
+        while True:
+            yield token_id, details
+            guesses = self._draft(token_id, hidden, shared, past.get_seq_length())
+            out = self._forward(torch.tensor([[token_id, *guesses]], device=self.device), past, len(guesses) + 1, True)
+            logits = out.logits[0].float().cpu()
+            stats["forwards"] += 1
+            stats["drafted"] += len(guesses)
+            for n, guess in enumerate(guesses):
+                token_id, details = self._sample(logits[n], s, guess)
+                if token_id != guess:
+                    details["draft"] = {"piece": self.piece(guess), "accepted": False}
+                    break
+                stats["accepted"] += 1
+                yield token_id, {**details, "draft": {"piece": self.piece(guess), "accepted": True}}
+            else:
+                n = len(guesses)
+                token_id, details = self._sample(logits[n], s)
+            # Keep the cache and the drafter's inputs up to the last kept guess (or the token, when none held).
+            dropped = len(guesses) - n
+            past.crop(-dropped)
+            hidden = out.hidden_states[-1][:, n : n + 1]
+            shared = {k: (key[:, :, : key.shape[2] - dropped], value[:, :, : value.shape[2] - dropped])
+                      for k, (key, value) in out.shared_kv_states.items()}
+
+    def _draft(self, token_id: int, hidden: torch.Tensor, shared: dict, position: int) -> list[int]:
+        """The drafter's greedy guesses for the tokens after `token_id`. It has no cache of its own: it attends to the
+        model's keys and values, so every guess sits at the position of `token_id`, and what it has guessed so far
+        comes in through its input, the embedding of the last guess next to the drafter's last hidden state."""
+        embed = self.model.get_input_embeddings()
+        positions = torch.tensor([[position]], device=self.device)
+        guesses = []
+        while len(guesses) < self.draft_tokens and token_id not in self.eos_ids:
+            x = torch.cat([embed(torch.tensor([[token_id]], device=self.device)), hidden], -1)
+            out = self.drafter(inputs_embeds=x, position_ids=positions, shared_kv_states=shared)
+            token_id, hidden = int(out.logits[0, -1].argmax()), out.last_hidden_state
+            guesses.append(token_id)
+        return guesses
+
+    def _sample(self, logits: torch.Tensor, s: Sampling, draft: int | None = None) -> tuple[int, dict]:
+        """Pick the next token and report the model's distribution and what the settings did to it.
+        A `draft` (the MTP drafter's guess) is kept with the probability the settings give it, which in greedy
+        decoding means when it is the top token; otherwise the pick comes from the other candidates. Either way
+        each token comes out exactly as often as without a drafter."""
         probs = torch.softmax(logits, -1)  # the model's own distribution (T = 1, nothing cut off)
         top_p_vals, top_ids = probs.topk(TOP_N)
 
@@ -224,7 +314,15 @@ class LocalLLM:
             # Nucleus: keep the smallest prefix whose probability reaches top_p (always at least one token).
             kept = int(((cand_probs.cumsum(-1) - cand_probs) < s.top_p).sum())
             cand_ids, cand_probs = cand_ids[:kept], cand_probs[:kept] / cand_probs[:kept].sum()
-            pick = int(torch.multinomial(cand_probs, 1))
+            weights = cand_probs
+            at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+            if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
+                pick = int(at[0])
+            else:
+                if len(at):  # the guess was turned down: draw from the other candidates
+                    weights = cand_probs.clone()
+                    weights[at[0]] = 0
+                pick = int(torch.multinomial(weights, 1))
             chosen = int(cand_ids[pick])
             p_sampled = float(cand_probs[pick])
 

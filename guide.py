@@ -218,7 +218,8 @@ SECTIONS = [
         (
             "`streamlit_app.py`：版面、側欄設定、模型選單、背景 thread、執行中每 0.5 秒重畫一次。",
             "`agent.py`：harness，也就是迴圈本體 `Run.run()`（[[agent.py|def run(self):]]）。",
-            "`llm.py`：本機推論，自己寫的解碼迴圈 `generate()`（[[llm.py|def generate(self, prompt]]）和抽樣 `_sample()`。",
+            "`llm.py`：本機推論，自己寫的解碼迴圈 `generate()`（[[llm.py|def generate(self, prompt]]）和抽樣 `_sample()`；"
+            "打開 MTP 時再加上一個草稿模型（{{mtp}}）。",
             "`families/`：跟著模型走的東西。`gemma4.py`、`qwen3_5.py` 各自負責讀懂自己模型的輸出，並說明它的特殊 token（{{families}}）。",
             "`tools.py`：每個工具的 schema（給模型看）和 Python 函式（給 harness 執行），全部列在 `TOOLS`（[[tools.py|TOOLS = {]]）。",
             "`render.py`：把事件列表折成 step（[[render.py|def build(events: list[dict])]]），再畫成 HTML。",
@@ -253,13 +254,14 @@ SECTIONS = [
         "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`。`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，"
         "記憶體裡同時只留一個模型，換模型時舊的就會被放掉。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
         "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[llm.py|def _sampling_defaults(self)]]）。"
-        "側欄的模型選單換了之後會開新對話（[[streamlit_app.py|\"模型\", list(MODELS)]]）。",
+        "側欄的模型選單換了之後會開新對話（[[streamlit_app.py|\"模型\", list(MODELS)]]），MTP 也回到關閉；"
+        "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[llm.py|def load_drafter(self):]]）。",
         Code("streamlit_app.py", "@st.cache_resource(max_entries=1", end="def current_llm() -> LocalLLM:"),
         "輸入框（[[streamlit_app.py|prompt = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。"
         "它先用不等待的方式拿一把全域的鎖（[[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]）："
         "模型只有一份，所以不管開幾個分頁，同一時間只能有一個 agent 在跑，拿不到鎖就跳出提示。",
         Code("streamlit_app.py", "def start_run(", caption="鎖是 `generation_slot()` 裡的 `threading.Lock`，用 `st.cache_resource` 讓所有分頁共用。"),
-        "`current_settings()` 把側欄的值打包成 `RunSettings`，解碼參數包在裡面的 `Sampling`。這份設定這一輪從頭用到尾，"
+        "`current_settings()` 把側欄的值打包成 `RunSettings`，解碼參數（包括要不要用 MTP）包在裡面的 `Sampling`。這份設定這一輪從頭用到尾，"
         "執行中改側欄只會影響下一輪。",
         Code("streamlit_app.py", "def current_settings("),
         "`LiveRun` 建立 `Run`，把 `self.events.append` 當成 `emit` 傳進去，然後開背景 thread。"
@@ -309,17 +311,21 @@ SECTIONS = [
              caption="傳進去的 `self._stop.is_set` 是一個函式：模型每生成一個 token 前都會呼叫它，問「要停了嗎？」。"),
         "**prefill**：把整個 prompt 轉成 token id，一次 forward 算完。`use_cache=True` 留下每一層的狀態（一般 attention 層是 key / value，"
         "Qwen3.5 的 Gated DeltaNet 層是一個固定大小的狀態），之後每個新 token 只需要算自己那一個位置；"
-        "`logits_to_keep=1` 只取最後一個位置的 logits，因為只需要「下一個 token」的分布。"
+        "`logits_to_keep=1` 只取最後一個位置的 logits，因為只需要「下一個 token」的分布（[[llm.py|def _forward(]]）。"
         "prefill 的時間主要看 prompt 有多長，模型分頁的表格裡有每一步的 prefill ms。",
         Code("llm.py", "def generate(self, prompt", end='yield {"type": "prefill"',
              caption="prompt 如果以 family 的 `thought_prefix` 結尾（Gemma 的 `<|channel>thought`、Qwen 的 `<think>`），模型一開始就在思考裡。"),
-        "**解碼迴圈**最多跑 `max_new_tokens` 次（側欄的「每步 token 上限」）。每一圈：檢查停止 → 抽樣出一個 token → "
+        "**解碼迴圈**從 `tokens` 一個一個拿抽好的 token：平常由 `_one_at_a_time()` 產生，打開 MTP 時改由 `_drafted()`（{{mtp}}），"
+        "迴圈本身不用知道是哪一種。每一圈：檢查停止 → 拿到一個 token → "
         "判斷它是不是特殊 token、有沒有切換 channel：哪些 token 切到思考、工具呼叫或回覆，由 family 的 `channel_switch` 決定"
         "（Gemma：[[families/gemma4.py|channel_switch={]]；Qwen：[[families/qwen3_5.py|channel_switch={]]）→ "
         "把目前為止的所有 token 整段 decode 再取差值，這樣被拆成好幾個 byte token 的中文字會等到湊齊才輸出 → 送出 `token` 事件。",
         Code("llm.py", "decode_start = time.perf_counter()", end="**details,"),
-        "生成到停止 token 就跳出迴圈。還沒停，就把剛抽到的這一個 token 餵回模型，帶著快取算出下一個位置的 logits。",
-        Code("llm.py", "if token_id in self.eos_ids:", end="logits = out.logits[0, -1].float().cpu()"),
+        "生成到停止 token，或到了 `max_new_tokens`（側欄的「每步 token 上限」），就跳出迴圈。",
+        Code("llm.py", "if token_id in self.eos_ids:", end="if len(generated) == sampling.max_new_tokens:"),
+        "還沒停，迴圈就再跟 `tokens` 要下一個。`_one_at_a_time()` 這時才把剛抽到的 token 餵回模型，帶著快取算出下一個位置的 logits；"
+        "它是一個 generator，迴圈跳出之後就不會再多跑一次 forward。",
+        Code("llm.py", "def _one_at_a_time("),
         "最後的 `done` 告訴 harness 為什麼停（`finish`：`stop_token`、`max_new_tokens` 或 `user_stopped`）、停在哪個 token、"
         "生成速度，以及整段原始輸出 `raw`（保留特殊 token，因為 harness 要靠它們解析）。",
         Code("llm.py", "decode_s = time.perf_counter() - decode_start", end='"raw": self.tokenizer.decode(generated'),
@@ -334,6 +340,41 @@ SECTIONS = [
         "回傳的資料就是浮窗裡的數字：`p` 是被選中的 token 在原始分布的機率；`rank` 是它的名次；"
         "`kept` 是剃完還剩幾個候選；`p_sampled` 是它在剃完、重新正規化後的分布裡的機率。"
         "step 卡片上 token 的底色深淺就是用 `p` 算的（[[render.py|def heat(p: float)]]）：越深，代表模型原本越不看好它，卻被抽中了。",
+    )),
+    Section("mtp", "model", "MTP：草稿模型先猜，主模型一次驗證", "側欄打開「MTP 推測解碼」後，主模型的一次 forward 可以產生好幾個 token，而每個 token 的機率都不變。", (
+        "一般的解碼每個 token 都要跑一次完整的 forward，而這段時間主要花在把幾 GB 的權重從記憶體讀出來；"
+        "同一次 forward 多算幾個位置，幾乎不會更慢（實測 Gemma 4 E2B 在 Apple M5 上，1 個位置約 56 ms，7 個位置約 70 ms）。"
+        "所以只要有人便宜地先猜好接下來幾個 token，主模型就能一次 forward 把它們全部驗證。這就是推測解碼（speculative decoding）；"
+        "MTP（multi-token prediction）是 Google 為 Gemma 4 訓練的猜法。",
+        "猜的是草稿模型 `google/gemma-4-E2B-it-assistant`（[[families/__init__.py|DRAFTERS = {]]）：約 78M 參數、4 層、hidden size 256，"
+        "主模型是 5.1B。它沒有自己的 KV cache：Gemma 4 E2B 的 35 層裡，後 20 層本來就不自己算 key / value，而是共用前面兩層"
+        "（最後一個 sliding window 層和最後一個 full attention 層）算好的，草稿模型也讀這一份。第一次打開 MTP 時才載入，"
+        "每次猜幾個 token 寫在它的 generation config（`num_assistant_tokens` = 6）。",
+        Code("llm.py", "def load_drafter(self):"),
+        "**猜**：輸入是「上一個 token 的 embedding」接上「主模型在上一個位置最後一層的 hidden state」，輸出下一個 token 的 logits，"
+        "取機率最高的當作猜測。接著把猜到的 token 和草稿模型自己的 hidden state 當作下一次的輸入，再猜一個，最多 6 個。"
+        "6 次都站在同一個位置，因為它看到的 key / value 只到主模型真正讀過的地方。",
+        Code("llm.py", "def _draft("),
+        "**驗證**：主模型對「剛確定的 token + 6 個猜測」做一次 forward，`logits_to_keep=7` 拿回 7 個位置的分布："
+        "第 i 個位置的分布，就是讀到第 i 個猜測之前時，下一個 token 的分布。從第一個猜測開始依序交給 `_sample()` 檢查："
+        "收下就是一個不用另外 forward 的 token；第一個被退回的猜測，由主模型自己在那個位置選的 token 取代，後面的猜測全部作廢；"
+        "6 個都收下時，最後一個位置的分布還能多給一個 token。所以一次 forward 產生 1 到 7 個 token。",
+        Code("llm.py", "def _drafted("),
+        "作廢的猜測已經寫進了 KV cache，要用 `past.crop()` 拿掉；sliding window 層平常會馬上丟掉太舊的 key / value，"
+        "`activate_past_recording()` 讓它先留著，等 `crop()` 之後再縮回去。給草稿模型的那份 key / value 也同樣切掉作廢的部分。",
+        "**為什麼輸出不變**：`_sample()` 收到猜測時，greedy（T = 0）只在猜測剛好是第 1 名時收下，所以輸出和不開 MTP 一樣"
+        "（一次算 7 個位置的數值和一次算 1 個會有極小的差異，兩個 token 機率幾乎相同時偶爾會選到另一個）。"
+        "抽樣時，猜測被收下的機率就是 temperature、top-k、top-p 處理完之後它的機率 p；沒收下，就把它從候選裡拿掉，從其他候選抽。"
+        "任何一個 token 最後出現的機率還是 p：草稿模型只決定要花幾次 forward，不決定寫出什麼。",
+        Code("llm.py", "at = (cand_ids == draft)", end="pick = int(torch.multinomial(weights, 1))"),
+        "畫面上：",
+        (
+            "step 卡片裡被收下的猜測有底線；一串底線加上後面那個沒有底線的 token，就是主模型同一次 forward 的產出。",
+            "token 浮窗會寫「草稿猜中」，或「草稿被退回」和草稿原本猜的是什麼。",
+            "step 卡片的模型段多一行：草稿收下幾個、解碼 forward 跑了幾次、不開 MTP 要跑幾次；模型分頁的表格也有這兩欄。",
+        ),
+        "收下的比例很看內容。在 Apple M5 上用 greedy 實測：工具呼叫幾乎都猜得中（35 個收下 34 個，約 15 → 43 tok/s），"
+        "英文程式碼約一半，繁體中文的長回答只有一成左右，快不了多少。格式固定、可以預測的文字，草稿模型才猜得準。",
     )),
     Section("parse", "harness", "Harness：把輸出拆成思考、工具呼叫、回覆", "模型只會吐文字；哪段是工具呼叫，要 harness 用 family 的 parser 讀出來。", (
         "chat template 有時會在 prompt 結尾先打開思考（family 的 `thought_prefix`）；這段在 prompt 裡、不在 `raw` 裡，"
@@ -454,8 +495,9 @@ EVENTS = [
     ("step_start", "agent.py", 'self.emit("step_start"', "step 編號", "開一張新的 step 卡片；迴圈圖亮起「脈絡」"),
     ("context", "agent.py", '"context",', "完整 prompt、token 數、`added_from`、脈絡上限、各角色訊息數", "step 卡片的脈絡段、「脈絡」分頁"),
     ("prefill", "llm.py", 'yield {"type": "prefill"', "prompt 的 token 數、prefill 耗時", "迴圈圖「模型」格、模型分頁的 prefill ms"),
-    ("token", "llm.py", '"type": "token",', "id、piece、文字、channel、是否為特殊 token、機率、排名、前 5 名候選", "token 的熱度顏色與浮窗、左邊逐字出現的回覆"),
-    ("model_end", "agent.py", 'self.emit("model_end"', "停止原因、停止 token、token 數、tok/s、原始輸出", "「停在 …」、tok/s、模型分頁的表格"),
+    ("token", "llm.py", '"type": "token",', "id、piece、文字、channel、是否為特殊 token、機率、排名、前 5 名候選；開 MTP 時還有 `draft`（草稿猜了什麼、有沒有收下）",
+     "token 的熱度顏色、底線與浮窗、左邊逐字出現的回覆"),
+    ("model_end", "agent.py", 'self.emit("model_end"', "停止原因、停止 token、token 數、tok/s、MTP 統計、原始輸出", "「停在 …」、tok/s、MTP 收下幾個、模型分頁的表格"),
     ("parsed", "agent.py", 'self.emit("parsed"', "思考、回覆、工具呼叫", "Harness 段開始出現"),
     ("tool_call", "agent.py", '"tool_call",', "名稱、驗證後的參數、錯誤、是否重複、環境", "Harness 段的呼叫、驗證結果、重複警告"),
     ("approval_request", "agent.py", 'self.emit("approval_request"', "等待確認的呼叫", "聊天區的「允許／拒絕」按鈕；迴圈圖閃爍"),

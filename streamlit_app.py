@@ -38,6 +38,7 @@ DEFAULTS = {
     "temperature": 1.0,
     "top_p": 0.95,
     "top_k": 64,
+    "mtp": False,
     "max_steps": 6,
     "max_new_tokens": 1024,
 }
@@ -46,6 +47,9 @@ EXAMPLES = [
     "(37.5 × 12) 的平方根，再加上 2 的 20 次方，是多少？",
     "ReAct 這篇論文是誰提出的？用 Wikipedia 查。",
     "Gemma 是哪家公司開發的？第一版什麼時候發布？",
+    "What time is it in Paris right now?",
+    "Who created the Transformer? Ask Wikipedia.",
+    "Write a Python function to test for primes.",
 ]
 
 
@@ -60,10 +64,13 @@ def current_llm() -> LocalLLM:
     model_id = st.session_state.model_id
     with st.spinner(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…"):
         llm = load_llm(model_id)
-    if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding
-        for key, value in llm.info["defaults"].items():
+    if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
+        for key, value in {**llm.info["defaults"], "mtp": False}.items():
             st.session_state[key] = value
         st.session_state.sampling_for = model_id
+    if st.session_state.mtp and llm.drafter_id and llm.drafter is None:
+        with st.spinner(f"載入 MTP 草稿模型 {llm.drafter_id}（第一次要下載約 160 MB）…"):
+            llm.load_drafter()
     return llm
 
 
@@ -123,10 +130,10 @@ def init_state():
     st.session_state.setdefault("sampling_for", None)
 
 
-def current_settings() -> RunSettings:
+def current_settings(llm: LocalLLM) -> RunSettings:
     s = st.session_state
     return RunSettings(
-        sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens),
+        sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens, mtp=s.mtp and llm.drafter is not None),
         max_steps=s.max_steps,
         thinking=s.thinking,
         use_tools=s.use_tools,
@@ -140,7 +147,7 @@ def start_run(llm: LocalLLM, text: str) -> bool:
         st.toast("另一個 agent 正在執行（可能在別的分頁），請稍等。")
         return False
     try:
-        run = LiveRun(llm, st.session_state.history, text, current_settings(), slot)
+        run = LiveRun(llm, st.session_state.history, text, current_settings(llm), slot)
     except Exception:
         slot.lock.release()
         raise
@@ -206,11 +213,21 @@ def sidebar(llm: LocalLLM, live: bool, busy: bool):
         st.slider("temperature", 0.0, 2.0, step=0.05, key="temperature", help="0 = greedy，永遠選機率最高的 token。")
         st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
         st.slider("top-k", 0, 128, key="top_k", help="0 = 不限。")
-        st.slider("步數上限", 1, 12, key="max_steps", help="harness 的迴圈最多跑幾圈（step），跑滿就停。")
-        st.slider("每步 token 上限", 64, 2048, step=64, key="max_new_tokens", help="一次推論最多生成幾個 token。")
+        st.toggle("MTP 推測解碼", key="mtp", disabled=busy or not llm.drafter_id, help=mtp_help(llm))
+        st.slider("步數上限", 1, 100, key="max_steps", help="harness 的迴圈最多跑幾圈（step），跑滿就停。")
+        st.slider("每步 token 上限", 64, 8192, step=64, key="max_new_tokens", help="一次推論最多生成幾個 token。")
         st.button("還原成模型建議值", on_click=reset_settings, args=(info["defaults"],), width="stretch")
         st.button("新對話", on_click=new_chat, disabled=live, width="stretch")
         st.caption("設定會套用到下一個問題。")
+
+
+def mtp_help(llm: LocalLLM) -> str:
+    if not llm.drafter_id:
+        return "這個模型沒有搭配的 MTP 草稿模型，目前只有 Gemma 4 E2B 有。"
+    return (
+        f"用 {llm.drafter_id} 當草稿模型：每生成一個 token，它就從主模型的狀態一口氣猜接下來幾個 token，"
+        "主模型再用一次 forward 全部驗證。輸出的分布和不開一樣，只是比較快。第一次打開會載入草稿模型（約 160 MB）。"
+    )
 
 
 # ---------- left: chat ----------

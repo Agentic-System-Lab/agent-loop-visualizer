@@ -1,5 +1,5 @@
 """End to end with the real weights of every model in the menu (Gemma 4 E2B ~10 GB in memory,
-Qwen3.5 0.8B ~2 GB; tens of seconds each).
+Qwen3.5 0.8B ~2 GB; tens of seconds each), and Gemma's MTP drafter.
 Opt in with:  RUN_MODEL_TESTS=1 uv run pytest -m model   (add  -k Qwen  for one model)"""
 
 import os
@@ -9,9 +9,10 @@ import torch
 
 import families
 import render
-from agent import Run, RunSettings
+from agent import SYSTEM_WITH_TOOLS, Run, RunSettings
 from llm import LocalLLM, Sampling
 from test_render import assert_balanced, render_everything
+from tools import TOOLS
 
 pytestmark = [
     pytest.mark.model,
@@ -65,3 +66,23 @@ def test_agent_uses_a_tool_and_answers(gemma):
 
     for markup in render_everything(render.build(events), live=False):
         assert_balanced(markup)
+
+
+def test_mtp_writes_what_plain_decoding_writes(gemma):
+    if not gemma.drafter_id:
+        pytest.skip(f"{gemma.model_id} has no MTP drafter")
+    gemma.load_drafter()
+    assert gemma.info["drafter"]["draft_tokens"] > 0
+    messages = [{"role": "system", "content": SYSTEM_WITH_TOOLS}, {"role": "user", "content": "台北現在幾點？紐約呢？"}]
+    prompt = gemma.render(messages, [t.schema() for t in TOOLS.values()], False)
+
+    def decode(mtp):
+        events = list(gemma.generate(prompt, Sampling(temperature=0, max_new_tokens=64, mtp=mtp), lambda: False))
+        return [e for e in events if e["type"] == "token"], events[-1]
+
+    plain, _ = decode(False)
+    drafted, done = decode(True)
+    assert [t["id"] for t in drafted] == [t["id"] for t in plain]
+    assert done["mtp"]["accepted"] > done["mtp"]["drafted"] // 2  # a tool call is easy to guess
+    assert done["mtp"]["forwards"] < len(drafted) - 1
+    assert sum(1 for t in drafted if t.get("draft", {}).get("accepted")) == done["mtp"]["accepted"]
