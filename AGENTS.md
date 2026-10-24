@@ -116,5 +116,6 @@ README.md (English) and README.zh-TW.md (Traditional Chinese) say the same thing
 experiments, the architecture, the two languages, the decoding loop and MTP, a table of what each test
 file covers, measured speeds and known limitations. A change that makes any of it untrue updates both
 in the same commit, each in its own language and in the README's voice; each links to the other at the
-top. `docs/screenshot.png` is the image in both (it shows the Chinese page): if a UI change makes it
-stale, say so rather than leaving it silently outdated.
+top. `docs/screenshot-en.png` and `docs/screenshot-zh.png` are their images, each showing the page in
+its README's language, taken from a real Gemma run: if a UI change makes them stale, say so rather than
+leaving them silently outdated.

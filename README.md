@@ -13,7 +13,7 @@ On the left is a chat like ChatGPT's; on the right the agent loop is drawn step 
 
 [How it works](https://cyyeh.github.io/agent-loop-visualizer/en/) maps each step of one turn, from sending a question to the reply, to the code that does it, with file names, line numbers and excerpts. It lives on GitHub Pages; How it works at the top of the app opens it in a new tab, in the language the app is in.
 
-![The top bar switches to the How it works page, and the sidebar picks the model; on the left is the chat, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates. The screenshot shows the Chinese page.](docs/screenshot.png)
+![The top bar links to the How it works page, the switch at the top right changes the language, and the sidebar picks the model; on the left is the chat, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates.](docs/screenshot-en.png)
 
 ## What the page shows
 
@@ -60,7 +60,7 @@ Your browser opens http://localhost:8501, in its own language (English unless th
 5. **Reasoning is tokens too**: switch on Thinking mode, and italic thinking tokens appear before the tool call; in the Context tab, the system turn starts with an extra `<|think|>`.
 6. **The loop goes in circles**: ask "Who proposed the ReAct paper? Look it up on Wikipedia." E2B often repeats the same search, and the harness flags "exactly the same call as before"; compare the error analysis of ReAct in §4 of the reading.
 7. **Switch models, keep the harness**: ask Gemma and Qwen the same question and compare them in the Context tab: the turn markers (`<|turn>` against `<|im_start|>`), where the tool schemas go, how a tool call is written (`call:name{…}` against XML) and where the tool result goes back all differ, yet the harness, environment and stop sections of the step cards are exactly the same.
-8. **MTP is fast only when it guesses right**: with Gemma, switch on MTP speculative decoding, press "What time is it in Taipei right now? And in New York?" and "Write a Python function to test for primes.", then ask "用三段話介紹台北。" (introduce Taipei in three paragraphs, in Chinese). Compare each step's tok/s and underlines: the drafter guesses almost every token of a tool call, about half of English code and only about a tenth of long Chinese text. Set temperature to 0 and run with MTP on and off: the output is exactly the same, because the drafter only decides how many forward passes run, not what gets written.
+8. **MTP is fast only when it guesses right**: with Gemma, switch on MTP speculative decoding, press "What time is it in Taipei right now?" and "Write a Python function to test for primes.", then ask "用三段話介紹台北。" (introduce Taipei in three paragraphs, in Chinese). Compare each step's tok/s and underlines: the drafter guesses almost every token of a tool call, about half of English code and only about a tenth of long Chinese text. Set temperature to 0 and run with MTP on and off: the output is exactly the same, because the drafter only decides how many forward passes run, not what gets written.
 
 ## Architecture
 
@@ -186,9 +186,8 @@ Most tests use the fake model in `tests/fakes.py`: it replays scripted output on
 - With Ask me before running a tool on, if no one answers within 5 minutes the harness takes it as a rejection and stops the loop, with "confirmation timed out" as the stop reason.
 - Token popovers appear only once the step finishes generating; while it generates there are only the heat colors (special tokens still explain themselves), so each redraw does not send a lot of HTML. The popovers are pure CSS, and one for a token too near the bottom of the timeline may be cut off.
 - Special token popovers are placed next to the token with CSS anchor positioning, so a scrolling box does not cut them off; browsers without it open them right under the token, where they may be cut off near the bottom of the box.
-- Both models are small: they may answer in Simplified Chinese, repeat the same search, answer half the question or get their sums wrong while thinking. All of that is material to look at.
+- Both models are small: they may answer in Simplified Chinese, repeat the same search, answer half the question or get their sums wrong while thinking. Asked in English about two cities' times at once, Gemma calls the tool twice and then usually answers in Chinese, or stops right after the tool results without a reply; asked about one city, it answers in English. All of that is material to look at.
 - The Wikipedia tools need the network.
-- The screenshot above shows the Chinese page; there is no screenshot of the English one yet.
 - The `MODEL_ID` environment variable picks the model selected at first; it may also name a checkpoint the menu does not list, as long as it belongs to a supported family (Gemma 4 or Qwen3.5); another family needs one added first, as in Supporting more models.
 
 ## License

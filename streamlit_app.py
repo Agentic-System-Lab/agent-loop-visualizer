@@ -59,7 +59,8 @@ EXAMPLES = {
         "Write a Python function to test for primes.",
     ],
     "en": [
-        "What time is it in Taipei right now? And in New York?",
+        # One city: asked about two at once in English, Gemma often replies in Chinese or not at all.
+        "What time is it in Taipei right now?",
         "What is the square root of (37.5 × 12), plus 2 to the power of 20?",
         "Who proposed the ReAct paper? Look it up on Wikipedia.",
         "Which company developed Gemma, and when was the first version released?",

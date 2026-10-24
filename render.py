@@ -503,7 +503,7 @@ def tip_html(tok: dict, family: families.Family, lang: str) -> str:
         '<span class="tip-foot">' + pick(lang, f'抽到排名 #{tok["rank"]} 的 token，不在前 5 名。', f'Drew the token ranked #{tok["rank"]}, outside the top 5.') + "</span>"
     )
     n = tok["index"] + 1
-    top = pick(lang, "前 5 名候選（模型原始分布，灰色 = 被剃掉）", "top 5 candidates (the model's own distribution; gray = cut)")
+    top = pick(lang, "前 5 名候選（模型原始分布，灰色 = 被剃掉）", "top 5 by model probability; gray = cut")
     return (
         f'<span class="tip"><span class="tip-piece">{esc(show_piece(tok["piece"]))}</span>'
         f'<span class="tip-sub">token id {tok["id"]} · {pick(lang, f"第 {n} 個生成的 token", f"generated token #{n}")}</span>'

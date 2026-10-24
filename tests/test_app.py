@@ -533,7 +533,7 @@ def test_an_english_browser_gets_the_page_in_english(browser, new_tab, outputs):
     at = new_tab()
     assert at.session_state["lang"] == "en" and lang_switch(at).value == "en"
     assert {t.label for t in at.toggle} == {"Use tools", "Thinking mode", "Ask me before running a tool", "MTP speculative decoding"}
-    assert at.button(key="example-0").label == "What time is it in Taipei right now? And in New York?"
+    assert at.button(key="example-0").label == "What time is it in Taipei right now?"
     assert tab(at).options == ["Loop", "Context", "Model"]
 
     outputs += [tool_call("calculator", expression="6*7"), "It is 42.<turn|>"]
