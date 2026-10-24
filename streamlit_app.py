@@ -302,11 +302,11 @@ def viz_panel(llm: LocalLLM):
     run = runs[index] if runs and index is not None else None
     data = run.data() if run else None
 
-    head, label = st.columns([2, 3], vertical_alignment="center")
-    with head:
+    # The switcher keeps its own width; in a narrow column the caption wraps under it.
+    with st.container(horizontal=True, vertical_alignment="center"):
         tab = st.segmented_control("檢視", ["迴圈", "脈絡", "模型"], key="viz_tab", required=True, label_visibility="collapsed")
-    if run and len(runs) > 1:
-        label.caption(f"第 {index + 1} 輪：{run.text[:40]}")
+        if run and len(runs) > 1:
+            st.caption(f"第 {index + 1} 輪：{run.text[:40]}")
 
     # Each tab scrolls in its own box, so a scroll position never carries over to another tab.
     view = {"脈絡": "context", "模型": "model"}.get(tab, "loop")
