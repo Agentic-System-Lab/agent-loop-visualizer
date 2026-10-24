@@ -19,6 +19,25 @@
   --sans: "Source Sans", "Source Sans Pro", -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
 }
 
+/* ---------- agent page layout: only the boxes scroll (streamlit_app.BOX_HEIGHT) ---------- */
+
+/* Streamlit gives each box a fixed height (in a wrapper that does not grow or shrink); these rules
+   stretch a box over the height left in its parent instead. The loop tab's step timeline always
+   takes what is left under the diagram. */
+[data-testid="stLayoutWrapper"]:has(> .st-key-timeline) { flex: 1 1 0; min-height: 0; }
+.st-key-timeline { height: 100% !important; }
+
+/* Side by side (Streamlit stacks the columns at 640px and below), the workspace fills the window
+   under Streamlit's header, so the page itself never scrolls, and the chat box and the tab box fill
+   their columns, which end level. */
+@media (min-width: 641px) {
+  [data-testid="stMainBlockContainer"]:has(.st-key-workspace) { padding-top: 96px; padding-bottom: 24px; }
+  .st-key-workspace > [data-testid="stLayoutWrapper"] { height: max(480px, calc(100dvh - 120px)); }  /* minus the two paddings */
+  .st-key-workspace > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] > [data-testid="stVerticalBlock"] { height: 100%; }
+  [data-testid="stLayoutWrapper"]:has(> :is(.st-key-chat_box, .st-key-loop_view, .st-key-context_view, .st-key-model_view)) { flex: 1 1 0; min-height: 0; }
+  :is(.st-key-chat_box, .st-key-loop_view, .st-key-context_view, .st-key-model_view) { height: 100% !important; }
+}
+
 /* ---------- chat ---------- */
 
 .trace { display: flex; flex-wrap: wrap; gap: 6px; }

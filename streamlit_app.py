@@ -29,8 +29,7 @@ DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(families.MODELS)))
 MODELS = {**families.MODELS, DEFAULT_MODEL: families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
 ASSETS = Path(__file__).parent / "assets"
 POLL_SECONDS = 0.5
-CHAT_HEIGHT = 620
-TIMELINE_HEIGHT = 560
+BOX_HEIGHT = 620  # the chat and each tab scroll in a box this tall; side by side, style.css fits them to the window
 DEFAULTS = {
     "use_tools": True,
     "thinking": False,
@@ -235,7 +234,7 @@ def mtp_help(llm: LocalLLM) -> str:
 def chat_panel(llm: LocalLLM, live_run: LiveRun | None, other: LiveRun | None):
     runs = st.session_state.runs
     busy = live_run is not None or other is not None
-    box = st.container(height=CHAT_HEIGHT, border=False)
+    box = st.container(height=BOX_HEIGHT, border=False, key="chat_box")
     with box:
         if not runs:
             st.markdown(
@@ -309,12 +308,15 @@ def viz_panel(llm: LocalLLM):
     if run and len(runs) > 1:
         label.caption(f"第 {index + 1} 輪：{run.text[:40]}")
 
-    if tab == "脈絡":
-        context_panel(index, data)
-    elif tab == "模型":
-        model_panel(llm, data)
-    else:
-        loop_panel(index, run, data, llm.model_id)
+    # Each tab scrolls in its own box, so a scroll position never carries over to another tab.
+    view = {"脈絡": "context", "模型": "model"}.get(tab, "loop")
+    with st.container(height=BOX_HEIGHT, border=False, key=f"{view}_view"):
+        if view == "context":
+            context_panel(index, data)
+        elif view == "model":
+            model_panel(llm, data)
+        else:
+            loop_panel(index, run, data, llm.model_id)
 
 
 def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_id: str):
@@ -323,7 +325,8 @@ def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_
         st.html(render.INTRO)
         return
     st.caption(render.run_stats(data))
-    with st.container(height=TIMELINE_HEIGHT, border=False, autoscroll=run.live):
+    # A fixed height makes it scroll; style.css shrinks it to the space left under the diagram.
+    with st.container(height=BOX_HEIGHT, border=False, autoscroll=run.live, key="timeline"):
         steps = data["steps"]
         for step in steps:
             with st.container(border=True):
@@ -387,11 +390,12 @@ def agent_page():
         other = other_tab_run()
         if polling and live_run is None and other is None:
             st.rerun()  # the run just ended: redraw everything once and stop polling
-        chat, viz = st.columns([5, 7], gap="large")
-        with chat:
-            chat_panel(llm, live_run, other)
-        with viz:
-            viz_panel(llm)
+        with st.container(key="workspace"):
+            chat, viz = st.columns([5, 7], gap="large")
+            with chat:
+                chat_panel(llm, live_run, other)
+            with viz:
+                viz_panel(llm)
 
     workspace()
 
