@@ -52,8 +52,10 @@ def _download(model_id: str, only: str | None = None) -> str:
 
 def _not_a_kernel_notice(record: logging.LogRecord) -> bool:
     """transformers notes, once per function, that Qwen3.5's Gated DeltaNet layers run in plain PyTorch because
-    flash-linear-attention and causal-conv1d are missing. Both need CUDA (Triton ships Linux wheels only), so
-    on MPS or CPU there is nothing to install and the notice is dropped."""
+    flash-linear-attention and causal-conv1d are missing. Neither is a dependency, so the notice is dropped on every
+    device. Both need a CUDA GPU: on MPS or CPU there is nothing to install, and fla installed on a Linux machine
+    without a GPU still gets picked and fails in the first forward pass. With a GPU the gain is small for a 0.8B
+    model (fla speeds up prefill only) and causal-conv1d has to be compiled; the README has the measurements."""
     return "falling back to its reference PyTorch implementation" not in record.getMessage()
 
 
@@ -70,8 +72,7 @@ class LocalLLM:
         self.model_id = model_id
         self.device = pick_device()
         self.dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
-        if self.device != "cuda":
-            logging.getLogger("transformers.integrations.hub_kernels").addFilter(_not_a_kernel_notice)
+        logging.getLogger("transformers.integrations.hub_kernels").addFilter(_not_a_kernel_notice)
         if self.device == "mps":
             # Loading weights onto MPS from several threads can hang (seen with Qwen3.5); one thread is fast enough.
             os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")

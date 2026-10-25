@@ -504,3 +504,15 @@ def test_the_kernel_notice_is_dropped_and_nothing_else():
               "`flash-linear-attention` is not installed. This is correct but much slower; install it for the optimized kernel.")
     assert not llm._not_a_kernel_notice(record(notice))
     assert llm._not_a_kernel_notice(record("Could not load the kernel from the hub"))
+
+
+@pytest.mark.parametrize("device", ["cuda", "mps", "cpu"])
+def test_the_kernel_notice_is_dropped_on_every_device(monkeypatch, device):
+    logger = logging.getLogger("transformers.integrations.hub_kernels")
+    monkeypatch.setattr(logger, "filters", [])
+    monkeypatch.delenv("HF_DEACTIVATE_ASYNC_LOAD", raising=False)  # set on MPS
+    fake_hub(monkeypatch)
+    monkeypatch.setattr(llm, "pick_device", lambda: device)
+    with pytest.raises(Loaded):
+        LocalLLM("google/gemma-4-E2B-it")
+    assert llm._not_a_kernel_notice in logger.filters
