@@ -177,6 +177,9 @@ image 先用 wheel 加 hash 裝好 pip 26.2.2，再用它裝其他套件：更�
 # 跑 vLLM 的地方（vLLM 0.32 以上，Linux 加 GPU）。--revision 是 REVISIONS 裡的 commit，伺服器和網頁讀的就是同一份
 # tokenizer 和 chat template。其他參數讓網頁看得到更多（見下面）。
 vllm serve Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --enable-scale-out
+# 或是 Qwen3.5 用它自己 checkpoint 裡的 MTP 層（transformers 用不了）：
+vllm serve Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --enable-scale-out \
+  --speculative-config '{"method": "mtp", "num_speculative_tokens": 2}' --per-request-spec-decode-metrics detailed
 # 或是 Gemma 4 E2B 加上它的 MTP 草稿模型，回報哪些 token 是猜中的：
 vllm serve google/gemma-4-E2B-it --revision 3e22461f65e89153144f8adb70e3b8c2cc9845a7 --enable-scale-out \
   --speculative-config '{"method": "mtp", "model": "google/gemma-4-E2B-it-assistant", "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df", "num_speculative_tokens": 6}' \
@@ -205,7 +208,7 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 - **`--logprobs-mode`** 決定這些數字是什麼，但沒有哪條路會說伺服器用的是哪一種，所以載入時網頁要一個 token，temperature 1、top-k 2、要最可能的 5 個：processed 模式下，被 top-k 剃掉的 3 個會回 -9999；log 機率加起來最多是 1，logits 不會。用 `processed_logprobs` 時（`--return-sampling-mask` 一定要它；沒有它，或沒有 vLLM 的 Model Runner V2，伺服器就不啟動，而 V2 在能用的情況下是預設），token 的 log 機率是它在抽樣分布裡的機率，已經套過 temperature、top-k、top-p，所以浮窗把它當成取樣時的機率，加上排名，不顯示模型給的機率、熱度和前 5 名。剩下幾個候選來自 sampling mask；沒有 mask 時，只有在 top-k / top-p 剃掉了列出來的幾個最可能的 token 時才看得到。用 `raw_logits` 或 `processed_logits` 時，這些數字不是機率，畫面不會把它們當成機率顯示。前 5 名裡哪些被 top-k / top-p 剃掉（`simple_backend.py` 的浮窗裡的灰色），哪一種模式都看不到：模型自己的機率和取樣器做了什麼，不會一起回來。模型分頁會寫伺服器用的是哪一種。
 - **greedy 解碼**（temperature 0）不用伺服器說也知道只剩一個候選、抽中的機率是 1，所以只要伺服器接受 greedy，浮窗都會顯示。啟動時加了 `--return-sampling-mask` 的伺服器不接受：vLLM 在每條路上都拒絕 temperature 0 和 top-k 0，所以側欄的滑桿最低到 0.05 和 1，模型建議值比這還低時就調到這裡。沒加 `--enable-scale-out` 時，沒有哪個回應看得到 mask，所以載入時網頁也會向這種伺服器（processed log 機率的）要一個 greedy 的 token，被拒絕就知道了。
 - **圖片、聲音和影片**跟著 chat template 寫的佔位 token 一起送過去，放在伺服器的 `content_parts`：圖片照 EXIF 轉正存成 PNG；聲音在這裡解碼成 WAV；影片送原檔，由伺服器挑畫格。伺服器把每個佔位 token 展開成那個檔案的 token。為了讓脈絡分頁顯示伺服器讀到的 prompt，網頁先用一個只生成一個 token 的請求問它怎麼展開；生成時伺服器若展開得不一樣，這一步就算錯誤。載入時網頁送一張很小的圖、一段聲音和一段影片給伺服器，看它收哪幾種；它不收的種類（沒加 `--enable-scale-out` 時就是全部）不能附上，輸入框上方會說明，模型分頁列出原因。
-- **MTP** 由伺服器決定（`--speculative-config`），所以側欄的開關關著、不能按。伺服器加上 `--per-request-spec-decode-metrics summary` 的話（vLLM 要和 `--speculative-config` 一起才收），每一步會顯示收下幾個猜測、主模型解碼 forward 幾次。vLLM 是在停止 token 截斷那次驗證之前算收下幾個，所以停止 token 是其中一個猜測時，它後面的猜測也算進去。設成 `detailed` 還會說每一次驗證收下幾個猜測，網頁由此標出猜中的 token：第一個 token 來自 prefill，之後每次驗證是收下的猜測，再加一個主模型自己的 token。vLLM 不記沒有猜測的那幾步，所以只有統計剛好對得上每個 token 時才標，而且要等這一步結束，收下的只算到停止 token 為止，和 `simple_backend.py` 一樣；被退回的猜測原本是什麼，伺服器不說。
+- **MTP** 由伺服器決定（`--speculative-config`），所以側欄的開關關著、不能按。伺服器加上 `--per-request-spec-decode-metrics summary` 的話（vLLM 要和 `--speculative-config` 一起才收），每一步會顯示收下幾個猜測、主模型解碼 forward 幾次。vLLM 是在停止 token 截斷那次驗證之前算收下幾個，所以停止 token 是其中一個猜測時，它後面的猜測也算進去。設成 `detailed` 還會說每一次驗證收下幾個猜測，網頁由此標出猜中的 token：第一個 token 來自 prefill，之後每次驗證是收下的猜測，再加一個主模型自己的 token。vLLM 不記沒有猜測的那幾步，所以只有統計剛好對得上每個 token 時才標，而且要等這一步結束，收下的只算到停止 token 為止，和 `simple_backend.py` 一樣；被退回的猜測原本是什麼，伺服器不說。兩個模型在有 GPU 的 vLLM 伺服器上都能推測解碼，接真的伺服器的測試也全部通過：在 DGX Spark 的 GB10 上，Qwen3.5 0.8B 猜 2 個時從約 113 變成 164 tok/s，Gemma 4 E2B 猜 4 個時從約 41 變成 108 tok/s。vLLM 0.32 的 CPU 版 image 兩個都跑不了：Qwen3.5 的第一個請求會在一個 CPU 版沒有的 Triton kernel 裡讓引擎停掉（讓它的 Gated DeltaNet 狀態跟上猜測的那個），Gemma 4 的草稿模型則是載入時就要建 CUDA graph。
 - **prefill** 是等到第一個 token 的時間，包含網路。vLLM 會留著和上一個 prompt 相同開頭的 KV cache（prefix caching），所以從第 2 步開始只讀新加的部分；`simple_backend.py` 則是每一步都讀完整個 prompt。有媒體時，前面那個問展開方式的請求已經讀過 prompt 的大部分了。
 - **模型分頁**寫出伺服器和它的版本；規格來自 `config.json`，脈絡上限來自伺服器。裝置、精度和參數量是伺服器的，這裡不顯示；模型資料夾卡片把權重列成「只在伺服器上」。
 - **和 `generate()` 不一定一樣**：vLLM 會把請求合成一批跑，也有自己的 kernel，所以 greedy 的輸出不一定和 `transformers` 逐 token 相同；`simple_backend.py` 的會。
@@ -226,6 +229,7 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 - **在哪裡跑。** Docker 有 nvidia runtime 時，再疊上 `compose.gpu.yaml`，用 vLLM 官方的 CUDA image（`vllm/vllm-openai:v0.32.0`）在 GPU 上跑；其他情況（Mac 也是）由 `compose.yaml` 在 Docker 的 Linux 虛擬機裡跑 vLLM 的 CPU image。`AGENT_LOOP_VLLM_DEVICE=cpu` 或 `gpu` 可以直接指定，`VLLM_PORT` 可以換埠號（8000）。在 GPU 上 KV cache 和 CPU 上一樣是 2 GiB（`--kv-cache-memory-bytes`、`VLLM_KV_CACHE_MEMORY_BYTES`），不是 GPU 記憶體的 92%；vLLM 啟動時也只要求 30% 的記憶體是空的（`--gpu-memory-utilization`、`VLLM_GPU_MEMORY_UTILIZATION`）：照它預設的 0.92，小張的顯示卡旁邊還有網頁自己的 CUDA context 時會拒絕啟動，和整台電腦共用記憶體的 GPU（例如 DGX Spark）也是。
 - **伺服器讀什麼。** 它自己不下載：`models/` 唯讀掛進去、設了 `HF_HUB_OFFLINE=1`，所以載入的正是 `REVISIONS` 裡的那個 commit，和網頁一樣。它跟網頁一樣只聽 127.0.0.1。啟動時加了 `--enable-scale-out`，所以看得到每個 token 的排名，伺服器也收圖片、聲音和影片；`--logprobs-mode` 維持 vLLM 預設的 `raw_logprobs`，浮窗顯示的是模型自己的機率和前 5 名。vLLM 編譯的結果存在一個 Docker volume，所以一個模型只有第一次啟動要編譯。
 - **CPU 版的 image**（`docker-compose/vllm-cpu/`）是 `vllm/vllm-openai-cpu:v0.32.0` 加上兩個修正（`patch_vllm.py`）：vLLM 自己的 #61992，晚了 0.32.0 一天才進去，沒有它的話每個模型在 CPU 上的第一個請求都會失敗；另一個是我們自己的，讓 CPU 上線性層的輸入在記憶體裡是連續的，沒有它的話 Gemma 4 聽的第一段聲音就會讓 engine 當掉。它把 KV cache 設成 2 GiB（`VLLM_CPU_KVCACHE_SPACE`；不設的話 vLLM 要 Docker 記憶體的 92%），啟動時不量圖片編碼器要多少記憶體（在 CPU 上要超過 10 分鐘），並讓一步最多可以跑 30 分鐘，而不是 vLLM 預設的 5 分鐘就放棄 engine。
+- **在 DGX Spark 上**（NVIDIA GB10，GPU 和整台電腦共用 128 GB 記憶體）：在 GPU 上，Qwen3.5 0.8B 啟動約 2 分鐘、解碼約 113 tok/s，Gemma 4 E2B 啟動約 3 分鐘、解碼約 41 tok/s，兩個模型都通過接真的伺服器的測試，包括 Gemma 讀得懂的每種媒體。照 vLLM 預設的 `gpu_memory_utilization`（0.92），伺服器在這台電腦上不肯啟動：vLLM 把整台電腦可用的記憶體當成 GPU 空著的記憶體，大約是 122 GiB 裡的 108 GiB。在同一台電腦的 CPU 上，Qwen3.5 0.8B 啟動約 1.3 分鐘、解碼約 23 tok/s。
 - **在 Mac 上**（Apple M5，給 Docker 10 個核心）：Qwen3.5 0.8B 啟動約 1.5 分鐘，佔 Docker 約 9 GB 記憶體，解碼約 10 tok/s。Gemma 4 E2B 要的記憶體比 Docker Desktop 預設的多：16 GB 時載入到一半會被停掉（頁面會說明，也說怎麼給 Docker 更多記憶體），24 GB 時 3 到 5 分鐘啟動、解碼約 4.6 tok/s，但載入時問伺服器收哪些媒體，要在 CPU 上跑它的圖片、聲音和影片編碼器，第一次要花大約 10 分鐘。
 
 ### 支援更多模型
@@ -302,7 +306,7 @@ RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real         
 
 - 速度：Apple M5（32 GB）上 Gemma 大約 7–13 tok/s，Qwen3.5 0.8B 大約 20–25 tok/s。思考模式一步常有兩、三百個思考 token，要等 30 秒左右。打開 MTP 後，工具呼叫這類好猜的步驟大約快 3 倍，中文長文幾乎沒有差別（見上面「MTP 推測解碼」的表）。
 - MTP 在網頁裡跑長回覆時，加速比單獨跑 `simple_backend.py` 少很多（英文程式碼：單獨跑 8 → 29 tok/s，網頁裡 9 → 12 tok/s），原因還沒查清楚。可能是網頁每 0.5 秒重畫一次、瀏覽器和模型搶同一台機器，而 MTP 每一輪有好幾個很小的草稿 forward，比一般解碼更容易被這些干擾拖慢。
-- MTP 只有 Gemma 4 E2B 能開：`transformers` 目前只支援 Gemma 4 的草稿模型讀主模型 KV cache 的這種做法，Qwen3.5 沒有對應的草稿模型。
+- 用 transformers 時 MTP 只有 Gemma 4 E2B 能開：`transformers` 目前只支援 Gemma 4 的草稿模型讀主模型 KV cache 的這種做法，Qwen3.5 沒有對應的草稿模型。在有 GPU 的 vLLM 伺服器上，Qwen3.5 也可以，用的是它自己 checkpoint 裡的 MTP 層（見「在 vLLM 伺服器上跑模型」）。
 - 開 MTP 時，主模型一次算 7 個位置，數值和一次算 1 個會有極小的差異；greedy 遇到兩個 token 機率幾乎一樣時，偶爾會選到不同的那個。
 - Qwen3.5 的 24 層裡有 18 層是 Gated DeltaNet。transformers 有兩個加速 kernel：`flash-linear-attention`（Triton）和 `causal-conv1d`（CUDA），都要有 CUDA GPU 才能用，所以都不列為依賴：改用 PyTorch 參考實作，結果一樣，只是比較慢；`simple_backend.py` 在所有裝置上都把 transformers 這個「改用參考實作」的提示關掉了。有 GPU 時，對 0.8B 的模型差別不大：在 NVIDIA GB10（DGX Spark）上，裝了 flash-linear-attention 後 prefill 快了約 4 倍（3,571 個 token 從 368 ms 變成 93 ms），decode 幾乎沒變（56 → 60 tok/s），兩種寫法和 float32 的差距也一樣小。causal-conv1d 在那台機器上沒有 wheel，得自己編譯。沒有 GPU 的 Linux 不要裝 flash-linear-attention：transformers 還是會選它，第一次 forward 就會失敗。
 - 在 MPS 上，transformers 用多條 thread 載入 Qwen3.5 的權重會卡住，所以 `simple_backend.py` 在 MPS 上改成單一 thread 載入（`HF_DEACTIVATE_ASYNC_LOAD=1`），兩個模型的載入時間都沒有變慢。
@@ -323,7 +327,7 @@ RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real         
 - Wikipedia 工具需要網路。
 - 在 vLLM 伺服器上（`VLLM_URL`）greedy 的輸出可能和 `generate()` 不同，畫面看得到多少要看伺服器加了哪些參數（見「在 vLLM 伺服器上跑模型」）：沒加 `--enable-scale-out` 時模型只讀文字，token 浮窗要嘛有模型自己的機率和前 5 名（預設），要嘛在 `--logprobs-mode processed_logprobs` 下（`--return-sampling-mask` 一定要它）有取樣時的機率和剩下幾個候選，兩者不會同時有；前 5 名哪些被剃掉永遠看不到；開了 sampling mask 的伺服器不接受 greedy 和不限的 top-k。MTP 猜中的 token 要等這一步結束、而且伺服器的統計對得上每個 token 才有底線，被退回的猜測原本是什麼也看不到。有媒體時，每一步都先問伺服器怎麼展開，多一個讀 prompt 的請求。網頁看不到伺服器載入的是哪個 revision，所以啟動時要照那一節加上 `--revision`。
 - `vllm_backend.py` 照 vLLM 0.32 原始碼裡的協定寫，測試用的是說這些協定的假伺服器、真的 tokenizer 和真的網頁；`/inference/v1/generate`、它的 sampling mask 和每一步的統計在 vLLM 裡標示為實驗性功能，之後可能會改。對真伺服器的測試（`VLLM_TEST_URL`）還沒在 GPU 上跑過。
-- 在 Mac 上，Docker 裡的 vLLM 是用 CPU 跑，而且慢：Gemma 4 E2B 解碼約 4.6 tok/s，Docker 要有大約 20 GB 以上的記憶體，第一次載入還要花大約 10 分鐘跑它的媒體編碼器，看伺服器收哪些媒體。`compose.gpu.yaml` 照 vLLM 文件寫 NVIDIA GPU 的設定，但還沒有在 GPU 上跑過。CPU 版的 image 修改了 vLLM 0.32.0（`docker-compose/vllm-cpu/patch_vllm.py`）；新版的 vLLM 可能兩個修正都不需要，要修改的程式和寫它時不一樣的話，建 image 時會停下來。
+- 在 Mac 上，Docker 裡的 vLLM 是用 CPU 跑，而且慢：Gemma 4 E2B 解碼約 4.6 tok/s，Docker 要有大約 20 GB 以上的記憶體，第一次載入還要花大約 10 分鐘跑它的媒體編碼器，看伺服器收哪些媒體。`compose.gpu.yaml` 只在一種 NVIDIA GPU 上跑過：DGX Spark 的 GB10。CPU 版的 image 修改了 vLLM 0.32.0（`docker-compose/vllm-cpu/patch_vllm.py`）；新版的 vLLM 可能兩個修正都不需要，要修改的程式和寫它時不一樣的話，建 image 時會停下來。
 - 用 Ctrl+C 或 SIGTERM 結束程式時，會停掉 vLLM 的容器。用別的方式結束（關掉終端機、`kill -9`）的話，容器會繼續跑、佔著模型，要用 `docker compose -p agent-loop-vllm down` 停掉。
 - `MODEL_ID` 環境變數決定一開始選哪個模型，也可以指定選單裡沒有的 checkpoint，只要它屬於已經支援的家族（Gemma 4 或 Qwen3.5）；其他家族要先照「支援更多模型」加一個 family。
 
