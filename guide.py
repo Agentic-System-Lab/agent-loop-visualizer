@@ -372,16 +372,16 @@ SECTIONS = [
              "en": "`streamlit_app.py`: the layout, the sidebar settings, the model menu and the background thread; it redraws every 0.5 s while a run is live."},
             {"zh": "`agent.py`：harness，也就是迴圈本體 `Run.run()`（[[agent.py|def run(self):]]）。",
              "en": "`agent.py`: the harness, that is, the loop itself, `Run.run()` ([[agent.py|def run(self):]])."},
-            {"zh": "`llm.py`：本機推論，自己寫的解碼迴圈 `generate()`（[[llm.py|def generate(self, prompt]]）和抽樣 `_sample()`；"
+            {"zh": "`simple_backend.py`：本機推論，自己寫的解碼迴圈 `generate()`（[[simple_backend.py|def generate(self, prompt]]）和抽樣 `_sample()`；"
                    "打開 MTP 時再加上一個草稿模型（{{mtp}}）。",
-             "en": "`llm.py`: local inference, with a hand-written decoding loop, `generate()` ([[llm.py|def generate(self, prompt]]), "
+             "en": "`simple_backend.py`: local inference, with a hand-written decoding loop, `generate()` ([[simple_backend.py|def generate(self, prompt]]), "
                    "and sampling, `_sample()`; with MTP on, a drafter joins in ({{mtp}})."},
             {"zh": "`backend.py`：harness 和畫面對「跑模型的那一層」的全部要求，`Backend`（[[backend.py|class Backend(Protocol):]]）："
                    "`render()`、`encode()`、`generate()`，以及 token 事件裡哪些欄位一定有、哪些要 backend 知道才有。"
-                   "`llm.py` 的 `LocalLLM` 是其中一種，`vllm_backend.py` 是另一種（{{backends}}）。",
+                   "`simple_backend.py` 的 `LocalLLM` 是其中一種，`vllm_backend.py` 是另一種（{{backends}}）。",
              "en": "`backend.py`: everything the harness and the page ask of whatever runs the model, `Backend` ([[backend.py|class Backend(Protocol):]]): "
                    "`render()`, `encode()` and `generate()`, and which fields of a token event are always there and which only when the backend knows them. "
-                   "`LocalLLM` in `llm.py` is one backend, and `vllm_backend.py` another ({{backends}})."},
+                   "`LocalLLM` in `simple_backend.py` is one backend, and `vllm_backend.py` another ({{backends}})."},
             {"zh": "`vllm_backend.py`：設了 `VLLM_URL` 時用的 `Backend`（[[vllm_backend.py|class VLLMBackend:]]）。prompt 照樣在這裡 render、切成 token，"
                    "token id 送到 vLLM 伺服器，每個 token 帶著它的 log 機率和前 5 名候選回來；取樣時剃掉了哪些候選，留在伺服器上。",
              "en": "`vllm_backend.py`: the `Backend` used when `VLLM_URL` is set ([[vllm_backend.py|class VLLMBackend:]]). The prompt is still rendered "
@@ -449,7 +449,7 @@ SECTIONS = [
                "every turn, so without the family the model would keep writing after its answer. Qwen's tokenizer does not mark `<think>` "
                "and `<tool_call>` as special either, and the family adds those too. The tokenizer comes inside the model's processor, which "
                "also turns images, sound and video into the model's inputs; which of those a model reads, the checkpoint says ({{media}})."},
-        Code("llm.py", "self.family = families.for_model_type(", end="self.special_ids = set("),
+        Code("simple_backend.py", "self.family = families.for_model_type(", end="self.special_ids = set("),
         {"zh": "要加模型時：同一個家族的另一個 checkpoint（例如更大的 Gemma 4），在 `MODELS` 加一行就好（[[families/__init__.py|MODELS = {]]）。"
                "新的家族，照 `families/qwen3_5.py` 寫一個模組，內容是一個輸出的 parser 和特殊 token 的說明（中英文各一份），"
                "加進 `FAMILIES`（[[families/__init__.py|FAMILIES = {]]），`model_type` 對得上就會自動選到。",
@@ -464,14 +464,14 @@ SECTIONS = [
             {"zh": "模型資料夾：models/ 裡的每個檔案", "en": "The model folder: every file in models/"},
             {"zh": "`from_pretrained` 載入的東西，全部來自 `models/` 裡每個模型各自的資料夾；兩個模型和 Gemma 的草稿模型分別說明。",
              "en": "Everything `from_pretrained` loads comes from one folder per model in `models/`; here is each, for both models and Gemma's drafter."}, (
-        {"zh": "`_download()` 用 `snapshot_download()` 把模型下載到 `MODELS_DIR`（[[llm.py|MODELS_DIR = Path(]]）：預設是專案裡的 `models/`，git 不會追蹤它；"
+        {"zh": "`_download()` 用 `snapshot_download()` 把模型下載到 `MODELS_DIR`（[[simple_backend.py|MODELS_DIR = Path(]]）：預設是專案裡的 `models/`，git 不會追蹤它；"
                "設定 `AGENT_LOOP_MODELS` 就換到別的地方（`HF_HUB_CACHE` 不行，因為它常是整台電腦所有專案共用的設定）。下載的是 `REVISIONS` 固定的 commit（[[families/__init__.py|REVISIONS = {]]），不是當下的 `main`，"
                "所以不管什麼時候下載，拿到的都是這一頁寫作和測試時用的檔案。已經下載過的檔案不會再抓，連不上 Hub 時直接用資料夾裡現有的。",
-         "en": "`_download()` has `snapshot_download()` fetch a model into `MODELS_DIR` ([[llm.py|MODELS_DIR = Path(]]): by default the project's `models/`, "
+         "en": "`_download()` has `snapshot_download()` fetch a model into `MODELS_DIR` ([[simple_backend.py|MODELS_DIR = Path(]]): by default the project's `models/`, "
                "which git ignores; `AGENT_LOOP_MODELS` moves it elsewhere (`HF_HUB_CACHE` does not, since it is often set once for every project on a machine). It downloads the commit pinned in `REVISIONS` "
                "([[families/__init__.py|REVISIONS = {]]), not whatever `main` is by then, so whenever it runs, it gets the files this page was "
                "written and tested against. Files already there are not fetched again, and when the Hub cannot be reached, what the folder holds is used."},
-        Code("llm.py", "def _download("),
+        Code("simple_backend.py", "def _download("),
         {"zh": "`models/` 裡是 Hugging Face 的快取格式：", "en": "Inside, `models/` is laid out as Hugging Face's cache:"},
         (
             {"zh": "`models--google--gemma-4-E2B-it/`：每個 repository 一個資料夾，id 裡的 `/` 換成 `--`。",
@@ -493,27 +493,27 @@ SECTIONS = [
             {"zh": "`CACHEDIR.TAG`：標明這是快取資料夾，備份工具可以跳過。",
              "en": "`CACHEDIR.TAG`: marks the folder as a cache, so backup tools can skip it."},
         ),
-        {"zh": "同一個 revision 在 macOS、Linux 加 CUDA 或只有 CPU 的電腦上，都是一模一樣的檔案。不同的是載入的方式：`pick_device()` 選裝置（[[llm.py|def pick_device()]]），"
+        {"zh": "同一個 revision 在 macOS、Linux 加 CUDA 或只有 CPU 的電腦上，都是一模一樣的檔案。不同的是載入的方式：`pick_device()` 選裝置（[[simple_backend.py|def pick_device()]]），"
                "權重在 GPU 上照檔案的 bfloat16 載入，在 CPU 上轉成 float32，記憶體是兩倍。",
          "en": "A revision is exactly the same files on macOS, on Linux with CUDA or on a computer with only a CPU. What differs is how they load: "
-               "`pick_device()` picks the device ([[llm.py|def pick_device()]]), and the weights load in the files' bfloat16 on a GPU but become "
+               "`pick_device()` picks the device ([[simple_backend.py|def pick_device()]]), and the weights load in the files' bfloat16 on a GPU but become "
                "float32 on a CPU, twice the memory."},
         {"zh": "載入時，每個檔案由誰讀：", "en": "When the model loads, which code reads which file:"},
         (
-            {"zh": "`config.json`：`AutoConfig` 先讀它，`model_type` 決定 family（[[llm.py|self.family = families.for_model_type(]]），模型分頁上方的規格也來自它。",
-             "en": "`config.json`: `AutoConfig` reads it first, and its `model_type` picks the family ([[llm.py|self.family = families.for_model_type(]]); "
+            {"zh": "`config.json`：`AutoConfig` 先讀它，`model_type` 決定 family（[[simple_backend.py|self.family = families.for_model_type(]]），模型分頁上方的規格也來自它。",
+             "en": "`config.json`: `AutoConfig` reads it first, and its `model_type` picks the family ([[simple_backend.py|self.family = families.for_model_type(]]); "
                    "the specs at the top of the Model tab come from it too."},
             {"zh": "`tokenizer.json`、`tokenizer_config.json`、`chat_template.jinja` 和 processor 的設定檔：`AutoProcessor` 把它們讀成一個 processor"
-                   "（[[llm.py|self.processor = AutoProcessor.from_pretrained(files)]]）；chat template 由 `render()` 執行（[[llm.py|def render(self, messages]]）。",
+                   "（[[simple_backend.py|self.processor = AutoProcessor.from_pretrained(files)]]）；chat template 由 `render()` 執行（[[simple_backend.py|def render(self, messages]]）。",
              "en": "`tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja` and the processor's settings: `AutoProcessor` reads them into one "
-                   "processor ([[llm.py|self.processor = AutoProcessor.from_pretrained(files)]]); `render()` runs the chat template ([[llm.py|def render(self, messages]])."},
+                   "processor ([[simple_backend.py|self.processor = AutoProcessor.from_pretrained(files)]]); `render()` runs the chat template ([[simple_backend.py|def render(self, messages]])."},
             {"zh": "權重：`AutoModelForMultimodalLM` 照 `config.json` 建好模型，再把 `.safetensors` 裡的 tensor 依名稱填進去"
-                   "（[[llm.py|self.model = AutoModelForMultimodalLM.from_pretrained(]]）。",
+                   "（[[simple_backend.py|self.model = AutoModelForMultimodalLM.from_pretrained(]]）。",
              "en": "The weights: `AutoModelForMultimodalLM` builds the model from `config.json` and fills it with the tensors of the `.safetensors` file "
-                   "by name ([[llm.py|self.model = AutoModelForMultimodalLM.from_pretrained(]])."},
-            {"zh": "`generation_config.json`：停止 token（[[llm.py|eos = self.model.generation_config.eos_token_id]]）和建議的抽樣設定（[[llm.py|def _sampling_defaults(self)]]）。",
-             "en": "`generation_config.json`: the stop tokens ([[llm.py|eos = self.model.generation_config.eos_token_id]]) and the recommended sampling "
-                   "settings ([[llm.py|def _sampling_defaults(self)]])."},
+                   "by name ([[simple_backend.py|self.model = AutoModelForMultimodalLM.from_pretrained(]])."},
+            {"zh": "`generation_config.json`：停止 token（[[simple_backend.py|eos = self.model.generation_config.eos_token_id]]）和建議的抽樣設定（[[simple_backend.py|def _sampling_defaults(self)]]）。",
+             "en": "`generation_config.json`: the stop tokens ([[simple_backend.py|eos = self.model.generation_config.eos_token_id]]) and the recommended sampling "
+                   "settings ([[simple_backend.py|def _sampling_defaults(self)]])."},
             {"zh": "`README.md`、`LICENSE`、`.gitattributes`：給人看的模型卡、授權和 Hub 上 git 的設定，app 不讀。",
              "en": "`README.md`, `LICENSE` and `.gitattributes`: the model card, the license and the settings of the Hub's git, for people; the app does not read them."},
         ),
@@ -599,9 +599,9 @@ SECTIONS = [
                    "(`backbone_hidden_size`); all 4 read the model's keys and values (`num_kv_shared_layers: 4`). Its output is clustered: the 262,144 "
                    "tokens are sorted into 2,048 clusters of 128, the clusters are scored first, and logits are computed only for the 4,096 tokens of "
                    "the best 32 ({{mtp}})."},
-            {"zh": "`generation_config.json`：`num_assistant_tokens: 6`，每次猜 6 個 token（[[llm.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]]）。",
+            {"zh": "`generation_config.json`：`num_assistant_tokens: 6`，每次猜 6 個 token（[[simple_backend.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]]）。",
              "en": "`generation_config.json`: `num_assistant_tokens: 6`, six guesses at a time "
-                   "([[llm.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]])."},
+                   "([[simple_backend.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]])."},
             {"zh": "`model.safetensors`（158 MB）：77.7M 個參數。67M 是 `embed_tokens`（262,144 個 token × 256 維），當作輸出的表；"
                    "`pre_projection` 把主模型的 token embedding 接上 hidden state（3,072 維）壓成 256 維，`post_projection` 再放大回 1,536；4 層本身只有約 9M。"
                    "`masked_embedding.token_ordering` 是 262,144 個整數，依群列出 token。",
@@ -614,10 +614,10 @@ SECTIONS = [
                    "and writes the model's token ids."},
         ),
         {"zh": "模型分頁最下面的「模型資料夾」列出目前載入的模型的這些檔案：`describe_folder()` 讀出每個檔案的大小，以及 family 的說明提到的欄位在檔案裡的值"
-               "（[[llm.py|def describe_folder(]]）。說明本身寫在 family 裡（Gemma：[[families/gemma4.py|file_notes=FILES,]]；Qwen：[[families/qwen3_5.py|file_notes=FILES,]]），"
+               "（[[simple_backend.py|def describe_folder(]]）。說明本身寫在 family 裡（Gemma：[[families/gemma4.py|file_notes=FILES,]]；Qwen：[[families/qwen3_5.py|file_notes=FILES,]]），"
                "所以換成同一家族的另一個 checkpoint，數字會跟著它的檔案變。",
          "en": "The model folder card at the bottom of the Model tab lists these files for the model that is loaded: `describe_folder()` reads each "
-               "file's size and the values of the fields the family's notes mention ([[llm.py|def describe_folder(]]). The notes themselves are on the "
+               "file's size and the values of the fields the family's notes mention ([[simple_backend.py|def describe_folder(]]). The notes themselves are on the "
                "family (Gemma: [[families/gemma4.py|file_notes=FILES,]]; Qwen: [[families/qwen3_5.py|file_notes=FILES,]]), so another checkpoint of "
                "the family shows its own numbers."},
         Code("families/__init__.py", "class FileNote:"),
@@ -629,17 +629,17 @@ SECTIONS = [
         {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`（設了 `VLLM_URL` 時是 `VLLMBackend`）；畫面的其他地方只把它當成一個 `Backend`（{{backends}}）。"
                "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，"
                "記憶體裡同時只留一個模型，換模型時舊的就會被放掉。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
-               "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[llm.py|def _sampling_defaults(self)]]）。"
+               "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[simple_backend.py|def _sampling_defaults(self)]]）。"
                "側欄的模型選單換了之後會開新對話（[[streamlit_app.py|key=\"model_id\", on_change=new_chat]]），MTP 也回到關閉；"
-               "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[llm.py|def load_drafter(self):]]）。",
+               "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[simple_backend.py|def load_drafter(self):]]）。",
          "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar (a `VLLMBackend` when `VLLM_URL` is set); the rest of the page "
                "takes it for just a `Backend` ({{backends}}). `load_llm()` is cached with "
                "`st.cache_resource(max_entries=1)`, so only one model stays in memory, and switching models lets the old one go. The first time "
                "a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "
-               "generation_config.json, so its recommendations come from the family ([[llm.py|def _sampling_defaults(self)]]). "
+               "generation_config.json, so its recommendations come from the family ([[simple_backend.py|def _sampling_defaults(self)]]). "
                "Switching models in the sidebar's menu starts a new conversation ([[streamlit_app.py|key=\"model_id\", on_change=new_chat]]) "
                "and turns MTP back off; the first time MTP speculative decoding is switched on, `current_llm()` also loads the drafter "
-               "([[llm.py|def load_drafter(self):]])."},
+               "([[simple_backend.py|def load_drafter(self):]])."},
         Code("streamlit_app.py", "@st.cache_resource(max_entries=1", end="def current_llm() -> Backend:"),
         {"zh": "輸入框（[[streamlit_app.py|sent = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。輸入框可以附上檔案，模型讀得懂聲音時還能錄音；"
                "有些範例也會附上 `assets/examples/` 裡的範例檔，輸入框上方也列出這些檔案，選了的會附在你自己打的問題裡。`start_run()` 先用不等待的方式拿一把全域的鎖"
@@ -727,7 +727,7 @@ SECTIONS = [
                "Qwen 是 `<|im_start|>assistant` 加上 `<think>`（開思考模式）或一段空的 `<think></think>`（不開）。",
          "en": "`generation_prompt=True` (`add_generation_prompt`) opens the model's turn at the end, asking the model to write next: `<|turn>model` "
                "for Gemma; for Qwen, `<|im_start|>assistant` followed by `<think>` (thinking mode on) or an empty `<think></think>` (off)."},
-        Code("llm.py", "def render(self, messages"),
+        Code("simple_backend.py", "def render(self, messages"),
         {"zh": "接著 `encode()` 把字串變成模型真正讀的 token（[[agent.py|encoded = self.llm.encode(]]）。只有文字時，就是 tokenizer 切出來的 token；"
                "對話裡有圖片、聲音或影片時，chat template 在它們的位置只寫了一個佔位 token，`encode()` 把它展開成那個檔案佔的幾十到幾千個 token"
                "（{{media}}），所以 `context` 送出的是展開後的字串。`n_tokens` 是它的長度，畫面拿它和脈絡上限比，顯示用掉幾 %。"
@@ -761,7 +761,7 @@ SECTIONS = [
                "the part that feeds it. Gemma 4 E2B has a vision and an audio encoder, so it sees images, hears sound and watches video (frame by "
                "frame); Qwen3.5 0.8B has only a vision encoder and reads images and video. The input box takes only files the model reads, plus "
                "data files such as CSV and Excel once Let the model write code is on."},
-        Code("llm.py", "def _modalities(self)"),
+        Code("simple_backend.py", "def _modalities(self)"),
         {"zh": "`start_run()` 把每個檔案存進這段對話的資料夾，名字只留一般字元，因為模型可能要在程式裡打出它（[[media.py|def save(]]）。"
                "使用者訊息裡，模型讀得懂的檔案各是一個 part，排在文字前面；其他檔案模型看不到內容，只在文字後面多一段說明："
                "`run_python` 在 `/data` 底下找得到它們，CSV、JSON 這類文字檔再附上第一行（通常就是欄位名稱）。少了這一行，小模型寫程式時會亂猜欄位，"
@@ -790,7 +790,7 @@ SECTIONS = [
              "en": "Qwen3.5: the bigger the image, the more tokens (about 300 `<|image_pad|>` for 640×480); a video gives 2 frames a second, "
                    "in pairs, each pair after its time, such as `<0.3 seconds>`."},
         ),
-        Code("llm.py", "def encode(self, prompt",
+        Code("simple_backend.py", "def encode(self, prompt",
              caption={"zh": "`media_tokens` 數每種媒體佔了幾個 token，step 卡片的脈絡段會寫出來。",
                       "en": "`media_tokens` counts how many tokens each kind of media takes; the step card's context section shows it."}),
         {"zh": "processor 要的是解碼好的資料，由 `media.py` 準備：圖片轉成 RGB，照片照 EXIF 轉正；聲音用 PyAV 解碼成單聲道，"
@@ -810,7 +810,7 @@ SECTIONS = [
                "so every input but the pixels stays; it also keeps the last prompt's position offset on the model, which is cleared before "
                "every prefill. After the prefill, the media are in the KV cache, and decoding is the same as for text. "
                "`tests/test_real_model.py` checks that with an image, a video and a recording, too, greedy output matches `generate()`."},
-        Code("llm.py", "def _encoded_media("),
+        Code("simple_backend.py", "def _encoded_media("),
     )),
     Section("model", "model",
             {"zh": "模型：prefill，然後一次一個 token", "en": "Model: prefill, then one token at a time"},
@@ -826,15 +826,15 @@ SECTIONS = [
         {"zh": "**prefill**：`encode()` 已經把整個 prompt 轉成 token id，一次 forward 算完；有媒體時，這次 forward 也把編碼器的輸出放進它們的位置（{{media}}）。"
                "`use_cache=True` 留下每一層的狀態（一般 attention 層是 key / value，"
                "Qwen3.5 的 Gated DeltaNet 層是一個固定大小的狀態），之後每個新 token 只需要算自己那一個位置；"
-               "`logits_to_keep=1` 只取最後一個位置的 logits，因為只需要「下一個 token」的分布（[[llm.py|def _forward(]]）。"
+               "`logits_to_keep=1` 只取最後一個位置的 logits，因為只需要「下一個 token」的分布（[[simple_backend.py|def _forward(]]）。"
                "prefill 的時間主要看 prompt 有多長，模型分頁的表格裡有每一步的 prefill ms。",
          "en": "**prefill**: the whole prompt, already token ids from `encode()`, goes through one forward pass, which also puts the encoders' "
                "output in place of any media ({{media}}). `use_cache=True` keeps each layer's state "
                "(the keys and values in ordinary attention layers, a fixed-size state in Qwen3.5's Gated DeltaNet layers), so each new token "
                "needs only its own position computed; `logits_to_keep=1` returns the logits for the last position only, since only the "
-               "distribution of the next token is needed ([[llm.py|def _forward(]]). Prefill time depends mostly on the prompt's length; "
+               "distribution of the next token is needed ([[simple_backend.py|def _forward(]]). Prefill time depends mostly on the prompt's length; "
                "the table in the Model tab has each step's prefill ms."},
-        Code("llm.py", "def generate(self, prompt", end='yield {"type": "prefill"',
+        Code("simple_backend.py", "def generate(self, prompt", end='yield {"type": "prefill"',
              caption={"zh": "prompt 如果以 family 的 `thought_prefix` 結尾（Gemma 的 `<|channel>thought`、Qwen 的 `<think>`），模型一開始就在思考裡。",
                       "en": "If the prompt ends with the family's `thought_prefix` (`<|channel>thought` for Gemma, `<think>` for Qwen), the model starts out inside its thinking."}),
         {"zh": "**解碼迴圈**從 `tokens` 一個一個拿抽好的 token：平常由 `_one_at_a_time()` 產生，打開 MTP 時改由 `_drafted()`（{{mtp}}），"
@@ -848,20 +848,20 @@ SECTIONS = [
                "switch to thinking, a tool call or the reply (Gemma: [[families/gemma4.py|channel_switch={]]; Qwen: "
                "[[families/qwen3_5.py|channel_switch={]]) → decode all the tokens so far and take the difference, so that a Chinese character "
                "split across several byte tokens comes out only once it is whole → send a `token` event."},
-        Code("llm.py", "decode_start = time.perf_counter()", end="**details,"),
+        Code("simple_backend.py", "decode_start = time.perf_counter()", end="**details,"),
         {"zh": "生成到停止 token，或到了 `max_new_tokens`（側欄的「每步 token 上限」），就跳出迴圈。",
          "en": "A stop token, or reaching `max_new_tokens` (the sidebar's Max tokens per step), ends the loop."},
-        Code("llm.py", "if token_id in self.eos_ids:", end="if len(generated) == sampling.max_new_tokens:"),
+        Code("simple_backend.py", "if token_id in self.eos_ids:", end="if len(generated) == sampling.max_new_tokens:"),
         {"zh": "還沒停，迴圈就再跟 `tokens` 要下一個。`_one_at_a_time()` 這時才把剛抽到的 token 餵回模型，帶著快取算出下一個位置的 logits；"
                "它是一個 generator，迴圈跳出之後就不會再多跑一次 forward。",
          "en": "If it has not stopped, the loop asks `tokens` for the next one. Only then does `_one_at_a_time()` feed the token it just sampled "
                "back into the model, with the cache, for the next position's logits; it is a generator, so once the loop ends, no extra forward pass runs."},
-        Code("llm.py", "def _one_at_a_time("),
+        Code("simple_backend.py", "def _one_at_a_time("),
         {"zh": "最後的 `done` 告訴 harness 為什麼停（`finish`：`stop_token`、`max_new_tokens` 或 `user_stopped`）、停在哪個 token、"
                "生成速度，以及整段原始輸出 `raw`（保留特殊 token，因為 harness 要靠它們解析）。",
          "en": "The final `done` tells the harness why it stopped (`finish`: `stop_token`, `max_new_tokens` or `user_stopped`), at which token, "
                "how fast it generated, and the whole raw output, `raw` (special tokens included, because the harness parses by them)."},
-        Code("llm.py", "decode_s = time.perf_counter() - decode_start", end='"raw": self.tokenizer.decode(generated'),
+        Code("simple_backend.py", "decode_s = time.perf_counter() - decode_start", end='"raw": self.tokenizer.decode(generated'),
     )),
     Section("sampling", "model",
             {"zh": "抽樣：每個 token 是怎麼選出來的", "en": "Sampling: how each token is picked"},
@@ -879,7 +879,7 @@ SECTIONS = [
                "`generate()`'s argmax does (in bfloat16, logits tie more often than one would think). Otherwise, in order: logits ÷ T → keep only the top k "
                "(top-k; 0 = no limit) → softmax again → add up from the most likely down until the cumulative probability reaches top-p "
                "(nucleus, keeping at least one) → renormalize → draw one with `torch.multinomial`. None of this depends on the model; both families share it."},
-        Code("llm.py", "def _sample(self, logits"),
+        Code("simple_backend.py", "def _sample(self, logits"),
         {"zh": "回傳的資料就是浮窗裡的數字：`p` 是被選中的 token 在原始分布的機率；`rank` 是它的名次；"
                "`kept` 是剃完還剩幾個候選；`p_sampled` 是它在剃完、重新正規化後的分布裡的機率。"
                "step 卡片上 token 的底色深淺就是用 `p` 算的（[[render.py|def heat(p: float)]]）：越深，代表模型原本越不看好它，卻被抽中了。"
@@ -913,7 +913,7 @@ SECTIONS = [
                "the last 20 do not compute their own keys and values but share those of two earlier layers (the last sliding window layer "
                "and the last full attention layer), and the drafter reads the same ones. It loads the first time MTP is switched on, and how "
                "many tokens it guesses at a time is in its generation config (`num_assistant_tokens` = 6)."},
-        Code("llm.py", "def load_drafter(self):"),
+        Code("simple_backend.py", "def load_drafter(self):"),
         {"zh": "**猜**：輸入是「上一個 token 的 embedding」接上「主模型在上一個位置最後一層的 hidden state」，輸出下一個 token 的 logits，"
                "取機率最高的當作猜測。接著把猜到的 token 和草稿模型自己的 hidden state 當作下一次的輸入，再猜一個，最多 6 個。"
                "6 次都站在同一個位置，因為它看到的 key / value 只到主模型真正讀過的地方。",
@@ -921,7 +921,7 @@ SECTIONS = [
                "is the logits for the next token, and the most likely one is the guess. The guessed token and the drafter's own hidden state "
                "are then the input for another guess, up to 6. All 6 sit at the same position, because the keys and values it sees go only "
                "as far as the model has really read."},
-        Code("llm.py", "def _draft("),
+        Code("simple_backend.py", "def _draft("),
         {"zh": "**驗證**：主模型對「剛確定的 token + 6 個猜測」做一次 forward，`logits_to_keep=7` 拿回 7 個位置的分布："
                "第 i 個位置的分布，就是讀到第 i 個猜測之前時，下一個 token 的分布。從第一個猜測開始依序交給 `_sample()` 檢查："
                "收下就是一個不用另外 forward 的 token；第一個被退回的猜測，由主模型自己在那個位置選的 token 取代，後面的猜測全部作廢；"
@@ -931,7 +931,7 @@ SECTIONS = [
                "from the first guess, `_sample()` checks them in order: a guess it keeps is a token without a forward pass of its own; the "
                "first guess it turns down is replaced by the model's own pick at that position, and the guesses after it are dropped; when "
                "all 6 hold, the last position's distribution gives one more token. So one forward pass produces between 1 and 7 tokens."},
-        Code("llm.py", "def _drafted("),
+        Code("simple_backend.py", "def _drafted("),
         {"zh": "作廢的猜測已經寫進了 KV cache，要用 `past.crop()` 拿掉；滑動視窗層平常會馬上丟掉太舊的 key / value，"
                "`activate_past_recording()` 讓它先留著，等 `crop()` 之後再縮回去。給草稿模型的那份 key / value 也同樣切掉作廢的部分。",
          "en": "The dropped guesses are already in the KV cache, and `past.crop()` takes them out; sliding window layers normally drop keys and "
@@ -946,7 +946,7 @@ SECTIONS = [
                "so when two tokens are almost equally likely it may now and then pick the other). When sampling, a guess is kept with its "
                "probability p after temperature, top-k and top-p; if it is not kept, it is taken out of the candidates and the token is drawn "
                "from the rest. Every token still comes out with probability p: the drafter decides how many forward passes it takes, not what gets written."},
-        Code("llm.py", "at = (cand_ids == draft)", end="pick = int(torch.multinomial(weights, 1))"),
+        Code("simple_backend.py", "at = (cand_ids == draft)", end="pick = int(torch.multinomial(weights, 1))"),
         {"zh": "畫面上：", "en": "On the page:"},
         (
             {"zh": "step 卡片裡被收下的猜測有底線；一串底線加上後面那個沒有底線的 token，就是主模型同一次 forward 的產出。",
@@ -968,11 +968,11 @@ SECTIONS = [
             {"zh": "harness 和畫面只認得 `Backend`：主要是 render、encode、generate 三個方法，和它送出的事件。上面幾段講的是本機那一個；同一個介面後面也可以是一台 vLLM 伺服器。",
              "en": "The harness and the page know only a `Backend`: mainly three methods, render, encode and generate, and the events it yields. The sections above are about the local one; "
                    "behind the same interface there can be a vLLM server instead."}, (
-        {"zh": "前面幾段的 prefill、解碼迴圈、抽樣和 MTP，都是 `llm.py` 的 `LocalLLM`。可是 harness 和畫面從來不直接找 `LocalLLM`，"
+        {"zh": "前面幾段的 prefill、解碼迴圈、抽樣和 MTP，都是 `simple_backend.py` 的 `LocalLLM`。可是 harness 和畫面從來不直接找 `LocalLLM`，"
                "只透過 `Backend` 用模型（[[backend.py|class Backend(Protocol):]]）：`render()` 把對話套進 chat template，`encode()` 把 prompt 變成模型讀的 token（媒體展開），"
                "`generate()` 依序送出 `prefill`、每個 token 一個 `token`、最後的 `done`；再加上畫面會讀的幾個屬性：family、模型讀得懂什麼、脈絡上限、模型分頁用的 `info`。"
                "誰有這些，誰就能跑模型。",
-         "en": "The prefill, the decoding loop, the sampling and MTP in the sections above are all `LocalLLM` in `llm.py`. Yet the harness and the page never ask "
+         "en": "The prefill, the decoding loop, the sampling and MTP in the sections above are all `LocalLLM` in `simple_backend.py`. Yet the harness and the page never ask "
                "for `LocalLLM`; they use the model only through a `Backend` ([[backend.py|class Backend(Protocol):]]): `render()` puts the conversation through "
                "the chat template, `encode()` turns the prompt into the tokens the model reads (media expanded), and `generate()` yields `prefill`, then a `token` "
                "for each token, then `done`; and the page reads a few attributes: the family, what the model reads, the context limit and the Model tab's `info`. "
@@ -1000,9 +1000,9 @@ SECTIONS = [
                "fill in a number from something else."},
         {"zh": "三個 backend：", "en": "The three backends:"},
         (
-            {"zh": "**`LocalLLM`（`llm.py`）**：用 transformers 把權重載到這台電腦，自己寫的解碼迴圈每個 token 都看得到完整的分布，所以 `TOKEN_DETAILS` 每一項都有；"
+            {"zh": "**`LocalLLM`（`simple_backend.py`）**：用 transformers 把權重載到這台電腦，自己寫的解碼迴圈每個 token 都看得到完整的分布，所以 `TOKEN_DETAILS` 每一項都有；"
                    "MTP 的每個猜測收下或退回都知道（{{mtp}}）；greedy 的輸出和 `generate()` 一樣；checkpoint 有編碼器的圖片、聲音、影片都讀得懂。",
-             "en": "**`LocalLLM` (`llm.py`)**: loads the weights onto this machine with transformers, and its hand-written decoding loop sees the whole distribution at "
+             "en": "**`LocalLLM` (`simple_backend.py`)**: loads the weights onto this machine with transformers, and its hand-written decoding loop sees the whole distribution at "
                    "every token, so it sends every one of `TOKEN_DETAILS`; it knows each MTP guess it kept or turned down ({{mtp}}); its greedy output equals "
                    "`generate()`'s; it reads the images, sound and video the checkpoint has encoders for."},
             {"zh": "**`VLLMBackend`（`vllm_backend.py`）**：權重在 vLLM 伺服器上。每個 token 回來時帶著它的 log 機率和最可能的幾個 token，"
@@ -1373,14 +1373,14 @@ EVENTS = [
       "en": "the whole prompt as the model reads it (media expanded), its token count, `added_from`, the tokens each kind of media takes, "
             "the context limit, the number of messages per role"},
      {"zh": "step 卡片的脈絡段、「脈絡」分頁", "en": "the step card's context section, the Context tab"}),
-    ("prefill", "llm.py", 'yield {"type": "prefill"',
+    ("prefill", "simple_backend.py", 'yield {"type": "prefill"',
      {"zh": "prompt 的 token 數、prefill 耗時", "en": "the prompt's token count, the prefill time"},
      {"zh": "迴圈圖「模型」格、模型分頁的 prefill ms", "en": "the Model box in the loop diagram, prefill ms in the Model tab"}),
-    ("token", "llm.py", '"type": "token",',
+    ("token", "simple_backend.py", '"type": "token",',
      {"zh": "id、piece、文字、channel、是否為特殊 token、機率、排名、前 5 名候選；開 MTP 時還有 `draft`（草稿猜了什麼、有沒有收下）。"
-            "機率以後的欄位要 backend 知道才有：`llm.py` 全都有，vLLM 伺服器有機率和前 5 名，其他看它加了哪些參數",
+            "機率以後的欄位要 backend 知道才有：`simple_backend.py` 全都有，vLLM 伺服器有機率和前 5 名，其他看它加了哪些參數",
       "en": "id, piece, text, channel, whether it is special, probability, rank, the top 5 candidates; with MTP, also `draft` (what the drafter guessed and whether it was kept). "
-            "The fields from the probability on are there only when the backend knows them: `llm.py` knows them all, a vLLM server the probability and the top 5, and more as its flags allow"},
+            "The fields from the probability on are there only when the backend knows them: `simple_backend.py` knows them all, a vLLM server the probability and the top 5, and more as its flags allow"},
      {"zh": "token 的熱度顏色、底線與浮窗、左邊逐字出現的回覆", "en": "the token's heat color, underline and popover; the reply appearing bit by bit on the left"}),
     ("model_end", "agent.py", 'self.emit("model_end"',
      {"zh": "停止原因、停止 token、token 數、tok/s、MTP 統計（vLLM 伺服器還可能說哪些 token 是猜中的）、原始輸出",

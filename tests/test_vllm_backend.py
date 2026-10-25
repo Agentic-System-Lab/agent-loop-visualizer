@@ -32,7 +32,7 @@ from families import GEMMA4, QWEN3_5
 from fakes import MEDIA_TOKENS, PLACEHOLDERS, FakeLLM, fake_folder, pieces, qwen_tool_call, tool_call
 from html_check import assert_balanced
 from i18n import LANGS, pick
-from llm import MODELS_DIR
+from simple_backend import MODELS_DIR
 from test_render import render_everything
 from vllm_backend import GENERATE, ServerError, VLLMBackend
 

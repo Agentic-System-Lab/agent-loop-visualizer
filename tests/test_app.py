@@ -18,8 +18,8 @@ import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 import agent
-import llm
 import render
+import simple_backend
 import tools
 import vllm_backend
 from backend import Sampling
@@ -47,7 +47,7 @@ def models(monkeypatch, outputs, tmp_path, sandbox):
             super().__init__(outputs, model_id)
             made.append(self)
 
-    monkeypatch.setattr(llm, "LocalLLM", AppLLM)
+    monkeypatch.setattr(simple_backend, "LocalLLM", AppLLM)
     monkeypatch.setenv("AGENT_LOOP_UPLOADS", str(tmp_path / "uploads"))
     st.cache_resource.clear()  # a fresh model and a fresh generation lock per test
     st.cache_data.clear()  # and a fresh look for Docker

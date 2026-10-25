@@ -6,7 +6,7 @@ turn steps into HTML strings for st.html. Every function that writes words takes
 page's language, "zh" or "en" (i18n.py), so switching it redraws a finished run too.
 
 A token shows as much of the model's distribution as the backend reported (backend.TOKEN_DETAILS):
-llm.LocalLLM reports all of it, and what a backend leaves out is left out here too, never filled in.
+simple_backend.LocalLLM reports all of it, and what a backend leaves out is left out here too, never filled in.
 """
 
 import base64
@@ -353,7 +353,7 @@ def build(events: list[dict]) -> dict:
 
 def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:
     """Mark the guesses a server reported only at the end of a step (vllm_backend.drafted_tokens: the places in kept_at
-    and turned_down_at), as llm.py marks them while generating. The server does not say what a guess turned down was."""
+    and turned_down_at), as simple_backend.py marks them while generating. The server does not say what a guess turned down was."""
     kept, turned_down = set(mtp.get("kept_at", ())), set(mtp.get("turned_down_at", ()))
     if not kept and not turned_down:
         return tokens

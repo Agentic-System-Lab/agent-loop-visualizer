@@ -165,11 +165,11 @@ def test_event_table_points_at_the_line_that_sends_it(kind, file, text, _carries
 
 def test_event_table_covers_every_event_the_harness_sends():
     events = set()
-    for file in ("agent.py", "llm.py"):
+    for file in ("agent.py", "simple_backend.py"):
         for node in ast.walk(guide.source(file)[1]):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "emit" and isinstance(node.args[0], ast.Constant):
                 events.add(node.args[0].value)
-    events |= {"prefill", "token"}  # yielded by llm.generate and forwarded as they are
+    events |= {"prefill", "token"}  # yielded by LocalLLM.generate and forwarded as they are
     assert events == {e[0] for e in guide.EVENTS}
 
 

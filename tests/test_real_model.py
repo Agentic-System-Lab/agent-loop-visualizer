@@ -18,7 +18,7 @@ import tools
 from agent import SYSTEM_WITH_TOOLS, Run, RunSettings
 from backend import Backend
 from html_check import assert_balanced
-from llm import LocalLLM, Sampling
+from simple_backend import LocalLLM, Sampling
 from test_render import render_everything
 from tools import TOOLS
 

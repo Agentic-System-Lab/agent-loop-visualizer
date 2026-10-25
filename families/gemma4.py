@@ -350,7 +350,7 @@ FILES = {
         "audio_ms_per_token", "video_processor.num_frames", "video_processor.max_soft_tokens")),
 }
 
-# The MTP drafter's own files (DRAFTERS); llm.LocalLLM.load_drafter loads its config and weights, not its tokenizer.
+# The MTP drafter's own files (DRAFTERS); simple_backend.LocalLLM.load_drafter loads its config and weights, not its tokenizer.
 SAME_VOCABULARY = FileNote({
     "zh": "和主模型同一套詞彙。這個 app 不載入它：草稿模型讀寫的都是主模型的 token id。",
     "en": "The same vocabulary as the model's. The app does not load it: the drafter reads and writes the model's token ids.",

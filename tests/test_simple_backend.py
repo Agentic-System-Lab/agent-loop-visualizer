@@ -13,10 +13,10 @@ import pytest
 import torch
 
 import families
-import llm
+import simple_backend
 from backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend
 from families import GEMMA4, FileNote
-from llm import LocalLLM, Sampling
+from simple_backend import LocalLLM, Sampling
 
 VOCAB = [
     "<pad>", "<eos>", "<turn|>", "<|tool_response>", "<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>",
@@ -163,7 +163,7 @@ def test_token_events_carry_sampling_details():
     _, tokens, done = run(make_llm(["▁Hi", "<turn|>"]))
     tok = tokens[0]
     assert tok["id"] == ID["▁Hi"] and tok["rank"] == 1 and tok["p"] > 0.99
-    assert len(tok["top"]) == llm.TOP_N
+    assert len(tok["top"]) == simple_backend.TOP_N
     assert done["tok_per_s"] is None or done["tok_per_s"] > 0
 
 
@@ -253,7 +253,7 @@ def test_no_limits_keep_the_whole_vocabulary():
 
 
 def test_sampled_probability_is_renormalized(monkeypatch):
-    monkeypatch.setattr(llm.torch, "multinomial", lambda probs, n: torch.tensor([1]))
+    monkeypatch.setattr(simple_backend.torch, "multinomial", lambda probs, n: torch.tensor([1]))
     chosen, d = make_llm()._sample(logits_for(PROBS), Sampling(temperature=1.0, top_k=0, top_p=0.7))
     assert chosen == 1
     assert d["rank"] == 2
@@ -262,7 +262,7 @@ def test_sampled_probability_is_renormalized(monkeypatch):
 
 
 def test_temperature_reshapes_the_sampling_distribution(monkeypatch):
-    monkeypatch.setattr(llm.torch, "multinomial", lambda probs, n: torch.tensor([0]))
+    monkeypatch.setattr(simple_backend.torch, "multinomial", lambda probs, n: torch.tensor([0]))
     _, cold = make_llm()._sample(logits_for(PROBS), Sampling(temperature=0.5, top_k=0, top_p=1.0))
     _, hot = make_llm()._sample(logits_for(PROBS), Sampling(temperature=2.0, top_k=0, top_p=1.0))
     assert cold["p_sampled"] > 0.5 > hot["p_sampled"]
@@ -270,7 +270,7 @@ def test_temperature_reshapes_the_sampling_distribution(monkeypatch):
 
 
 def test_rank_counts_strictly_more_likely_tokens(monkeypatch):
-    monkeypatch.setattr(llm.torch, "multinomial", lambda probs, n: torch.tensor([3]))
+    monkeypatch.setattr(simple_backend.torch, "multinomial", lambda probs, n: torch.tensor([3]))
     chosen, d = make_llm()._sample(logits_for(PROBS), Sampling(temperature=1.0, top_k=0, top_p=1.0))
     assert chosen == 3 and d["rank"] == 4
     assert any(c["id"] == 3 for c in d["top"])
@@ -423,14 +423,14 @@ def test_greedy_keeps_a_guess_only_when_it_is_the_top_token():
 
 
 def test_a_guess_turned_down_is_never_drawn_again(monkeypatch):
-    monkeypatch.setattr(llm.torch, "rand", lambda *a: torch.tensor(0.99))  # above p(guess): turned down
+    monkeypatch.setattr(simple_backend.torch, "rand", lambda *a: torch.tensor(0.99))  # above p(guess): turned down
     seen = {}
 
     def multinomial(weights, n):
         seen["weights"] = weights.tolist()
         return torch.tensor([0])
 
-    monkeypatch.setattr(llm.torch, "multinomial", multinomial)
+    monkeypatch.setattr(simple_backend.torch, "multinomial", multinomial)
     chosen, d = make_llm()._sample(logits_for(PROBS), Sampling(temperature=1.0, top_k=0, top_p=1.0), draft=1)
     assert seen["weights"][1] == 0 and seen["weights"][0] == pytest.approx(0.5)
     assert chosen == 0 and d["p_sampled"] == pytest.approx(0.5)  # its probability before the guess was removed
@@ -481,13 +481,13 @@ def media_llm(monkeypatch):
     m.processor, m.dtype = Processor(), torch.bfloat16
     m.media_token_ids = {"image": ID["<|tool_call>"], "audio": ID["<|tool_response>"]}
     for kind in ("image", "audio", "video"):
-        monkeypatch.setattr(llm.media, f"load_{kind}", lambda path, *rest, kind=kind: (f"{kind}:{path}", {"fps": 2.0}) if kind == "video" else f"{kind}:{path}")
+        monkeypatch.setattr(simple_backend.media, f"load_{kind}", lambda path, *rest, kind=kind: (f"{kind}:{path}", {"fps": 2.0}) if kind == "video" else f"{kind}:{path}")
     return m
 
 
 def test_encode_hands_the_processor_each_kind_of_media_in_order(monkeypatch):
     m = media_llm(monkeypatch)
-    m.family = llm.families.QWEN3_5
+    m.family = simple_backend.families.QWEN3_5
     parts = [{"type": "image", "path": "a.png"}, {"type": "video", "path": "v.mp4"}, {"type": "image", "path": "b.png"}]
     encoded = m.encode("look <|tool_call>", parts)
     [call] = m.processor.calls
@@ -504,7 +504,7 @@ def test_encode_hands_the_processor_each_kind_of_media_in_order(monkeypatch):
 def test_a_video_shorter_than_the_frames_a_processor_takes_gives_it_all_it_has(monkeypatch):
     m = media_llm(monkeypatch)
     m.processor = Processor(num_frames=32)
-    monkeypatch.setattr(llm.media, "load_video", lambda path: (torch.zeros(30 if "short" in path else 64, 2, 2, 3), {"fps": 10.0}))
+    monkeypatch.setattr(simple_backend.media, "load_video", lambda path: (torch.zeros(30 if "short" in path else 64, 2, 2, 3), {"fps": 10.0}))
     m.encode("x", [{"type": "video", "path": "short.mp4"}, {"type": "video", "path": "long.mp4"}])
     assert m.processor.calls[0]["videos_kwargs"]["num_frames"] == 30
     m.encode("x", [{"type": "video", "path": "long.mp4"}])
@@ -539,7 +539,7 @@ def test_images_go_through_the_vision_encoder_before_the_prefill():
 
     m = make_llm()
     m.model = Multimodal(["▁Hi", "<turn|>"])
-    prompt = llm.Encoded("x", torch.tensor([[ID["▁Hi"]]]), 1, {"pixel_values": "pixels", "image_grid_thw": "grid", "mm_token_type_ids": "types"})
+    prompt = simple_backend.Encoded("x", torch.tensor([[ID["▁Hi"]]]), 1, {"pixel_values": "pixels", "image_grid_thw": "grid", "mm_token_type_ids": "types"})
     list(m.generate(prompt, GREEDY, lambda: False))
     assert seen["mm_encoder_outputs"] == {"image": ("image features", "pixels", "grid")}
     assert "pixel_values" not in seen  # the forward pass gets the encoder's output instead of the pixels
@@ -569,12 +569,12 @@ def fake_hub(monkeypatch, model_type="gemma4"):
             return result
         return SimpleNamespace(from_pretrained=from_pretrained)
 
-    monkeypatch.setattr(llm, "snapshot_download", snapshot_download)
-    monkeypatch.setattr(llm, "AutoConfig", loader("config", SimpleNamespace(model_type=model_type)))
-    monkeypatch.setattr(llm, "AutoProcessor", loader("processor", SimpleNamespace(tokenizer="tokenizer")))
-    monkeypatch.setattr(llm, "AutoModelForMultimodalLM", loader("model", Loaded))
-    monkeypatch.setattr(llm, "AutoModelForCausalLM", loader("drafter", Loaded))
-    monkeypatch.setattr(llm, "pick_device", lambda: "cuda")
+    monkeypatch.setattr(simple_backend, "snapshot_download", snapshot_download)
+    monkeypatch.setattr(simple_backend, "AutoConfig", loader("config", SimpleNamespace(model_type=model_type)))
+    monkeypatch.setattr(simple_backend, "AutoProcessor", loader("processor", SimpleNamespace(tokenizer="tokenizer")))
+    monkeypatch.setattr(simple_backend, "AutoModelForMultimodalLM", loader("model", Loaded))
+    monkeypatch.setattr(simple_backend, "AutoModelForCausalLM", loader("drafter", Loaded))
+    monkeypatch.setattr(simple_backend, "pick_device", lambda: "cuda")
     return seen
 
 
@@ -609,26 +609,26 @@ def test_a_checkpoint_on_disk_loads_in_place(monkeypatch, tmp_path):
 
 def test_models_download_at_their_pinned_revision_into_the_project_folder_git_ignores(monkeypatch):
     seen = []
-    monkeypatch.setattr(llm, "snapshot_download", lambda model_id, **kwargs: seen.append(kwargs) or "/hub")
-    llm._download("google/gemma-4-E2B-it")
-    llm._download("someone/unpinned", "config.json")
+    monkeypatch.setattr(simple_backend, "snapshot_download", lambda model_id, **kwargs: seen.append(kwargs) or "/hub")
+    simple_backend._download("google/gemma-4-E2B-it")
+    simple_backend._download("someone/unpinned", "config.json")
     assert seen == [
-        {"revision": families.REVISIONS["google/gemma-4-E2B-it"], "allow_patterns": None, "cache_dir": llm.MODELS_DIR},
-        {"revision": None, "allow_patterns": "config.json", "cache_dir": llm.MODELS_DIR},  # main
+        {"revision": families.REVISIONS["google/gemma-4-E2B-it"], "allow_patterns": None, "cache_dir": simple_backend.MODELS_DIR},
+        {"revision": None, "allow_patterns": "config.json", "cache_dir": simple_backend.MODELS_DIR},  # main
     ]
-    root = Path(llm.__file__).resolve().parent
+    root = Path(simple_backend.__file__).resolve().parent
     if not os.environ.get("AGENT_LOOP_MODELS"):  # which moves them out of the project
-        assert llm.MODELS_DIR == root / "models"
+        assert simple_backend.MODELS_DIR == root / "models"
     assert "/models/" in (root / ".gitignore").read_text().split()
 
 
 def test_only_agent_loop_models_moves_the_models_folder_not_a_machine_wide_hf_hub_cache(monkeypatch, tmp_path):
-    # MODELS_DIR is read when llm.py is imported, so run the module's code again, apart from the imported llm.
+    # MODELS_DIR is read when simple_backend.py is imported, so run the module's code again, apart from the imported one.
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
     monkeypatch.delenv("AGENT_LOOP_MODELS", raising=False)
-    assert runpy.run_path(llm.__file__)["MODELS_DIR"] == Path(llm.__file__).resolve().parent / "models"
+    assert runpy.run_path(simple_backend.__file__)["MODELS_DIR"] == Path(simple_backend.__file__).resolve().parent / "models"
     monkeypatch.setenv("AGENT_LOOP_MODELS", str(tmp_path / "elsewhere"))
-    assert runpy.run_path(llm.__file__)["MODELS_DIR"] == tmp_path / "elsewhere"
+    assert runpy.run_path(simple_backend.__file__)["MODELS_DIR"] == tmp_path / "elsewhere"
 
 
 def test_a_model_folder_lists_its_files_their_sizes_and_the_fields_its_notes_name(monkeypatch, tmp_path):
@@ -642,16 +642,16 @@ def test_a_model_folder_lists_its_files_their_sizes_and_the_fields_its_notes_nam
     (snapshot / "extra" / "notes.txt").write_text("hi")
     (snapshot / ".cache" / "huggingface").mkdir(parents=True)
     (snapshot / ".cache" / "huggingface" / "config.json.metadata").write_text("3a5f")  # hf download --local-dir's bookkeeping
-    monkeypatch.setattr(llm, "ROOT", tmp_path)
+    monkeypatch.setattr(simple_backend, "ROOT", tmp_path)
     notes = {"config.json": FileNote({"zh": "", "en": ""}, ("text_config.sliding_window", "text_config.missing", "model_type.deeper"))}
-    assert llm.describe_folder(str(snapshot), notes) == {
+    assert simple_backend.describe_folder(str(snapshot), notes) == {
         "path": "models--fake--gemma-test/snapshots/3e22461f", "revision": "3e22461f",
         "files": [
             {"name": "config.json", "bytes": blob.stat().st_size, "fields": {"text_config.sliding_window": 512}},
             {"name": "extra/notes.txt", "bytes": 2, "fields": {}},
         ],
     }
-    assert llm.describe_folder(str(snapshot / "extra"), notes)["revision"] is None  # a checkpoint on disk, not a download
+    assert simple_backend.describe_folder(str(snapshot / "extra"), notes)["revision"] is None  # a checkpoint on disk, not a download
 
 
 def test_the_drafter_loads_from_its_downloaded_files(monkeypatch):
@@ -659,7 +659,7 @@ def test_the_drafter_loads_from_its_downloaded_files(monkeypatch):
     m = make_llm()
     m.dtype, m.device = torch.bfloat16, "cuda"
     m.drafter, m.drafter_id = None, "google/gemma-4-E2B-it-assistant"
-    m._drafter_lock = llm.threading.Lock()
+    m._drafter_lock = simple_backend.threading.Lock()
     with pytest.raises(Loaded):
         m.load_drafter()
     assert seen == [
@@ -670,9 +670,9 @@ def test_the_drafter_loads_from_its_downloaded_files(monkeypatch):
 
 @pytest.mark.parametrize("cuda, mps, expected", [(True, True, "cuda"), (False, True, "mps"), (False, False, "cpu")])
 def test_pick_device(monkeypatch, cuda, mps, expected):
-    monkeypatch.setattr(llm.torch.cuda, "is_available", lambda: cuda)
-    monkeypatch.setattr(llm.torch.backends.mps, "is_available", lambda: mps)
-    assert llm.pick_device() == expected
+    monkeypatch.setattr(simple_backend.torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(simple_backend.torch.backends.mps, "is_available", lambda: mps)
+    assert simple_backend.pick_device() == expected
 
 
 def test_the_kernel_notice_is_dropped_and_nothing_else():
@@ -681,8 +681,8 @@ def test_the_kernel_notice_is_dropped_and_nothing_else():
 
     notice = ("`chunk_gated_delta_rule` is falling back to its reference PyTorch implementation because "
               "`flash-linear-attention` is not installed. This is correct but much slower; install it for the optimized kernel.")
-    assert not llm._not_a_kernel_notice(record(notice))
-    assert llm._not_a_kernel_notice(record("Could not load the kernel from the hub"))
+    assert not simple_backend._not_a_kernel_notice(record(notice))
+    assert simple_backend._not_a_kernel_notice(record("Could not load the kernel from the hub"))
 
 
 @pytest.mark.parametrize("device", ["cuda", "mps", "cpu"])
@@ -691,7 +691,7 @@ def test_the_kernel_notice_is_dropped_on_every_device(monkeypatch, device):
     monkeypatch.setattr(logger, "filters", [])
     monkeypatch.delenv("HF_DEACTIVATE_ASYNC_LOAD", raising=False)  # set on MPS
     fake_hub(monkeypatch)
-    monkeypatch.setattr(llm, "pick_device", lambda: device)
+    monkeypatch.setattr(simple_backend, "pick_device", lambda: device)
     with pytest.raises(Loaded):
         LocalLLM("google/gemma-4-E2B-it")
-    assert llm._not_a_kernel_notice in logger.filters
+    assert simple_backend._not_a_kernel_notice in logger.filters

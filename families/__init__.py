@@ -1,6 +1,6 @@
 """Model families: everything that changes when the model changes.
 
-The harness (agent.py), the decoding loop (llm.py) and the page (render.py) are written once.
+The harness (agent.py), the decoding loop (simple_backend.py) and the page (render.py) are written once.
 What differs between Gemma 4 and Qwen3.5 is how the model writes its turns, its thinking and its
 tool calls, which tokens stop it, and what its control tokens mean. A family module describes all
 of that in one Family, and everything else asks the family.
@@ -25,7 +25,7 @@ MODELS = {
 }
 
 # MTP drafters: model id -> a small model that guesses the next few tokens from the model's own last hidden
-# state and keys and values, so one forward pass of the model can check several tokens (llm.LocalLLM.load_drafter).
+# state and keys and values, so one forward pass of the model can check several tokens (simple_backend.LocalLLM.load_drafter).
 # transformers runs this for Gemma 4's assistant checkpoints only.
 DRAFTERS = {
     "google/gemma-4-E2B-it": "google/gemma-4-E2B-it-assistant",

@@ -1,7 +1,7 @@
 """The harness, the parsers and the UI all assume things about each model's real tokenizer
 and chat template. These tests check those assumptions against the real files, for every
 model in the menu. Only the tokenizer is loaded (a few seconds), and the processor for the
-tests with media; a model not yet downloaded into models/ (llm.MODELS_DIR) is skipped."""
+tests with media; a model not yet downloaded into models/ (simple_backend.MODELS_DIR) is skipped."""
 
 import os
 import re
@@ -11,13 +11,13 @@ import pytest
 from huggingface_hub import try_to_load_from_cache
 
 import families
-import llm
 import render
 import media
+import simple_backend
 from agent import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, Run, RunSettings
 from fakes import FakeLLM, gemma_call, qwen_call
 from html_check import assert_balanced
-from llm import MODELS_DIR, LocalLLM
+from simple_backend import MODELS_DIR, LocalLLM
 from tools import TOOLS
 
 SAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
@@ -98,7 +98,7 @@ def test_every_file_in_the_model_folder_is_explained_and_has_the_fields_its_note
         if isinstance(config, str):
             folders.append((os.path.dirname(config), model.family.drafter_file_notes))
     for folder, notes in folders:
-        files = llm.describe_folder(folder, notes)["files"]
+        files = simple_backend.describe_folder(folder, notes)["files"]
         assert [f["name"] for f in files if render.file_kind(f["name"]) is None] == []
         for f in files:
             if f["name"] in notes:

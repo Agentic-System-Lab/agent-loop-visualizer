@@ -31,7 +31,7 @@ are not changing.
 ```
 streamlit_app.py   layout, session state, model menu, background thread; redraws every 0.5 s while a run is live
 agent.py           the harness (Run): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
-llm.py             LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
+simple_backend.py  LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
 backend.py         Backend: what agent.py and the page ask of whatever runs the model (LocalLLM, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
 vllm_backend.py    VLLMBackend (VLLM_URL): the tokenizer and chat template here, the token ids to a vLLM server (/v1/completions, or /inference/v1/generate with --enable-scale-out: media, sampling masks), what it says about each token back
 families/          everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
@@ -43,7 +43,7 @@ guide.py           the 運作說明 page: content in both languages, code refere
 i18n.py            the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
 assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach, also offered above the input box)
 tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
-models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_LOOP_MODELS moves them, HF_HUB_CACHE does not
+models/            downloaded models (simple_backend.MODELS_DIR), which git ignores; AGENT_LOOP_MODELS moves them, HF_HUB_CACHE does not
 ```
 
 ## Rules that keep it working
@@ -55,7 +55,7 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_
   every event the harness sends and points at the line that sends it) and the event list in both READMEs.
   The harness and the page reach the model only through `backend.Backend`; a token event's probabilities,
   rank, candidates and MTP draft (`backend.TOKEN_DETAILS`) are optional, and render.py leaves out what is missing.
-- **Nothing model-specific outside `families/`.** agent.py, llm.py and render.py have no "if Gemma".
+- **Nothing model-specific outside `families/`.** agent.py, simple_backend.py and render.py have no "if Gemma".
   Parsing output, the tokens that switch to thinking / tool call / reply, stop tokens, special-token
   explanations, notes on the files of its checkpoints and recommended sampling all live on the
   `Family`. Another checkpoint of a supported family is one line in `MODELS` and one in `REVISIONS`,
@@ -65,8 +65,8 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_
   section, whose numbers come from those files.
 - **The decoding loop stays exact.** Greedy output equals `model.generate()`. MTP only changes how many
   forward passes run: greedy with MTP equals greedy without, and sampling with MTP keeps each token's
-  distribution. `tests/test_llm.py` and `tests/test_real_model.py` check this; don't loosen them.
-  This is about llm.py: vLLM runs its own kernels, so VLLMBackend promises only that the server reads
+  distribution. `tests/test_simple_backend.py` and `tests/test_real_model.py` check this; don't loosen them.
+  This is about simple_backend.py: vLLM runs its own kernels, so VLLMBackend promises only that the server reads
   exactly the prompt's token ids and that nothing it shows was made up where the server sent nothing.
 - **Escape everything the model writes** before it reaches `st.html`. tests/test_render.py checks it,
   and also that every prefix of a run's events renders, because the page redraws mid-run.
