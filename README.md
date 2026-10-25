@@ -2,7 +2,7 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-![The top bar links to the How it works page, the switch at the top right changes the language, and the sidebar picks the model; on the left is the chat, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates.](docs/screenshot-en.png)
+![The top bar links to the How it works page, the switch at the top right changes the language, and the sidebar picks the model; on the left is the chat, with the sample files to ask about above the input box, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates.](docs/screenshot-en.png)
 
 One of the projects of [Agent Atlas](https://cyyeh.github.io/agent-atlas-learning/) (in Traditional Chinese).
 

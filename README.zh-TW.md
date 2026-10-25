@@ -2,7 +2,7 @@
 
 [English](README.md) | 繁體中文
 
-![上方可以切換到「運作說明」頁，右上角可以切換語言，側欄可以選模型；左邊是對話，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot-zh.png)
+![上方可以切換到「運作說明」頁，右上角可以切換語言，側欄可以選模型；左邊是對話，輸入框上方是可以拿來問的範例檔案，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot-zh.png)
 
 此為[Agent Atlas 技術與實戰交流](https://cyyeh.github.io/agent-atlas-learning/)的專案之一。
 
