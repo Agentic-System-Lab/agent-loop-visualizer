@@ -81,7 +81,7 @@ tests/             pytest tests; see Tests below
 
 The agent runs in a background thread and appends an event at every stage; the UI only draws the event list. So when you press Stop or Allow and Streamlit reruns the script, the loop in the background is not interrupted.
 
-How it works is a static page: `uv run python guide.py _site` writes `_site/en/index.html` and `_site/zh/index.html` (styles and a small script inlined, so they open straight in a browser), and `_site/index.html`, which sends a reader to the language they last picked on the page's switch, or else their browser's. On a push to main, `.github/workflows/pages.yml` does the same and publishes it to GitHub Pages.
+How it works is a static page: `uv run python guide.py _site` writes `_site/en/index.html` and `_site/zh/index.html` (styles and a small script inlined, so they open straight in a browser), and `_site/index.html`, which sends a reader to the language they last picked on the page's switch, or else their browser's. On a push to main, `.github/workflows/pages.yml` runs `tests/test_guide.py`, then does the same and publishes it to GitHub Pages; if the tests fail, the page already up stays as it was.
 
 The events of one run, in order: `run_start`, then for each step `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`, with a tool call also `tool_call` → (`approval_request` → `approval`) → `tool_start` → `tool_result`, and finally `run_end`.
 
@@ -158,6 +158,8 @@ RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # loads the real Gemm
 
 Most tests use the fake model in `tests/fakes.py`: it replays scripted output one token at a time, with the same interface as `LocalLLM`, so the harness and the page run from start to finish.
 
+How it works quotes code, and `tests/guide_excerpts.txt` keeps everything it quotes, without line numbers. When a change touches quoted code, `test_guide.py` fails and names the sections that quote it: reread them, fix what they say if it is no longer true, then rewrite the file with `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py`.
+
 | File | What it tests |
 |---|---|
 | `test_gemma4.py` | Gemma 4's parser: splitting thinking, tool calls and the reply; `<\|"\|>` strings, nested arguments, all kinds of format errors, in both languages |
@@ -169,7 +171,7 @@ Most tests use the fake model in `tests/fakes.py`: it replays scripted output on
 | `test_render.py` | Every prefix of a run's events renders in both languages (the page redraws every 0.5 s mid-run), HTML tags pair up, the loop diagram is valid SVG, model output is always escaped, special token popovers and lists; MTP's underlines, popovers, counts and drafter card; no Chinese left on an English page |
 | `test_app.py` | Drives the whole page with Streamlit's `AppTest`: sending a question, the example buttons, sidebar settings reaching the model, multi-turn chat, the Context and Model tabs, Allow / Reject / Stop, a new chat, resetting the settings, two tabs never running at once, switching models, How it works linking to GitHub Pages in the page's language; MTP off by default, the drafter loaded only when it is switched on, and switched off and disabled for Qwen, which has none; an English browser gets English, the last pick beats the browser's language, switching languages keeps the conversation and the settings, and the model's errors follow the language |
 | `test_chat_template.py` | With each model's real tokenizer and chat template (only when cached locally): every special token is a single token and has a note, every token's popover shows the text it stands for, tool calls the template writes into the history parse back; a harness run with the real template checks that what the step card marks as new is exactly the tool result (two arguments, thinking mode, text before a tool call) |
-| `test_guide.py` | Every excerpt and line number on How it works resolves, the event table points at the line that really sends each event, HTML tags pair up; each paragraph points at the same code and sections in both languages, with no Chinese left in the English one; the built pages have light and dark palettes and loop diagrams and name their commit, and the root page sends readers to the right language |
+| `test_guide.py` | Every excerpt and line number on How it works resolves, the event table points at the line that really sends each event, HTML tags pair up; the code each section quotes matches `tests/guide_excerpts.txt`, which an edit to that code changes and a line merely moving does not; each paragraph points at the same code and sections in both languages, with no Chinese left in the English one; the built pages have light and dark palettes and loop diagrams and name their commit, and the root page sends readers to the right language |
 | `test_real_model.py` | Skipped by default. For each model: greedy decoding matches `model.generate()`, and the real model calls the calculator and answers; for Gemma with MTP, greedy output is exactly the same as without it, and the drafter's guesses really are kept |
 
 ## Known limitations

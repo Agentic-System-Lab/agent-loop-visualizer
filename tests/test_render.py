@@ -5,7 +5,6 @@ import base64
 import re
 import threading
 import xml.etree.ElementTree as ET
-from html.parser import HTMLParser
 
 import pytest
 
@@ -15,35 +14,12 @@ import render
 from agent import Run, RunSettings
 from families import GEMMA4, QWEN3_5
 from fakes import DRAFTER, INFO, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
+from html_check import assert_balanced
 from i18n import LANGS
 from llm import Sampling
 from tools import TOOLS
 
 ANSWER = "現在是下午三點。<turn|>"
-VOID = {"br", "img", "hr", "input", "meta", "link", "wbr"}
-
-
-class TagChecker(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.stack, self.problems = [], []
-
-    def handle_starttag(self, tag, attrs):
-        if tag not in VOID:
-            self.stack.append(tag)
-
-    def handle_endtag(self, tag):
-        if not self.stack or self.stack[-1] != tag:
-            self.problems.append(f"</{tag}> while open: {self.stack}")
-        else:
-            self.stack.pop()
-
-
-def assert_balanced(markup: str):
-    checker = TagChecker()
-    checker.feed(markup)
-    checker.close()
-    assert checker.problems == [] and checker.stack == [], (checker.problems, checker.stack)
 
 
 def svg_of(diagram: str) -> str:

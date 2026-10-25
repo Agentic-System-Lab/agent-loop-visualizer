@@ -1,6 +1,7 @@
 # Builds the 運作說明 (How it works) page (guide.py) in Chinese and English and publishes it on GitHub
 # Pages: zh/ and en/, plus an index.html that sends a reader to their language. The page looks up its
-# line numbers in the code it is built from, so it is rebuilt on every push to main.
+# line numbers in the code it is built from, so it is rebuilt on every push to main, once its tests
+# have checked that it still matches that code.
 name: 運作說明 on GitHub Pages
 
 on:
@@ -26,7 +27,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
-      # The page needs only pygments, not torch and the rest of the app.
+      # The page needs only pygments, not torch and the rest of the app, and its tests only pytest
+      # besides. They fail when an edit moved or removed a line the page points at, or changed code it
+      # quotes since its text was last reread (tests/guide_excerpts.txt); the page already up then stays.
+      - run: uv run --no-project --with pygments --with pytest pytest tests/test_guide.py
       - run: uv run --no-project --with pygments python guide.py _site
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

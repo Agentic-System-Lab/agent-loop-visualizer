@@ -7,13 +7,15 @@ the one in the app's language. Build it with
 
 which writes _site/zh/index.html and _site/en/index.html, each one file with its styles and script
 inlined, and _site/index.html, which sends a reader on to the language they picked on the page's
-switch before, or else their browser's. .github/workflows/pages.yml builds and publishes them on
-every push to main.
+switch before, or else their browser's. On every push to main, .github/workflows/pages.yml runs
+tests/test_guide.py, then builds and publishes them.
 
 The content points at code by text, not by line number: Code("agent.py", "def run(self):") is
 looked up in the file every time the page is built, so the line numbers on the page follow the
 code when it changes. A start text must match exactly one line of its file; tests/test_guide.py
-checks every reference, so an edit that breaks one fails the tests instead of the page.
+checks every reference, so an edit that breaks one fails the tests instead of the page. It also
+compares the code the page quotes with tests/guide_excerpts.txt, so an edit to quoted code fails
+too, naming the sections whose text to reread before writing that file again.
 
 Every paragraph is written in both languages next to each other ({"zh": ..., "en": ...}), and the
 code excerpts between them are shared, so the two pages always show the same code.

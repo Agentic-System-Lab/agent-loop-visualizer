@@ -1,17 +1,25 @@
 """The 運作說明 page. Its line numbers are looked up from the code by text, so these tests are
-what notice when an edit moves or removes a line the guide talks about. It comes in Chinese and
-in English; both are written side by side, and these tests also check they say the same things."""
+what notice when an edit moves or removes a line the guide talks about; guide_excerpts.txt keeps
+the code the page quotes, so they also notice an edit to that code, which may make the text around
+it untrue. It comes in Chinese and in English; both are written side by side, and these tests also
+check they say the same things. They need pygments and pytest and nothing else of the app's, since
+the Pages workflow runs them before it builds the page."""
 
 import ast
+import difflib
+import os
 import re
+import shutil
 import subprocess
+import textwrap
+from pathlib import Path
 
 import pytest
 
 import guide
 from guide import Code, span, statement_end
+from html_check import assert_balanced
 from i18n import LANGS
-from test_render import assert_balanced
 
 CODES = [item for sec in guide.SECTIONS for item in sec.body if isinstance(item, Code)]
 PROSE = [guide.INTRO] + [text for sec in guide.SECTIONS for text in (sec.title, sec.lead, *sec.body) if not isinstance(text, Code)]
@@ -32,6 +40,62 @@ def paragraphs():
         yield from pair.values()
 
 
+SNAPSHOT = Path(__file__).with_name("guide_excerpts.txt")
+SNAPSHOT_HEAD = """\
+# The code the 運作說明 page quotes, section by section: every excerpt as the page shows it and the
+# whole line behind every [[file|text]] chip, without line numbers. tests/test_guide.py compares it
+# with the code, so an edit to code the page quotes fails until someone has reread what the page
+# says about it. Reread the sections the failure names, fix their text in guide.py if the behavior
+# changed, then write this file again with
+#     UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py
+"""
+
+
+def chip(file: str, text: str) -> str:
+    return f"[[{file}|{text}]]\n    {guide.source(file)[0][guide.find_line(file, text) - 1].strip()}"
+
+
+def quoted(items) -> str:
+    """The code that `items` (a section's paragraphs, lists and excerpts) quote, in reading order."""
+    entries = []
+    for item in items:
+        if isinstance(item, Code):
+            lo, hi = span(item)
+            excerpt = textwrap.dedent("\n".join(guide.source(item.file)[0][lo - 1:hi]))
+            entries.append(f"{item.file}: {item.start}{f' … {item.end}' if item.end else ''}\n{textwrap.indent(excerpt, '    ')}")
+            item = item.caption or ()
+        for text in item if isinstance(item, tuple) else (item,):
+            entries += [chip(file, ref) for file, ref in guide.REF_RE.findall(text["en"])]
+    return "\n\n".join(dict.fromkeys(entries))
+
+
+def quoted_sections() -> dict[str, str]:
+    """What each part of the page quotes, by section key; "intro" and "events" are the introduction
+    and the event table. Line numbers are left out, so an edit elsewhere in a file changes nothing."""
+    blocks = {"intro": quoted([guide.INTRO])}
+    blocks |= {sec.key: quoted([sec.title, sec.lead, *sec.body]) for sec in guide.SECTIONS}
+    blocks["events"] = "\n\n".join(chip(file, text) for _, file, text, _, _ in guide.EVENTS)
+    return {key: block for key, block in blocks.items() if block}
+
+
+def snapshot_text(blocks: dict[str, str]) -> str:
+    return SNAPSHOT_HEAD + "".join(f"\n== {key} ==\n\n{block}\n" for key, block in blocks.items())
+
+
+def changed_sections(was: str, now: dict[str, str]) -> list[str]:
+    parts = re.split(r"^== (\w+) ==$", was, flags=re.M)[1:]
+    before = {key: block.strip("\n") for key, block in zip(parts[::2], parts[1::2])}
+    return [key for key in dict.fromkeys([*before, *now]) if before.get(key) != now.get(key)]
+
+
+def section_name(key: str) -> str:
+    numbered = {sec.key: (n, sec) for n, sec in enumerate(guide.SECTIONS, 1)}
+    if key in numbered:
+        n, sec = numbered[key]
+        return f'§{n} “{sec.title["en"]}” (Section("{key}", …) in guide.py)'
+    return {"intro": "the introduction (INTRO in guide.py)", "events": "the event table (EVENTS in guide.py)"}.get(key, key)
+
+
 @pytest.mark.parametrize("code", CODES, ids=lambda c: f"{c.file}:{c.start[:30]}")
 def test_every_excerpt_starts_and_ends_where_it_says(code):
     lines, _ = guide.source(code.file)
@@ -46,6 +110,43 @@ def test_every_excerpt_starts_and_ends_where_it_says(code):
     assert f'<span class="ln">{lo}</span>' in html and f'<span class="ln">{hi}</span>' in html
     assert len(excerpt) > 0
     assert_balanced(html)
+
+
+def test_the_quoted_code_has_not_changed_since_the_guide_was_reread():
+    now = quoted_sections()
+    text = snapshot_text(now)
+    if os.environ.get("UPDATE_GUIDE_SNAPSHOT") == "1":
+        SNAPSHOT.write_text(text, encoding="utf-8")
+    was = SNAPSHOT.read_text(encoding="utf-8") if SNAPSHOT.exists() else ""
+    if was != text:
+        names = "\n".join(f"    {section_name(key)}" for key in changed_sections(was, now)) or "    the file's header"
+        diff = "".join(difflib.unified_diff(was.splitlines(True), text.splitlines(True), "tests/guide_excerpts.txt", "the code now"))
+        pytest.fail(
+            f"The code the guide quotes has changed in\n{names}\n"
+            "Reread what those sections say about it and fix their text in guide.py if the behavior changed, then run\n"
+            "    UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py\n"
+            f"and commit tests/guide_excerpts.txt with the change.\n\n{diff}",
+            pytrace=False,
+        )
+
+
+def test_the_snapshot_follows_the_quoted_code_not_its_line_numbers(tmp_path, monkeypatch):
+    files = {code.file for code in CODES} | {e[1] for e in guide.EVENTS}
+    files |= {file for text in paragraphs() for file, _ in guide.REF_RE.findall(text)}
+    for file in files:
+        (tmp_path / file).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(guide.ROOT / file, tmp_path / file)
+    monkeypatch.setattr(guide, "ROOT", tmp_path)
+    before = quoted_sections()
+    agent_py = tmp_path / "agent.py"
+    agent_py.write_text("# a line that moves every other one down\n" + agent_py.read_text(encoding="utf-8"), encoding="utf-8")
+    assert quoted_sections() == before
+    code = next(code for code in CODES if code.file == "agent.py")
+    lines = agent_py.read_text(encoding="utf-8").splitlines()
+    lines[span(code)[0] - 1] += "  # edited"
+    agent_py.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    sec = next(sec for sec in guide.SECTIONS if code in sec.body)
+    assert sec.key in changed_sections(snapshot_text(before), quoted_sections())
 
 
 def test_every_inline_reference_resolves():

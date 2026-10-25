@@ -15,6 +15,7 @@ uv run pytest                                              # ~25 s; loads no wei
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen; -k Qwen for one
 uv run streamlit run streamlit_app.py                      # http://localhost:8501; MODEL_ID=Qwen/Qwen3.5-0.8B starts on Qwen
 uv run python guide.py _site                               # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
+UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
 ```
 
 No linter or formatter is configured. Match the surrounding code by hand and don't reformat lines you
@@ -32,7 +33,7 @@ render.py          pure functions from the event list to HTML: loop diagram, ste
 guide.py           the 運作說明 page: content in both languages, code references by text, static HTML for GitHub Pages
 i18n.py            the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
 assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script) and guide.js (the 運作說明 page)
-tests/             pytest; fakes.py is a scripted stand-in for LocalLLM
+tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; guide_excerpts.txt is the code the guide quotes
 ```
 
 ## Rules that keep it working
@@ -56,9 +57,16 @@ tests/             pytest; fakes.py is a scripted stand-in for LocalLLM
   `[[agent.py|def run(self):]]` are looked up when the page is built, and each must match exactly one
   line. Before renaming or rewriting a line, grep guide.py for it; if a reference breaks,
   tests/test_guide.py fails. Fix the reference, and when the behavior changed, the prose around it too.
+- **The guide's text is reread whenever the code it quotes changes.** tests/guide_excerpts.txt holds
+  every excerpt and the line behind every chip, without line numbers. When an edit changes any of
+  them, tests/test_guide.py fails and names the sections. Reread each one in both languages, fix
+  what is no longer true, then rewrite the file with `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest
+  tests/test_guide.py` and commit it with the change. Never regenerate it without rereading.
 - **guide.py builds with pygments alone.** The Pages workflow runs
   `uv run --no-project --with pygments python guide.py _site`, and guide.py imports render and i18n,
-  and render imports families. Keep those free of torch, transformers, streamlit and httpx.
+  and render imports families. Keep those free of torch, transformers, streamlit and httpx. Before
+  building, it runs tests/test_guide.py with pygments and pytest alone, so that file imports only
+  guide, i18n and tests/html_check.py (not test_render.py, which imports torch).
 - **Every word a person sees exists in both languages, side by side.** In code it is
   `pick(lang, "中文", "English")`; in data (special-token notes, stop reasons, tool environments,
   guide paragraphs, the guide's event table) it is a `{"zh": ..., "en": ...}` dict. Never add a

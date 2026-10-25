@@ -1,0 +1,1022 @@
+# The code the 運作說明 page quotes, section by section: every excerpt as the page shows it and the
+# whole line behind every [[file|text]] chip, without line numbers. tests/test_guide.py compares it
+# with the code, so an edit to code the page quotes fails until someone has reread what the page
+# says about it. Reread the sections the failure names, fix their text in guide.py if the behavior
+# changed, then write this file again with
+#     UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py
+
+== overview ==
+
+[[streamlit_app.py|self.thread = threading.Thread]]
+    self.thread = threading.Thread(target=self._work, daemon=True)
+
+[[agent.py|def emit(self, event_type]]
+    def emit(self, event_type: str, **data):
+
+[[agent.py|def stop(self):]]
+    def stop(self):
+
+[[agent.py|def decide(self, call_id]]
+    def decide(self, call_id: str, approved: bool):
+
+[[agent.py|def run(self):]]
+    def run(self):
+
+[[llm.py|def generate(self, prompt]]
+    def generate(self, prompt: str, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
+
+[[tools.py|TOOLS = {]]
+    TOOLS = {
+
+[[render.py|def build(events: list[dict])]]
+    def build(events: list[dict]) -> dict:
+
+[[i18n.py|def pick(]]
+    def pick(lang: str, zh: str, en: str) -> str:
+
+== families ==
+
+families/__init__.py: class Family: … def special_re(self)
+    class Family:
+        key: str
+        name: str
+        model_types: tuple[str, ...]  # config.json `model_type` values of this family
+
+        # Reading the model's output.
+        parse: Callable[..., dict]  # (raw output, {tool name: parameters schema}, language of its errors) -> thinking, tool_calls, content
+        thought_prefix: str  # a prompt that ends with this has the model start inside its thinking
+        channel_switch: dict[str, str]  # tokens that switch what the model is writing: thought, tool_call, content
+        stop_tokens: dict[str, dict[str, str]]  # tokens that end a generation -> language -> what stopping there means
+
+        # Writing the conversation back for the chat template.
+        reasoning_key: str  # the assistant-message field the chat template reads earlier thinking from
+        text_with_calls: bool  # whether text written before a tool call survives re-rendering the history
+
+        # Showing it on the page; the text is in both of the page's languages (i18n.py).
+        user_turn: str  # where a user message starts in a prompt; the step card shows the newest one
+        special_groups: dict[str, list]  # language -> (title, subtitle, ((token, name, what it is for), ...)) for each group of control tokens
+        thinking_help: dict[str, str]  # what the thinking toggle does to the prompt
+        tools_note: dict[str, str]  # how the tool schemas appear in the prompt
+        model_note: dict[str, str] = field(default_factory=dict)
+        sampling: dict | None = None  # recommended temperature / top_p / top_k when a checkpoint ships none
+        byte_level: bool = False  # the vocabulary spells bytes as characters, GPT-2 style (BYTE_OF); otherwise it is SentencePiece's
+
+        def show_piece(self, piece: str) -> str:
+            """A vocabulary entry as the text it stands for, which is what a token's popover shows: ␣ for a space,
+            ↵ for a newline, and a byte that is only part of a character as <0xE5>, the way SentencePiece writes one."""
+            if self.byte_level and all(c in BYTE_OF for c in piece):
+                # surrogateescape keeps each byte that is not whole UTF-8 as U+DC80–U+DCFF, so it can be written in hex.
+                text = bytes(BYTE_OF[c] for c in piece).decode("utf-8", errors="surrogateescape")
+                text = "".join(f"<0x{ord(c) - 0xDC00:02X}>" if "\udc80" <= c <= "\udcff" else c for c in text)
+            else:
+                text = piece.replace("▁", " ")  # SentencePiece marks a leading space with ▁
+            return text.replace(" ", "␣").replace("\n", "↵")
+
+        @cached_property
+        def special_tokens(self) -> dict[str, dict[str, tuple[str, str]]]:
+            """Control token -> language -> (name, what it is for)."""
+            out: dict[str, dict[str, tuple[str, str]]] = {}
+            for lang, groups in self.special_groups.items():
+                for _, _, rows in groups:
+                    for piece, name, desc in rows:
+                        out.setdefault(piece, {})[lang] = (name, desc)
+            return out
+
+        @cached_property
+        def special_re(self) -> re.Pattern:
+            """Matches the control tokens in a prompt, longest first so <|image|> is not read as <|image>."""
+            pieces = sorted(self.special_tokens, key=len, reverse=True)
+            return re.compile("|".join(re.escape(p) for p in pieces))
+
+llm.py: self.family = families.for_model_type( … self.special_ids = set(
+    self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
+    files = _download(model_id)
+    self.tokenizer = AutoTokenizer.from_pretrained(files)
+    self.model = AutoModelForMultimodalLM.from_pretrained(files, dtype=self.dtype, device_map=self.device).eval()
+    self.load_seconds = time.perf_counter() - start
+
+    # The generation config's stop tokens, plus the family's: a checkpoint may list only some of them.
+    # Qwen3.5 ships no generation_config.json, and its config.json names <|endoftext|> but not <|im_end|>,
+    # which ends every chat turn.
+    eos = self.model.generation_config.eos_token_id
+    self.eos_ids = set(eos if isinstance(eos, list) else [eos]) | self.token_ids(self.family.stop_tokens)
+    # Control tokens count as special even when the tokenizer does not mark them (Qwen's <think>).
+    self.special_ids = set(self.tokenizer.all_special_ids) | self.eos_ids | self.token_ids(self.family.special_tokens)
+
+[[families/__init__.py|MODELS = {]]
+    MODELS = {
+
+[[families/__init__.py|FAMILIES = {]]
+    FAMILIES = {f.key: f for f in (GEMMA4, QWEN3_5)}
+
+families/qwen3_5.py: QWEN3_5 = Family(
+    QWEN3_5 = Family(
+        key="qwen3_5",
+        name="Qwen3.5",
+        model_types=("qwen3_5",),
+        parse=parse_output,
+        thought_prefix="<think>\n",
+        channel_switch={"<think>": "thought", "</think>": "content", "<tool_call>": "tool_call", "</tool_call>": "content"},
+        stop_tokens={
+            "<|im_end|>": {"zh": "訊息結束；回覆和工具呼叫都停在這裡", "en": "end of message; replies and tool calls both stop here"},
+            "<|endoftext|>": {"zh": "文字結束", "en": "end of text"},
+        },
+        reasoning_key="reasoning_content",
+        text_with_calls=True,  # the template keeps a message's text in front of its <tool_call>
+        user_turn="<|im_start|>user",
+        special_groups=GROUPS,
+        thinking_help={
+            "zh": "chat template 在 assistant 訊息開頭先寫好 `<think>`，模型先寫推理；關掉時寫一段空的 `<think></think>`。"
+            "0.8B 官方預設不開，開了容易一直想下去停不下來。",
+            "en": "The chat template opens the assistant message with `<think>`, so the model reasons first; off, it writes an empty `<think></think>`. "
+            "Off by default for the 0.8B model, which once it starts thinking often cannot stop.",
+        },
+        tools_note={
+            "zh": "chat template 把每個工具的 JSON Schema 原樣放進 system turn 的 `<tools>…</tools>`，後面附上 XML 呼叫格式的說明。",
+            "en": "The chat template puts each tool's JSON Schema as it is in `<tools>…</tools>` in the system turn, followed by how to write a call in XML.",
+        },
+        model_note={
+            "zh": "混合架構：24 層裡每 4 層有 3 層是 Gated DeltaNet（線性 attention，狀態大小固定，不隨脈絡變長），1 層是 gated attention。"
+            "沒裝 flash-linear-attention 時用 PyTorch 參考實作，prefill 比較慢。",
+            "en": "A hybrid: of every 4 of its 24 layers, 3 are Gated DeltaNet (linear attention, whose state has a fixed size and does not grow with the context) and 1 is gated attention. "
+            "Without flash-linear-attention installed they run the PyTorch reference implementation, so prefill is slower.",
+        },
+        # The checkpoint ships no generation_config.json; these are the model card's non-thinking text settings.
+        sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},
+        byte_level=True,
+    )
+
+== submit ==
+
+[[llm.py|def _sampling_defaults(self)]]
+    def _sampling_defaults(self) -> dict:
+
+[[streamlit_app.py|key="model_id", on_change=new_chat]]
+    tr("模型", "Model"), list(MODELS), format_func=MODELS.get, key="model_id", on_change=new_chat, disabled=busy,
+
+[[llm.py|def load_drafter(self):]]
+    def load_drafter(self):
+
+streamlit_app.py: @st.cache_resource(max_entries=1 … def current_llm() -> LocalLLM:
+    @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
+    def load_llm(model_id: str) -> LocalLLM:
+        llm = LocalLLM(model_id)
+        llm.warmup()
+        return llm
+
+
+    def current_llm() -> LocalLLM:
+        model_id = st.session_state.model_id
+        with st.spinner(tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")):
+            llm = load_llm(model_id)
+        if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
+            for key, value in {**llm.info["defaults"], "mtp": False}.items():
+                st.session_state[key] = value
+            st.session_state.sampling_for = model_id
+        if st.session_state.mtp and llm.drafter_id and llm.drafter is None:
+            with st.spinner(tr(f"載入 MTP 草稿模型 {llm.drafter_id}（第一次要下載約 160 MB）…", f"Loading the MTP drafter {llm.drafter_id} (the first time downloads about 160 MB)…")):
+                llm.load_drafter()
+        return llm
+
+[[streamlit_app.py|prompt = st.chat_input(]]
+    prompt = st.chat_input(tr("問一個問題…", "Ask a question…"), key="chat_input", disabled=busy)
+
+[[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]
+    if not slot.lock.acquire(blocking=False):
+
+streamlit_app.py: def start_run(
+    def start_run(llm: LocalLLM, text: str) -> bool:
+        slot = generation_slot()
+        if not slot.lock.acquire(blocking=False):
+            st.toast(tr("另一個 agent 正在執行（可能在別的分頁），請稍等。", "Another agent is running (maybe in another tab). Please wait."))
+            return False
+        try:
+            run = LiveRun(llm, st.session_state.history, text, current_settings(llm), slot)
+        except Exception:
+            slot.lock.release()
+            raise
+        st.session_state.runs.append(run)
+        st.session_state.view = len(st.session_state.runs) - 1
+        return True
+
+streamlit_app.py: def current_settings(
+    def current_settings(llm: LocalLLM) -> RunSettings:
+        s = st.session_state
+        return RunSettings(
+            sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens, mtp=s.mtp and llm.drafter is not None),
+            max_steps=s.max_steps,
+            thinking=s.thinking,
+            use_tools=s.use_tools,
+            approve_tools=s.approve_tools,
+            lang=s.lang,
+        )
+
+streamlit_app.py: class LiveRun:
+    class LiveRun:
+        """One user turn: the harness thread and the events it has emitted so far."""
+
+        def __init__(self, llm: LocalLLM, history: list[dict], text: str, settings: RunSettings, slot: Slot):
+            self.text = text
+            self.events: list[dict] = []
+            self.absorbed = False
+            self.run = Run(llm, history, text, settings, self.events.append)
+            self._slot = slot
+            slot.run = self
+            self.thread = threading.Thread(target=self._work, daemon=True)
+            self.thread.start()
+
+        def _work(self):
+            try:
+                self.run.run()
+            finally:
+                if self._slot.run is self:
+                    self._slot.run = None  # do not keep the model alive after a switch to another one
+                self._slot.lock.release()
+
+        @property
+        def live(self) -> bool:
+            return self.thread.is_alive()
+
+        def data(self) -> dict:
+            return render.build(self.events[:])
+
+== prepare ==
+
+[[agent.py|self.messages = [*history,]]
+    self.messages = [*history, {"role": "user", "content": user_text}]
+
+agent.py: def __init__(self, llm: LocalLLM, history
+    def __init__(self, llm: LocalLLM, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None]):
+        self.id = uuid.uuid4().hex[:12]
+        self.llm = llm
+        self.settings = settings
+        self.messages = [*history, {"role": "user", "content": user_text}]
+        self._emit = emit
+        self._start = time.perf_counter()
+        self._stop = threading.Event()
+        self._timed_out = False
+        self._decisions: dict[str, bool] = {}
+        self._decided = threading.Condition()
+
+[[agent.py|SYSTEM_WITH_TOOLS = ]]
+    SYSTEM_WITH_TOOLS = """You are a helpful assistant running inside an agent loop.
+
+agent.py: def run(self): … stop_reason, final = "max_steps", ""
+    def run(self):
+        s = self.settings
+        family = self.llm.family  # how this model writes its turns, thinking and tool calls
+        tools = [t.schema() for t in TOOLS.values()] if s.use_tools else None
+        schemas = {t.name: t.parameters for t in TOOLS.values()}
+        system = {"role": "system", "content": SYSTEM_WITH_TOOLS if s.use_tools else SYSTEM_NO_TOOLS}
+        self.emit(
+            "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+            settings=_settings_dict(s), tools=list(TOOLS) if s.use_tools else [],
+        )
+
+        seen: list[tuple[str, str]] = []
+        format_errors = 0
+        prev_sequence = ""
+        stop_reason, final = "max_steps", ""
+
+tools.py: def schema(self) -> dict:
+    def schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {"name": self.name, "description": self.description, "parameters": self.parameters},
+        }
+
+== context ==
+
+agent.py: for step in range(1, s.max_steps + 1): … roles=_role_counts([system, *self.messages])
+    for step in range(1, s.max_steps + 1):
+        self.emit("step_start", step=step)
+        prompt = self.llm.render([system, *self.messages], tools, s.thinking)
+        added_from = common_prefix(prompt, prev_sequence) if prev_sequence else 0
+        self.emit(
+            "context",
+            step=step,
+            prompt=prompt,
+            n_tokens=len(self.llm.tokenizer(prompt, add_special_tokens=False).input_ids),
+            added_from=added_from,
+            context_length=self.llm.context_length,
+            roles=_role_counts([system, *self.messages]),
+        )
+
+llm.py: def render(self, messages
+    def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
+        """The chat template turns messages and tool schemas into the one string the model reads.
+        With `generation_prompt` it also opens the model's turn, so the model writes next."""
+        return self.tokenizer.apply_chat_template(
+            messages, tools=tools or None, tokenize=False, add_generation_prompt=generation_prompt, enable_thinking=thinking
+        )
+
+[[agent.py|n_tokens=len(self.llm.tokenizer(prompt]]
+    n_tokens=len(self.llm.tokenizer(prompt, add_special_tokens=False).input_ids),
+
+agent.py: def common_prefix(
+    def common_prefix(a: str, b: str) -> int:
+        n = min(len(a), len(b))
+        i = 0
+        while i < n and a[i] == b[i]:
+            i += 1
+        return i
+
+[[render.py|def context_html(]]
+    def context_html(step: dict, family: families.Family, lang: str) -> str:
+
+== model ==
+
+agent.py: done = None … self.emit("model_end"
+    done = None
+    for ev in self.llm.generate(prompt, s.sampling, self._stop.is_set):
+        kind = ev.pop("type")
+        if kind == "done":
+            done = ev
+        else:
+            self.emit(kind, step=step, **ev)
+    raw = done.pop("raw")
+    self.emit("model_end", step=step, raw=raw, **done)
+
+[[llm.py|def _forward(]]
+    def _forward(self, ids: torch.Tensor, past, keep: int, drafting: bool = False):
+
+llm.py: def generate(self, prompt … yield {"type": "prefill"
+    def generate(self, prompt: str, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
+        """Yield a prefill event, one event per token, then a done event."""
+        ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids.to(self.device)
+        channel = "thought" if prompt.endswith(self.family.thought_prefix) else "content"
+        drafting = sampling.mtp and self.drafter is not None
+        mtp = {"drafted": 0, "accepted": 0, "forwards": 0} if drafting else None
+        generated: list[int] = []
+        text = ""
+        finish = "max_new_tokens"
+
+        with torch.inference_mode():
+            start = time.perf_counter()
+            out = self._forward(ids, None, 1, drafting)
+            prefill_ms = (time.perf_counter() - start) * 1000
+            yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
+
+[[families/gemma4.py|channel_switch={]]
+    channel_switch={"<|channel>": "thought", "<channel|>": "content", "<|tool_call>": "tool_call", "<tool_call|>": "content"},
+
+[[families/qwen3_5.py|channel_switch={]]
+    channel_switch={"<think>": "thought", "</think>": "content", "<tool_call>": "tool_call", "</tool_call>": "content"},
+
+llm.py: decode_start = time.perf_counter() … **details,
+    decode_start = time.perf_counter()
+    tokens = self._drafted(out, sampling, mtp) if drafting else self._one_at_a_time(out, sampling)
+    for token_id, details in tokens:
+        if should_stop():
+            finish = "user_stopped"
+            break
+        generated.append(token_id)
+
+        piece = self.piece(token_id)
+        special = token_id in self.special_ids
+        if piece in self.family.channel_switch:
+            channel = self.family.channel_switch[piece]
+            token_channel = "control"
+        else:
+            token_channel = "control" if special else channel
+
+        # Decode the whole sequence and diff it, so characters split across byte tokens come out whole.
+        full = self.tokenizer.decode(generated, skip_special_tokens=False)
+        delta = "" if full.endswith("�") else full[len(text):]
+        if delta:
+            text = full
+        yield {
+            "type": "token",
+            "index": len(generated) - 1,
+            "id": token_id,
+            "piece": piece,
+            "text": delta,
+            "special": special,
+            "channel": token_channel,
+            **details,
+        }
+
+llm.py: if token_id in self.eos_ids: … if len(generated) == sampling.max_new_tokens:
+    if token_id in self.eos_ids:
+        finish = "stop_token"
+        break
+    if len(generated) == sampling.max_new_tokens:
+        break
+
+llm.py: def _one_at_a_time(
+    def _one_at_a_time(self, out, s: Sampling) -> Iterator[tuple[int, dict]]:
+        """Plain decoding: sample a token, feed it back with the cache for the next position's logits, repeat."""
+        while True:
+            token_id, details = self._sample(out.logits[0, -1].float().cpu(), s)
+            yield token_id, details
+            out = self._forward(torch.tensor([[token_id]], device=self.device), out.past_key_values, 1)
+
+llm.py: decode_s = time.perf_counter() - decode_start … "raw": self.tokenizer.decode(generated
+    decode_s = time.perf_counter() - decode_start
+    yield {
+        "type": "done",
+        "finish": finish,
+        "stop_piece": self.piece(generated[-1]) if finish == "stop_token" else None,
+        "n_tokens": len(generated),
+        "decode_ms": round(decode_s * 1000, 1),
+        "tok_per_s": round(len(generated) / decode_s, 1) if decode_s > 0 else None,
+        "mtp": mtp,
+        "raw": self.tokenizer.decode(generated, skip_special_tokens=False),
+    }
+
+== sampling ==
+
+llm.py: def _sample(self, logits
+    def _sample(self, logits: torch.Tensor, s: Sampling, draft: int | None = None) -> tuple[int, dict]:
+        """Pick the next token and report the model's distribution and what the settings did to it.
+        A `draft` (the MTP drafter's guess) is kept with the probability the settings give it, which in greedy
+        decoding means when it is the top token; otherwise the pick comes from the other candidates. Either way
+        each token comes out exactly as often as without a drafter."""
+        probs = torch.softmax(logits, -1)  # the model's own distribution (T = 1, nothing cut off)
+        top_p_vals, top_ids = probs.topk(TOP_N)
+
+        if s.temperature <= 0:  # T -> 0 is greedy decoding
+            chosen = int(top_ids[0])
+            kept = 1
+            p_sampled = 1.0
+        else:
+            scaled = logits / s.temperature
+            if s.top_k > 0:
+                cand_logits, cand_ids = scaled.topk(min(s.top_k, scaled.numel()))
+            else:
+                cand_logits, cand_ids = scaled.sort(descending=True)
+            cand_probs = torch.softmax(cand_logits, -1)
+            # Nucleus: keep the smallest prefix whose probability reaches top_p (always at least one token).
+            kept = int(((cand_probs.cumsum(-1) - cand_probs) < s.top_p).sum())
+            cand_ids, cand_probs = cand_ids[:kept], cand_probs[:kept] / cand_probs[:kept].sum()
+            weights = cand_probs
+            at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+            if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
+                pick = int(at[0])
+            else:
+                if len(at):  # the guess was turned down: draw from the other candidates
+                    weights = cand_probs.clone()
+                    weights[at[0]] = 0
+                pick = int(torch.multinomial(weights, 1))
+            chosen = int(cand_ids[pick])
+            p_sampled = float(cand_probs[pick])
+
+        p = float(probs[chosen])
+        # Candidates are a prefix of the tokens sorted by probability, so rank decides who survived.
+        return chosen, {
+            "p": p,
+            "logprob": float(torch.log(probs[chosen])) if p > 0 else None,
+            "rank": int((probs > probs[chosen]).sum()) + 1,
+            "p_sampled": p_sampled,
+            "kept": kept,
+            "top": [
+                {"id": int(i), "piece": self.piece(int(i)), "p": float(v), "kept": rank < kept}
+                for rank, (v, i) in enumerate(zip(top_p_vals, top_ids))
+            ],
+        }
+
+[[render.py|def heat(p: float)]]
+    def heat(p: float) -> str:
+
+== mtp ==
+
+[[families/__init__.py|DRAFTERS = {]]
+    DRAFTERS = {
+
+llm.py: def load_drafter(self):
+    def load_drafter(self):
+        """Load the MTP drafter that goes with this model (families.DRAFTERS), if any, and warm it up."""
+        with self._drafter_lock:
+            if self.drafter is not None or self.drafter_id is None:
+                return
+            start = time.perf_counter()
+            self.drafter = AutoModelForCausalLM.from_pretrained(_download(self.drafter_id), dtype=self.dtype, device_map=self.device).eval()
+            self.draft_tokens = self.drafter.generation_config.num_assistant_tokens  # guesses per forward pass
+            self.warmup(mtp=True)
+            cfg = self.drafter.config.get_text_config()
+            self.info["drafter"] = {
+                "model_id": self.drafter_id,
+                "parameters": self.drafter.num_parameters(),
+                "layers": cfg.num_hidden_layers,
+                "hidden_size": cfg.hidden_size,
+                "draft_tokens": self.draft_tokens,
+                "load_seconds": round(time.perf_counter() - start, 1),
+            }
+
+llm.py: def _draft(
+    def _draft(self, token_id: int, hidden: torch.Tensor, shared: dict, position: int) -> list[int]:
+        """The drafter's greedy guesses for the tokens after `token_id`. It has no cache of its own: it attends to the
+        model's keys and values, so every guess sits at the position of `token_id`, and what it has guessed so far
+        comes in through its input, the embedding of the last guess next to the drafter's last hidden state."""
+        embed = self.model.get_input_embeddings()
+        positions = torch.tensor([[position]], device=self.device)
+        guesses = []
+        while len(guesses) < self.draft_tokens and token_id not in self.eos_ids:
+            x = torch.cat([embed(torch.tensor([[token_id]], device=self.device)), hidden], -1)
+            out = self.drafter(inputs_embeds=x, position_ids=positions, shared_kv_states=shared)
+            token_id, hidden = int(out.logits[0, -1].argmax()), out.last_hidden_state
+            guesses.append(token_id)
+        return guesses
+
+llm.py: def _drafted(
+    def _drafted(self, out, s: Sampling, stats: dict) -> Iterator[tuple[int, dict]]:
+        """MTP decoding. After each token the drafter guesses the next few, and one forward pass over the token and the
+        guesses gives the model's distribution at every guessed position. _sample checks the guesses in order: each
+        one it keeps is a token for free, the first one it turns down is replaced by the model's own pick, and the
+        rest are dropped. When every guess holds, the last position gives one more token."""
+        past = out.past_key_values
+        past.activate_past_recording()  # so the sliding-window layers can still drop guesses that were turned down
+        hidden, shared = out.hidden_states[-1][:, -1:], out.shared_kv_states
+        token_id, details = self._sample(out.logits[0, -1].float().cpu(), s)
+        while True:
+            yield token_id, details
+            guesses = self._draft(token_id, hidden, shared, past.get_seq_length())
+            out = self._forward(torch.tensor([[token_id, *guesses]], device=self.device), past, len(guesses) + 1, True)
+            logits = out.logits[0].float().cpu()
+            stats["forwards"] += 1
+            stats["drafted"] += len(guesses)
+            for n, guess in enumerate(guesses):
+                token_id, details = self._sample(logits[n], s, guess)
+                if token_id != guess:
+                    details["draft"] = {"piece": self.piece(guess), "accepted": False}
+                    break
+                stats["accepted"] += 1
+                yield token_id, {**details, "draft": {"piece": self.piece(guess), "accepted": True}}
+            else:
+                n = len(guesses)
+                token_id, details = self._sample(logits[n], s)
+            # Keep the cache and the drafter's inputs up to the last kept guess (or the token, when none held).
+            dropped = len(guesses) - n
+            past.crop(-dropped)
+            hidden = out.hidden_states[-1][:, n : n + 1]
+            shared = {k: (key[:, :, : key.shape[2] - dropped], value[:, :, : value.shape[2] - dropped])
+                      for k, (key, value) in out.shared_kv_states.items()}
+
+llm.py: at = (cand_ids == draft) … pick = int(torch.multinomial(weights, 1))
+    at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+    if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
+        pick = int(at[0])
+    else:
+        if len(at):  # the guess was turned down: draw from the other candidates
+            weights = cand_probs.clone()
+            weights[at[0]] = 0
+        pick = int(torch.multinomial(weights, 1))
+
+== parse ==
+
+agent.py: prefix = family.thought_prefix if … self.emit("parsed"
+    prefix = family.thought_prefix if prompt.endswith(family.thought_prefix) else ""
+    parsed = family.parse(prefix + raw, schemas, s.lang)
+    calls = parsed["tool_calls"] if s.use_tools else []
+    self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
+
+[[families/gemma4.py|CALL_RE = re.compile]]
+    CALL_RE = re.compile(r"<\|tool_call>call:(\w+)(.*?)<tool_call\|>", re.S)
+
+families/gemma4.py: def parse_output(
+    def parse_output(raw: str, schemas: dict | None = None, lang: str = "zh") -> dict:
+        """Split one model turn into thinking, tool calls and visible content. Gemma marks each value's
+        type itself, so the tool schemas are not needed. Errors are worded in `lang`."""
+        text = raw
+        thinking = None
+        if THOUGHT_OPEN in text:
+            before, _, rest = text.partition(THOUGHT_OPEN)
+            thought, closed, after = rest.partition(THOUGHT_CLOSE)
+            thinking = thought.strip()
+            text = before + (after if closed else "")
+
+        calls = []
+        for m in CALL_RE.finditer(text):
+            call = {"name": m.group(1), "raw_args": m.group(2), "arguments": None, "error": None}
+            try:
+                call["arguments"] = parse_args(m.group(2))
+            except ParseError as e:
+                call["error"] = e.text[lang]
+            calls.append(call)
+
+        rest = CALL_RE.sub("", text)
+        if CALL_OPEN in rest:
+            head, _, tail = rest.partition(CALL_OPEN)
+            name = re.match(r"call:(\w+)", tail)
+            calls.append({
+                "name": name.group(1) if name else "?",
+                "raw_args": tail,
+                "arguments": None,
+                "error": pick(lang, "工具呼叫沒有結束標記 <tool_call|>", "The tool call has no closing <tool_call|>"),
+            })
+            rest = head
+
+        for marker in END_MARKERS:
+            rest = rest.replace(marker, "")
+        return {"thinking": thinking, "tool_calls": calls, "content": rest.strip()}
+
+families/gemma4.py: def value(self):
+    def value(self):
+        self.skip_ws()
+        if self.text.startswith(STR, self.pos):
+            return self.delimited()
+        ch = self.peek()
+        if ch == "{":
+            return self.obj()
+        if ch == "[":
+            return self.arr()
+        if ch == '"':
+            return self.json_string()
+        return self.scalar()
+
+families/qwen3_5.py: def parse_output(
+    def parse_output(raw: str, schemas: dict | None = None, lang: str = "zh") -> dict:
+        """Split one model turn into thinking, tool calls and visible content. `schemas` maps a tool
+        name to its parameters schema, which says what type each plain-text value is. Errors are worded in `lang`."""
+        text = raw
+        thinking = None
+        if THINK_CLOSE in text:
+            thought, _, text = text.partition(THINK_CLOSE)
+            thinking = thought.split(THINK_OPEN)[-1].strip()
+        elif THINK_OPEN in text:  # cut off while still thinking
+            text, _, thought = text.partition(THINK_OPEN)
+            thinking = thought.strip()
+
+        calls = [parse_call(m.group(1), schemas or {}, lang) for m in CALL_RE.finditer(text)]
+        rest = CALL_RE.sub("", text)
+        if CALL_OPEN in rest:
+            rest, _, tail = rest.partition(CALL_OPEN)
+            call = parse_call(tail, schemas or {}, lang)
+            call["arguments"], call["error"] = None, pick(lang, "工具呼叫沒有結束標記 </tool_call>", "The tool call has no closing </tool_call>")
+            calls.append(call)
+
+        for marker in END_MARKERS:
+            rest = rest.replace(marker, "")
+        return {"thinking": thinking, "tool_calls": calls, "content": rest.strip()}
+
+families/qwen3_5.py: def convert(value: str, kind
+    def convert(value: str, kind: str | None):
+        """Turn a plain-text value into the schema's type. If it does not fit, keep the text and let
+        the schema check report the wrong type to the model."""
+        if kind in (None, "string"):
+            return value
+        if kind == "boolean":
+            word = value.strip().lower()
+            return word == "true" if word in ("true", "false") else value
+        try:
+            return json.loads(value)  # integer, number, object, array
+        except ValueError:
+            return value
+
+== stop ==
+
+agent.py: if done["finish"] == "user_stopped": … if not calls:
+    if done["finish"] == "user_stopped":
+        stop_reason, final = "user_stopped", parsed["content"]
+        self.messages.append({"role": "assistant", "content": final})
+        break
+    if not calls:
+        stop_reason = "max_new_tokens" if done["finish"] == "max_new_tokens" else "no_tool_call"
+        final = parsed["content"]
+        self.messages.append({"role": "assistant", "content": final})
+        break
+
+[[agent.py|stop_reason = "approval_timeout" if self._timed_out]]
+    stop_reason = "approval_timeout" if self._timed_out else "user_stopped"
+
+agent.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
+            if format_errors >= MAX_FORMAT_ERRORS:
+                stop_reason = "format_errors"
+                break
+    except Exception as e:  # surface model or tool crashes in the UI instead of a silent hang
+        self.emit("error", message=f"{type(e).__name__}: {e}")
+        stop_reason = "error"
+
+    self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)
+
+== record ==
+
+agent.py: ids = [f"call_{step}_{i}" … prev_sequence = self.llm.render(
+    ids = [f"call_{step}_{i}" for i in range(len(calls))]
+    assistant = {
+        "role": "assistant",
+        # Some templates cannot keep text in front of a tool call (see Family.text_with_calls).
+        "content": parsed["content"] if family.text_with_calls else "",
+        "tool_calls": [
+            {"id": cid, "type": "function", "function": {"name": c["name"], "arguments": c["arguments"] or {}}}
+            for cid, c in zip(ids, calls)
+        ],
+    }
+    if parsed["thinking"]:
+        assistant[family.reasoning_key] = parsed["thinking"]
+    self.messages.append(assistant)
+    # The template rewrites the model's turn when it re-renders history (sorted arguments,
+    # its own thought markup), so compare the next prompt with this rendering, not prompt + raw.
+    prev_sequence = self.llm.render([system, *self.messages], tools, s.thinking, generation_prompt=False)
+
+== check ==
+
+agent.py: def _handle_call( … args, errors = tool.validate(args, lang)
+    def _handle_call(self, step: int, cid: str, call: dict, seen: list) -> str:
+        """Validate, approve and execute one tool call. Returns the observation text for the model."""
+        lang = self.settings.lang
+        tool = TOOLS.get(call["name"])
+        args, errors = call["arguments"] or {}, []
+        if call["error"]:
+            errors = [pick(lang, f"無法解析工具呼叫：{call['error']}", f"Could not parse the tool call: {call['error']}")]
+        elif tool is None:
+            known = ", ".join(TOOLS)
+            errors = [pick(lang, f"沒有 {call['name']} 這個工具，可用的工具是 {known}", f"There is no tool {call['name']}; the tools are {known}")]
+        else:
+            args, errors = tool.validate(args, lang)
+
+tools.py: def validate(self, args: dict
+    def validate(self, args: dict, lang: str = "zh") -> tuple[dict, list[str]]:
+        """Check arguments against the schema; return them with defaults filled in, plus any errors in `lang`."""
+        props = self.parameters.get("properties", {})
+        errors = [pick(lang, f"缺少必要參數 {k}", f"Missing required argument {k}") for k in self.parameters.get("required", []) if k not in args]
+        for key, value in args.items():
+            spec = props.get(key)
+            if spec is None:
+                errors.append(pick(lang, f"沒有 {key} 這個參數", f"There is no argument {key}"))
+            elif not TYPE_CHECKS[spec["type"]](value):
+                got = type(value).__name__
+                errors.append(pick(lang, f"{key} 應該是 {spec['type']}，收到 {got}", f"{key} should be {spec['type']}, got {got}"))
+            elif "enum" in spec and value not in spec["enum"]:
+                errors.append(pick(lang, f"{key} 只能是 {spec['enum']}", f"{key} must be one of {spec['enum']}"))
+        filled = {k: spec["default"] for k, spec in props.items() if "default" in spec}
+        filled.update(args)
+        return filled, errors
+
+agent.py: key = (call["name"], json.dumps … {"error": "; ".join(errors)}
+    key = (call["name"], json.dumps(args, sort_keys=True, ensure_ascii=False))
+    repeated = key in seen
+    seen.append(key)
+    self.emit(
+        "tool_call",
+        step=step,
+        call_id=cid,
+        name=call["name"],
+        arguments=args,
+        raw_args=call["raw_args"],
+        errors=errors,
+        repeated=repeated,
+        environment=tool.environment if tool else None,
+    )
+    if errors:
+        return self._observe(step, cid, call["name"], {"error": "; ".join(errors)}, ok=False, ms=0)
+
+agent.py: if self.settings.approve_tools: … return self._observe(step, cid, call["name"], {"error": error}
+    if self.settings.approve_tools:
+        self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)
+        approved = self._wait_for_decision(cid)
+        # Nobody answered when the wait timed out or the run was stopped; only then is it not a rejection.
+        stopped = cid not in self._decisions and not self._timed_out
+        self.emit("approval", step=step, call_id=cid, approved=approved, timed_out=self._timed_out, stopped=stopped)
+        if not approved:
+            if self._timed_out:
+                error = pick(lang, "等待使用者確認逾時，這個工具呼叫沒有執行", "No one confirmed the tool call in time, so it did not run")
+            elif stopped:
+                error = pick(lang, "使用者停止了這次執行，這個工具呼叫沒有執行", "The user stopped this run, so the tool call did not run")
+            else:
+                error = pick(lang, "使用者拒絕執行這個工具呼叫", "The user refused to run this tool call")
+            return self._observe(step, cid, call["name"], {"error": error}, ok=False, ms=0)
+
+[[agent.py|APPROVAL_TIMEOUT = ]]
+    APPROVAL_TIMEOUT = 300  # seconds; an unanswered request (say, from a closed tab) must not hold the model forever
+
+agent.py: def _wait_for_decision(
+    def _wait_for_decision(self, cid: str) -> bool:
+        deadline = time.monotonic() + APPROVAL_TIMEOUT
+        with self._decided:
+            while cid not in self._decisions and not self._stop.is_set():
+                left = deadline - time.monotonic()
+                if left <= 0:  # treat as rejected and end the run
+                    self._timed_out = True
+                    self._stop.set()
+                    break
+                self._decided.wait(timeout=min(left, 0.5))
+            return self._decisions.get(cid, False)
+
+streamlit_app.py: for call in render.pending_approvals(data):
+    for call in render.pending_approvals(data):
+        with st.container(border=True):
+            args = json.dumps(call["arguments"], ensure_ascii=False)
+            st.markdown(tr("**Agent 想執行這個工具，要允許嗎？**", "**The agent wants to run this tool. Allow it?**") + f"  \n`{call['name']}({args})`")
+            allow, reject = st.columns(2)
+            allow.button(tr("允許", "Allow"), key=f"allow-{i}-{call['call_id']}", type="primary", width="stretch",
+                         on_click=run.run.decide, args=(call["call_id"], True))
+            reject.button(tr("拒絕", "Reject"), key=f"reject-{i}-{call['call_id']}", width="stretch",
+                          on_click=run.run.decide, args=(call["call_id"], False))
+
+== execute ==
+
+agent.py: self.emit("tool_start" … return self._observe(step, cid, call["name"], result, ok=ok
+    self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
+    start = time.perf_counter()
+    try:
+        result, ok = tool.fn(**args), True
+    except ToolError as e:
+        result, ok = {"error": e.text[lang]}, False
+    except Exception as e:
+        result, ok = {"error": f"{type(e).__name__}: {e}"}, False
+    return self._observe(step, cid, call["name"], result, ok=ok, ms=(time.perf_counter() - start) * 1000)
+
+[[tools.py|def get_current_time(]]
+    def get_current_time(timezone: str = "Asia/Taipei") -> dict:
+
+[[tools.py|def search_wikipedia(]]
+    def search_wikipedia(query: str, lang: str = "en") -> dict:
+
+tools.py: def _eval(node):
+    def _eval(node):
+        if isinstance(node, ast.Expression):
+            return _eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in CONSTS:
+            return CONSTS[node.id]
+        if isinstance(node, ast.BinOp) and type(node.op) in BIN_OPS:
+            left, right = _eval(node.left), _eval(node.right)
+            # Check the size before computing: ((10**999)**999)**999 would otherwise hang.
+            if isinstance(node.op, ast.Pow) and right > 0 and _digits(left) * right > MAX_DIGITS:
+                raise ToolError(f"結果超過 {MAX_DIGITS} 位數", f"The result has more than {MAX_DIGITS} digits")
+            return BIN_OPS[type(node.op)](left, right)
+        if isinstance(node, ast.UnaryOp) and type(node.op) in UNARY_OPS:
+            return UNARY_OPS[type(node.op)](_eval(node.operand))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FUNCS and not node.keywords:
+            args = [_eval(a) for a in node.args]
+            if node.func.id == "factorial" and args and args[0] > 500:
+                raise ToolError("factorial 的參數太大", "The argument of factorial is too large")
+            return FUNCS[node.func.id](*args)
+        raise ToolError(f"不支援的運算：{ast.unparse(node)}", f"Unsupported operation: {ast.unparse(node)}")
+
+== observe ==
+
+agent.py: def _observe(
+    def _observe(self, step: int, cid: str, name: str, result: dict, ok: bool, ms: float) -> str:
+        text = json.dumps(result, ensure_ascii=False)
+        truncated = len(text) > MAX_RESULT_CHARS
+        if truncated:
+            text = text[:MAX_RESULT_CHARS] + "…(truncated)"
+        self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1))
+        return text
+
+agent.py: for cid, call in zip(ids, calls): … if format_errors >= MAX_FORMAT_ERRORS:
+    for cid, call in zip(ids, calls):
+        result = self._handle_call(step, cid, call, seen)
+        if call["error"]:
+            format_errors += 1
+        else:
+            format_errors = 0
+        self.messages.append({"role": "tool", "tool_call_id": cid, "name": call["name"], "content": result})
+        if self._stop.is_set():
+            break
+
+    if self._stop.is_set():
+        stop_reason = "approval_timeout" if self._timed_out else "user_stopped"
+        break
+    if format_errors >= MAX_FORMAT_ERRORS:
+        stop_reason = "format_errors"
+        break
+
+== ui ==
+
+streamlit_app.py: @st.fragment(run_every= … viz_panel(llm)
+    @st.fragment(run_every=POLL_SECONDS if polling else None)
+    def workspace():
+        absorb_finished()
+        live_run = next((run for run in st.session_state.runs if run.live), None)
+        other = other_tab_run()
+        if polling and live_run is None and other is None:
+            st.rerun()  # the run just ended: redraw everything once and stop polling
+        with st.container(key="workspace"):
+            chat, viz = st.columns([5, 7], gap="large")
+            with chat:
+                chat_panel(llm, live_run, other)
+            with viz:
+                viz_panel(llm)
+
+render.py: def build(events: list[dict])
+    def build(events: list[dict]) -> dict:
+        data = {"model": None, "family": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+        for ev in events:
+            kind = ev["type"]
+            data["last"], data["t"] = kind, ev["t"]
+            if kind == "run_start":
+                data["model"], data["family"] = ev["model"], families.get(ev["family"])
+                data["settings"] = ev["settings"]
+            elif kind == "step_start":
+                data["steps"].append({
+                    "n": ev["step"], "t0": ev["t"], "t1": ev["t"], "context": None, "prefill": None,
+                    "tokens": [], "done": None, "parsed": None, "calls": {},
+                })
+            elif kind == "run_end":
+                data["end"] = ev
+            elif kind == "error":
+                data["error"] = ev["message"]
+            elif data["steps"]:
+                step = data["steps"][-1]
+                step["t1"] = ev["t"]
+                if kind == "token":
+                    step["tokens"].append(ev)
+                elif kind in ("context", "prefill", "parsed"):
+                    step[kind] = ev
+                elif kind == "model_end":
+                    step["done"] = ev
+                elif kind == "tool_call":
+                    step["calls"][ev["call_id"]] = {**ev, "approval": None, "started": False, "result": None}
+                elif kind == "approval_request":
+                    step["calls"][ev["call_id"]]["approval"] = "pending"
+                elif kind == "approval":
+                    if ev["approved"]:
+                        approval = "approved"
+                    elif ev.get("timed_out"):
+                        approval = "timeout"
+                    elif ev.get("stopped"):
+                        approval = "stopped"
+                    else:
+                        approval = "rejected"
+                    step["calls"][ev["call_id"]]["approval"] = approval
+                elif kind == "tool_start":
+                    step["calls"][ev["call_id"]]["started"] = True
+                elif kind == "tool_result":
+                    step["calls"][ev["call_id"]]["result"] = ev
+        return data
+
+render.py: state["active"], state["edge"] = {
+    state["active"], state["edge"] = {
+        "step_start": ("context", "env-context" if step and step["n"] > 1 else None),
+        "context": ("context", "context-model"),
+        "prefill": ("model", "context-model"),
+        "token": ("model", None),
+        "model_end": ("harness", "model-harness"),
+        "parsed": ("harness", "model-harness"),
+        "tool_call": ("harness", None),
+        "approval_request": ("harness", None),
+        "approval": ("harness", None),
+        "tool_start": ("env", "harness-env"),
+        "tool_result": ("env", "env-context") if started else ("harness", None),
+        "run_end": ("stop", "harness-stop"),
+        "error": ("stop", None),
+    }.get(last, (None, None))
+
+streamlit_app.py: def absorb_finished(
+    def absorb_finished():
+        """When a run ends, its full message list becomes the history for the next turn."""
+        for run in st.session_state.runs:
+            if not run.live and not run.absorbed:
+                end = next((e for e in reversed(run.events) if e["type"] == "run_end"), None)
+                if end:
+                    st.session_state.history = end["messages"]
+                run.absorbed = True
+
+agent.py: def stop(self): … def decide(self, call_id
+    def stop(self):
+        self._stop.set()
+        with self._decided:
+            self._decided.notify_all()
+
+    def decide(self, call_id: str, approved: bool):
+        with self._decided:
+            self._decisions[call_id] = approved
+            self._decided.notify_all()
+
+== events ==
+
+[[agent.py|"run_start", run_id=]]
+    "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+
+[[agent.py|self.emit("step_start"]]
+    self.emit("step_start", step=step)
+
+[[agent.py|"context",]]
+    "context",
+
+[[llm.py|yield {"type": "prefill"]]
+    yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
+
+[[llm.py|"type": "token",]]
+    "type": "token",
+
+[[agent.py|self.emit("model_end"]]
+    self.emit("model_end", step=step, raw=raw, **done)
+
+[[agent.py|self.emit("parsed"]]
+    self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
+
+[[agent.py|"tool_call",]]
+    "tool_call",
+
+[[agent.py|self.emit("approval_request"]]
+    self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)
+
+[[agent.py|self.emit("approval",]]
+    self.emit("approval", step=step, call_id=cid, approved=approved, timed_out=self._timed_out, stopped=stopped)
+
+[[agent.py|self.emit("tool_start"]]
+    self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
+
+[[agent.py|self.emit("tool_result"]]
+    self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1))
+
+[[agent.py|self.emit("error"]]
+    self.emit("error", message=f"{type(e).__name__}: {e}")
+
+[[agent.py|self.emit("run_end"]]
+    self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)
