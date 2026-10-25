@@ -8,6 +8,10 @@ address = "localhost"
 # a question starts and on every redraw while one is live: the agent's thread then cannot read the vLLM stream, whose
 # tokens arrive all at once, at thousands of tok/s. release_model() collects when a model goes.
 postScriptGC = false
+# A rerun waits for the run in progress to reach its next Streamlit call, rather than starting beside it in a new
+# thread: picking vLLM while the model here loaded let that load finish beside vLLM's server, after it had been let go.
+# A switch made while a model loads takes effect once it has loaded.
+fastReruns = false
 
 [browser]
 gatherUsageStats = false

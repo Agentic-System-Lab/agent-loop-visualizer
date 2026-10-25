@@ -648,14 +648,14 @@ SECTIONS = [
              "en": "The input box and the example buttons both go through `start_run()`: take the lock, freeze the settings, start a thread."}, (
         {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`（模型在 vLLM 伺服器上跑時是 `VLLMBackend`）；畫面的其他地方只把它當成一個 `Backend`（{{backends}}）。"
                "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，記憶體裡同時只留一個模型。換模型或換「用什麼跑模型」時，"
-               "`release_model()` 先清掉快取、把記憶體還給系統，下一個模型才載入，兩個不會同時佔著記憶體。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
+               "`release_model()` 先清掉快取、把記憶體還給系統，下一個模型才載入，兩個不會同時佔著記憶體。在 CUDA 上，還給系統之前要先放掉 cuBLAS 的工作區：它從第一次矩陣乘法起就一直留著，而且是切在 transformers 替權重預留的那一大塊記憶體裡，不放掉的話，那一整塊都還不回去（[[harness/backends/simple_backend.py|torch._C._cuda_clearCublasWorkspaces()]]）。Streamlit 的 fast reruns 也關掉了（`.streamlit/config.toml`）：重跑會等正在跑的那一次到下一個 Streamlit 呼叫，而不是在新的 thread 裡和它同時跑，所以模型載入到一半時切換的設定，要等載入完才生效，不會在放掉之後才又載入完、留在記憶體裡。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
                "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[harness/backends/simple_backend.py|def _sampling_defaults(self)]]）。"
                "側欄的模型選單換了之後會開新對話（[[app/page.py|key=\"model_id\", on_change=switch_model]]），MTP 也回到關閉，只有 vLLM (Docker) 例外，那裡的 MTP 是伺服器啟動的方式；"
                "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[harness/backends/simple_backend.py|def load_drafter(self):]]）。",
          "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar (a `VLLMBackend` when the model runs on a vLLM server); "
                "the rest of the page takes it for just a `Backend` ({{backends}}). `load_llm()` is cached with "
                "`st.cache_resource(max_entries=1)`, so only one model stays in memory. Switching models, or what runs them, first has `release_model()` clear "
-               "that cache and hand the memory back, and only then does the next model load, so the two never hold memory at once. The first time "
+               "that cache and hand the memory back, and only then does the next model load, so the two never hold memory at once. On CUDA, cuBLAS's workspaces go before the memory is handed back: cuBLAS keeps one from the first matmul on, carved out of the segment transformers reserved for the weights, and while it lives none of that segment can go back ([[harness/backends/simple_backend.py|torch._C._cuda_clearCublasWorkspaces()]]). Streamlit's fast reruns are off too (`.streamlit/config.toml`): a rerun waits for the run in progress to reach its next Streamlit call rather than running beside it in a new thread, so a switch made while a model loads takes effect once it has loaded, and the model does not finish loading after it was let go. The first time "
                "a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "
                "generation_config.json, so its recommendations come from the family ([[harness/backends/simple_backend.py|def _sampling_defaults(self)]]). "
                "Switching models in the sidebar's menu starts a new conversation ([[app/page.py|key=\"model_id\", on_change=switch_model]]) "
@@ -1100,9 +1100,12 @@ SECTIONS = [
                "What that route brings:"},
         (
             {"zh": "**每個 token 的排名**，就算不在前 5 名也有。它的清單把選中的 token 放第一個，所以多要一個，再照排名排出前 5 名。"
-                   "vLLM 的排名把和選中的 token 同分的也算在前面，所以 backend 扣掉清單上同分的，同分第一就是 #1，和 `LocalLLM` 一樣。",
+                   "vLLM 的排名把和選中的 token 同分的也算在前面，推測解碼時比的還是 logits，列出來的 log 機率可能在 logits 沒打平的地方打平。"
+                   "所以 backend 照清單上的 log 機率算排名，只數比選中的更可能的：同分第一就是 #1，和 `LocalLLM` 一樣。",
              "en": "**Every token's rank**, outside the top 5 as well. Its list puts the chosen token first, so the backend asks for one more and sorts the top 5 by rank. "
-                   "vLLM's rank counts the tokens tied with the chosen one as ahead of it, so the backend takes off the ties listed: a token tied for first is #1, as with `LocalLLM`."},
+                   "vLLM's rank counts the tokens tied with the chosen one as ahead of it, and with speculative decoding it compares the logits, while the log probabilities "
+                   "listed can tie where the logits do not. So the backend counts the rank from the listed log probabilities, only those more likely: a token tied "
+                   "for first is #1, as with `LocalLLM`."},
             {"zh": "**`--return-sampling-mask`**：每個位置 top-k、top-p 留下了哪些 token，由此知道剩下幾個候選。vLLM 只在 `--logprobs-mode processed_logprobs` "
                    "下開它，所以有 mask 的伺服器送回的是抽樣分布：看得到取樣時的機率和剩下幾個候選，看不到模型給的機率、前 5 名，也看不到哪幾個被剃掉。"
                    "這時它也不接受 temperature 0 和 top-k 0（mask 的大小要靠 top-k 限制），所以側欄的滑桿從 0.05 和 1 開始。"
@@ -1396,9 +1399,12 @@ SECTIONS = [
             {"zh": "背景 thread 只管 append 事件；畫面每 0.5 秒把整張列表重畫一次。",
              "en": "The background thread only appends events; the page redraws the whole list every 0.5 s."}, (
         {"zh": "`workspace` 是一個 fragment：有 agent 在跑時，它每 0.5 秒自己重跑一次，只重畫聊天和右邊的檢視，不用整頁重跑。"
-               "跑完的那一刻再整頁重跑一次，然後停止輪詢。",
+               "跑完的那一刻再整頁重跑一次，然後停止輪詢。Streamlit 會留著這個 fragment，好讓它自己重跑，所以它只用弱參照拿著模型："
+               "換模型或換「用什麼跑模型」時，`release_model()` 才放得掉它。",
          "en": "`workspace` is a fragment: while an agent runs, it reruns itself every 0.5 s and redraws only the chat and the views on the "
-               "right, not the whole page. The moment the run ends, the whole page reruns once, and the polling stops."},
+               "right, not the whole page. The moment the run ends, the whole page reruns once, and the polling stops. Streamlit keeps the "
+               "fragment to rerun it on its own, so it holds the model only weakly: when another model, or what runs it, is picked, "
+               "`release_model()` can let this one go."},
         Code("app/page.py", "@st.fragment(run_every=", end="viz_panel(llm)"),
         {"zh": "每次重畫，`LiveRun.data()` 複製一份目前的事件列表交給 `render.build()`，按順序折成一個個 step。"
                "`run_start` 告訴它這一輪是哪個模型、哪個 family，之後畫特殊 token、停止 token 和使用者訊息的位置都問這個 family；"

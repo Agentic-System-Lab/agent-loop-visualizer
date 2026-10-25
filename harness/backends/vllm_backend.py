@@ -648,13 +648,17 @@ class VLLMBackend:
         if entry is None or (entry["logprob"] <= UNREPORTED and not entry.get("top_logprobs")):  # vLLM's mark for "not reported"
             return {}
         listed = {e["token_id"]: e["logprob"] for e in entry.get("top_logprobs") or []}
-        # vLLM's rank counts the tokens at least as likely as the chosen one (batched_count_greater_than compares with
-        # >=), so a token tied for first, which bfloat16 logits make common, would be #2. The page's rank counts only
-        # those more likely, as LocalLLM's does, so the ties listed come off. Within the top 5 every tie is listed; a
-        # token further down may still count ties the server did not list.
+        # The page's rank counts the tokens more likely than the chosen one, as LocalLLM's does. vLLM's counts those at
+        # least as likely (it compares with >=), so a token tied for first, which bfloat16 logits make common, would be
+        # #2; and with speculative decoding it compares the logits, while the log probabilities listed come from a
+        # log-softmax of their own, where two logits a hair apart can tie. So while a listed token is no likelier than
+        # the chosen one, every likelier token is listed too, and the rank is counted from what the page shows. A token
+        # below all of them keeps vLLM's rank, which may still count ties the server did not list.
         rank = entry.get("rank")
-        if rank:
-            rank -= sum(1 for i, v in listed.items() if i != token_id and v == entry["logprob"])
+        others = [v for i, v in listed.items() if i != token_id]
+        likelier = sum(1 for v in others if v > entry["logprob"])
+        if rank and likelier < len(others):
+            rank = likelier + 1
         return self._token_details(token_id, entry["logprob"], listed, rank, mask, s)
 
     def _token_details(self, token_id: int, logprob: float, listed: dict[int, float], rank: int | None,

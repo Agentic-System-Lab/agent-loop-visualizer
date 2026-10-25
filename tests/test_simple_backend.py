@@ -607,6 +607,17 @@ def test_a_checkpoint_on_disk_loads_in_place(monkeypatch, tmp_path):
     assert {path for _, path, _ in seen} == {str(tmp_path)}
 
 
+def test_letting_a_model_go_on_cuda_frees_cublas_workspaces_before_emptying_the_cache(monkeypatch):
+    # cuBLAS keeps its workspace (32 MiB) for good, carved out of the segment transformers reserved for the weights at
+    # the first matmul; while it lives, empty_cache() cannot hand back any of that segment (the model's whole size).
+    calls = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch._C, "_cuda_clearCublasWorkspaces", lambda: calls.append("cuBLAS workspaces"), raising=False)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("empty_cache"))
+    simple_backend.empty_cache()
+    assert calls == ["cuBLAS workspaces", "empty_cache"]
+
+
 def test_models_download_at_their_pinned_revision_into_the_project_folder_git_ignores(monkeypatch):
     seen = []
     monkeypatch.setattr(simple_backend, "snapshot_download", lambda model_id, **kwargs: seen.append(kwargs) or "/hub")

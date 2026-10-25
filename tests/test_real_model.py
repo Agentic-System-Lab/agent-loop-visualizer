@@ -5,6 +5,8 @@ Opt in with:  RUN_MODEL_TESTS=1 uv run pytest -m model   (add  -k Qwen  for one 
 
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -221,3 +223,27 @@ def test_the_model_opens_every_data_format_with_run_python(gemma, tmp_path, ext)
     Run(gemma, [], f"Use run_python to open /data/{path.name} and print its first two rows.", settings, events.append, [attachment], tmp_path).run()
     results = [e for e in events if e["type"] == "tool_result" and e["name"] == "run_python"]
     assert any(r["ok"] and "2025" in r["result"] for r in results), results
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuBLAS's workspaces are CUDA's")
+def test_letting_a_warmed_up_model_go_hands_its_gpu_memory_back():
+    # As release_model() does after load_llm() warmed the model up: before vLLM loads the model, this process keeps none
+    # of it. In a process of its own, as the page is, since the models this module keeps loaded leave free room in
+    # their segments that another model would fill instead of reserving its own.
+    script = """
+import gc, sys, torch
+sys.path.insert(0, sys.argv[1])
+from harness.backends.simple_backend import LocalLLM, empty_cache
+llm = LocalLLM("Qwen/Qwen3.5-0.8B")
+llm.warmup()
+loaded = torch.cuda.memory_reserved()
+del llm
+gc.collect()
+empty_cache()
+print(loaded, torch.cuda.memory_reserved())
+"""
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run([sys.executable, "-c", script, str(root)], capture_output=True, text=True, timeout=600)
+    assert done.returncode == 0, done.stderr[-2000:]
+    loaded, left = map(int, done.stdout.split()[-2:])
+    assert loaded > 2**30 and left == 0

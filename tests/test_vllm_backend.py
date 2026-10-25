@@ -528,6 +528,19 @@ def test_a_token_tied_for_first_is_ranked_first_on_either_route_though_vllm_coun
     assert [c["p"] for c in tokens[1]["top"][:2]] == pytest.approx([0.05, 0.05]) and tokens[1]["id"] in [c["id"] for c in tokens[1]["top"]]
 
 
+@pytest.mark.parametrize(("vllm_rank", "listed", "rank"), [
+    (1, [-1.0, -1.0, -2.0], 1),  # first by its logit, tied with the next once a log probability
+    (2, [-1.0, -0.5, -1.0], 2),  # one likelier, and tied with the one below it
+])
+def test_a_rank_vllm_took_from_logits_stays_true_to_the_listed_probabilities_where_they_tie(hub, vllm_rank, listed, rank):
+    # With speculative decoding vLLM ranks the token by the logits, while the log probabilities it lists come from a
+    # log-softmax of their own: two logits a hair apart can list the same log probability (Qwen3.5 0.8B with MTP).
+    llm = connect(Server([], scale_out=True))
+    entry = {"token_id": 5, "logprob": listed[0], "rank": vllm_rank,
+             "top_logprobs": [{"token_id": t, "logprob": v} for t, v in zip([5, 7, 9], listed)]}
+    assert llm._generate_details(5, entry, None, Sampling())["rank"] == rank
+
+
 def test_a_token_the_server_sent_no_log_probability_for_carries_no_details(hub):
     llm = connect(Server([]))
     assert llm._details(5, {}, 0, Sampling()) == {} and llm._details(5, {"token_logprobs": [None], "top_logprobs": [None]}, 0, Sampling()) == {}

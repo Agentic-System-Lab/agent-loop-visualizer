@@ -628,6 +628,21 @@ def test_picking_vllm_starts_it_in_docker_after_letting_the_local_model_go(docke
     assert docker_vllm["started"] == ["google/gemma-4-E2B-it"]  # a rerun finds the server up and starts nothing
 
 
+def test_the_model_here_is_freed_the_moment_it_is_let_go_though_the_last_run_drew_the_page_with_it(docker_vllm, at, models, monkeypatch):
+    # Streamlit keeps the last run's fragment and format functions; had they held the model, release_model() could not
+    # free it, and the memory it emptied would come back only later, beside vLLM.
+    assert at.pills and models[0].modalities  # the sample files, labelled from the model, were drawn
+    local, freed = weakref.ref(models.pop()), []
+    release = page.release_model
+
+    def release_and_look():
+        release()
+        freed.append(local() is None)
+    monkeypatch.setattr(page, "release_model", release_and_look)
+    pick_engine(at, "vllm")
+    assert freed == [True]
+
+
 def test_picking_transformers_again_stops_vllms_container_and_loads_the_model_here(docker_vllm, at, models):
     pick_engine(at, "vllm")
     pick_engine(at, "local")
@@ -729,6 +744,14 @@ def test_streamlit_does_not_collect_garbage_after_every_script_run():
     # not read the vLLM stream meanwhile, and its tokens came in all at once, at thousands of tok/s.
     config = tomllib.loads((APP.parent / ".streamlit" / "config.toml").read_text())
     assert config["runner"]["postScriptGC"] is False
+
+
+def test_a_rerun_waits_for_the_script_run_in_progress_rather_than_running_beside_it():
+    # With fast reruns, Streamlit starts each rerun in a new thread and leaves the last run to stop at its next
+    # Streamlit call: picking vLLM while the model here loaded (a minute) let that load finish beside vLLM's server,
+    # after the model had been let go.
+    config = tomllib.loads((APP.parent / ".streamlit" / "config.toml").read_text())
+    assert config["runner"]["fastReruns"] is False
 
 
 def test_with_vllm_url_the_server_is_given_and_there_is_nothing_to_switch(vllm, at):

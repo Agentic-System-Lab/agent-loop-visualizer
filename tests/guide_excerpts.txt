@@ -233,6 +233,9 @@ harness/families/__init__.py: class FileNote:
 
 == submit ==
 
+[[harness/backends/simple_backend.py|torch._C._cuda_clearCublasWorkspaces()]]
+    torch._C._cuda_clearCublasWorkspaces()
+
 [[harness/backends/simple_backend.py|def _sampling_defaults(self)]]
     def _sampling_defaults(self) -> dict:
 
@@ -270,7 +273,8 @@ app/page.py: def current_llm() -> Backend:
         if url:
             loading = tr(f"連線到 {url} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {url} and loading {model_id}'s tokenizer…")
         else:
-            loading = tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")
+            loading = tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…這時候切換的設定，載入完才會生效。",
+                         f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)… What you switch meanwhile takes effect once it has loaded.")
         with st.spinner(loading):
             llm = load_llm(model_id, url)
         if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
@@ -1337,6 +1341,8 @@ harness/agent.py: for cid, call in zip(ids, calls): … if format_errors >= MAX_
 app/page.py: @st.fragment(run_every= … viz_panel(llm)
     @st.fragment(run_every=POLL_SECONDS if polling else None)
     def workspace():
+        if (llm := model()) is None:  # let go meanwhile: the full rerun that follows draws the next one
+            st.rerun()
         absorb_finished()
         live_run = next((run for run in st.session_state.runs if run.live), None)
         other = other_tab_run()

@@ -116,8 +116,12 @@ def pick_device() -> str:
 
 def empty_cache():
     """Hand back to the system the memory PyTorch keeps for reuse after a model was let go (app.page.release_model):
-    a GPU's, or on a Mac the memory MPS shares with everything else."""
+    a GPU's, or on a Mac the memory MPS shares with everything else. On CUDA, cuBLAS's workspaces go first: cuBLAS keeps
+    one for good from the first matmul, and when that came out of the segment transformers reserved for the weights,
+    empty_cache() could hand back none of it, the whole model's size."""
     if torch.cuda.is_available():
+        if hasattr(torch._C, "_cuda_clearCublasWorkspaces"):
+            torch._C._cuda_clearCublasWorkspaces()
         torch.cuda.empty_cache()
     elif torch.backends.mps.is_available():
         torch.mps.empty_cache()

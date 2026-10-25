@@ -35,6 +35,7 @@ import os
 import shutil
 import threading
 import uuid
+import weakref
 from pathlib import Path
 
 import streamlit as st
@@ -194,7 +195,8 @@ def current_llm() -> Backend:
     if url:
         loading = tr(f"連線到 {url} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {url} and loading {model_id}'s tokenizer…")
     else:
-        loading = tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")
+        loading = tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…這時候切換的設定，載入完才會生效。",
+                     f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)… What you switch meanwhile takes effect once it has loaded.")
     with st.spinner(loading):
         llm = load_llm(model_id, url)
     if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
@@ -600,8 +602,10 @@ def chat_panel(llm: Backend, live_run: LiveRun | None, other: LiveRun | None):
 def sample_picker(row, samples: list[str], llm: Backend, busy: bool):
     """The sample files from assets/examples that this model can use, to ask a question of one's own about: a file
     picked here goes with the next question typed in the input box, as one attached with the + would."""
+    readable = llm.modalities  # not the model: Streamlit keeps format_func after the run, and with it the model
+
     def label(name: str) -> str:
-        return f"{EXAMPLE_ICONS[media.kind_of(name, llm.modalities)]} {name}"
+        return f"{EXAMPLE_ICONS[media.kind_of(name, readable)]} {name}"
 
     with row:
         st.pills(tr("範例檔案", "Sample files"), samples, selection_mode="multi", format_func=label, key="samples", disabled=busy,
@@ -790,9 +794,14 @@ def agent_page():
             st.button(tr("再試一次", "Try again"), icon=":material/refresh:", on_click=retry_vllm)
         st.stop()
     sidebar(llm, own_live, polling)
+    # Streamlit keeps the fragment after the run, to run it again on its own; held weakly, the model can still be let go
+    # (release_model()) the moment another is picked, rather than once the next run has replaced the fragment.
+    model = weakref.ref(llm)
 
     @st.fragment(run_every=POLL_SECONDS if polling else None)
     def workspace():
+        if (llm := model()) is None:  # let go meanwhile: the full rerun that follows draws the next one
+            st.rerun()
         absorb_finished()
         live_run = next((run for run in st.session_state.runs if run.live), None)
         other = other_tab_run()
