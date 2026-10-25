@@ -546,9 +546,10 @@ def test_a_vllm_server_that_cannot_be_reached_is_said_in_the_page_language(vllm,
 @pytest.fixture
 def docker_vllm(monkeypatch, models, outputs):
     """The page without VLLM_URL, with vllm_docker faked: start() records the models it was asked for and returns a
-    server on the CPU (or raises `fail`, a DockerError), serving() knows what was started, stop() counts. A fake model
-    stands in for the VLLMBackend the page makes for the server; `made` holds each, with the URL it was given."""
-    state = {"started": [], "stopped": 0, "fail": None, "made": [], "up": None}
+    server on the CPU (or raises `fail`, a DockerError), serving() knows what was started, chosen() what was asked for
+    until stop(), and stop() counts. A fake model stands in for the VLLMBackend the page makes for the server; `made`
+    holds each, with the URL it was given."""
+    state = {"started": [], "stopped": 0, "fail": None, "made": [], "up": None, "chosen": None}
 
     class DockerLLM(FakeLLM):
         def __init__(self, model_id, url):
@@ -562,6 +563,7 @@ def docker_vllm(monkeypatch, models, outputs):
 
     def start(model_id, say):
         state["started"].append(model_id)
+        state["chosen"] = model_id
         say("download", "")
         say("up", "Container agent-loop-vllm-vllm-1  Started")
         say("load", "(APIServer pid=1) INFO Application startup complete.")
@@ -575,12 +577,13 @@ def docker_vllm(monkeypatch, models, outputs):
 
     def stop():
         state["stopped"] += 1
-        state["up"] = None
+        state["up"] = state["chosen"] = None
 
     monkeypatch.setattr(page, "VLLM_URL", None)
     monkeypatch.setattr(vllm_backend, "VLLMBackend", DockerLLM)
     monkeypatch.setattr(vllm_docker, "start", start)
     monkeypatch.setattr(vllm_docker, "serving", serving)
+    monkeypatch.setattr(vllm_docker, "chosen", lambda: state["chosen"])
     monkeypatch.setattr(vllm_docker, "stop", stop)
     return state
 
@@ -620,6 +623,27 @@ def test_picking_transformers_again_stops_vllms_container_and_loads_the_model_he
     pick_engine(at, "local")
     assert docker_vllm["stopped"] == 1 and [m.model_id for m in models] == ["google/gemma-4-E2B-it"] * 2
     assert not any("Docker" in c for c in captions(at))
+
+
+def test_a_new_tab_or_a_reload_while_vllm_runs_joins_its_server_rather_than_loading_the_model_here(docker_vllm, new_tab, models):
+    first = pick_engine(new_tab(), "vllm")
+    next(s for s in first.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    models.clear()
+    second = new_tab()
+    assert engine(second).value == "vllm" and second.session_state["model_id"] == "Qwen/Qwen3.5-0.8B"  # the model the server runs
+    assert models == [] and docker_vllm["started"] == ["google/gemma-4-E2B-it", "Qwen/Qwen3.5-0.8B"]  # nothing loaded here or started again
+
+
+def test_a_tab_open_on_transformers_follows_another_that_picks_vllm_and_back(docker_vllm, new_tab, models):
+    first, second = new_tab(), new_tab()
+    pick_engine(second, "vllm")
+    models.clear()
+    first.run()
+    assert not first.exception and engine(first).value == "vllm" and models == [] and docker_vllm["started"] == ["google/gemma-4-E2B-it"]
+    pick_engine(first, "local")
+    second.run()
+    assert not second.exception and engine(second).value == "local" and docker_vllm["started"] == ["google/gemma-4-E2B-it"]
+    assert docker_vllm["stopped"] == 1 and [m.model_id for m in models] == ["google/gemma-4-E2B-it"]  # loaded here once, for both
 
 
 def test_another_model_on_vllm_starts_the_server_with_it(docker_vllm, at):

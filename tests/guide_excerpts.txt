@@ -256,12 +256,16 @@ app/page.py: @st.cache_resource(max_entries=1 … def release_model():
         gc.collect()
         empty_cache()
 
+[[app/page.py|if not st.session_state.get("engine_picked"):]]
+    if not st.session_state.get("engine_picked"):
+
 app/page.py: def current_llm() -> Backend:
     def current_llm() -> Backend:
         model_id = st.session_state.model_id
         if st.session_state.pop("stop_vllm", False):  # transformers was just picked again: vLLM's memory goes back first
             with st.spinner(tr("停止 vLLM 的容器…", "Stopping vLLM's container…")):
                 vllm_docker.stop()
+        st.session_state.pop("engine_picked", None)  # vLLM is stopped or about to start: from now on this tab follows it too
         url = vllm_server(model_id)["url"] if docker_vllm() else VLLM_URL
         if url:
             loading = tr(f"連線到 {url} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {url} and loading {model_id}'s tokenizer…")
@@ -848,6 +852,9 @@ harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
 
 [[harness/backends/vllm_docker.py|def stop():]]
     def stop():
+
+[[harness/backends/vllm_docker.py|def _stop_at_exit():]]
+    def _stop_at_exit():
 
 [[harness/backends/vllm_backend.py|def _checkpoint_files(]]
     def _checkpoint_files(model_id: str) -> str:

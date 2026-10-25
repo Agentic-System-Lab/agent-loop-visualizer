@@ -663,9 +663,14 @@ SECTIONS = [
                "([[harness/backends/simple_backend.py|def load_drafter(self):]])."},
         Code("app/page.py", "@st.cache_resource(max_entries=1", end="def release_model():"),
         {"zh": "`current_llm()` 在載入之前還做兩件事：剛換回 transformers 時先停掉 vLLM 的容器；側欄選了 vLLM（又沒設 `VLLM_URL`）時，"
-               "先確定 Docker 裡的 vLLM 伺服器已經啟動，拿到它的網址（{{backends}}）。",
+               "先確定 Docker 裡的 vLLM 伺服器已經啟動，拿到它的網址（{{backends}}）。"
+               "「用什麼跑模型」也和記憶體裡的模型一樣，是所有分頁共用的一個選擇：另一個分頁啟動或停掉了 vLLM 的容器，這個分頁就跟著換，不會在旁邊再載入一份模型；"
+               "新開的分頁或重新整理，也會選容器裡跑的那個模型（[[app/page.py|if not st.session_state.get(\"engine_picked\"):]]）。只有剛選過的分頁例外，直到 `current_llm()` 啟動或停掉 vLLM 為止。",
          "en": "Before it loads anything, `current_llm()` does two more things: right after transformers is picked again, it stops vLLM's container; "
-               "when the sidebar picked vLLM (and `VLLM_URL` is not set), it first makes sure the vLLM server in Docker is up, and takes its URL ({{backends}})."},
+               "when the sidebar picked vLLM (and `VLLM_URL` is not set), it first makes sure the vLLM server in Docker is up, and takes its URL ({{backends}}). "
+               "What runs the model is, like the model in memory, one choice for every tab: when another tab has started or stopped vLLM's container, this one "
+               "follows rather than load the model beside it, and a new tab or a reload also takes the model the container runs "
+               "([[app/page.py|if not st.session_state.get(\"engine_picked\"):]]). Only the tab that just picked leads, until `current_llm()` has started or stopped vLLM."},
         Code("app/page.py", "def current_llm() -> Backend:"),
         {"zh": "輸入框（[[app/page.py|sent = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。輸入框可以附上檔案，模型讀得懂聲音時還能錄音；"
                "有些範例也會附上 `app/assets/examples/` 裡的範例檔，輸入框上方也列出這些檔案，選了的會附在你自己打的問題裡。`start_run()` 先用不等待的方式拿一把全域的鎖"
@@ -1046,17 +1051,17 @@ SECTIONS = [
         {"zh": "vLLM 伺服器可以是 `VLLM_URL` 指的任何一台，也可以由畫面自己啟動：沒設 `VLLM_URL` 時，側欄「用什麼跑模型」選 vLLM，"
                "`harness/backends/vllm_docker.py` 就照 `docker-compose/compose.yaml` 用 Docker Compose 啟動它（[[harness/backends/vllm_docker.py|def start(model_id]]）。"
                "權重先下載到這台電腦的 `models/`，容器唯讀掛上、自己不下載，所以伺服器載入的正是 `REVISIONS` 固定的那個 commit。"
-               "Docker 有 NVIDIA 的 runtime 時，再疊上 `compose.gpu.yaml` 改在 GPU 上跑，否則在 CPU 上跑（[[harness/backends/vllm_docker.py|def device()]]），"
+               "Docker 有 NVIDIA 的 runtime 時，再疊上 `compose.gpu.yaml` 改在 GPU 上跑（KV cache 和 CPU 上一樣是 2 GiB，不是 vLLM 預設的 GPU 記憶體的 92%），否則在 CPU 上跑（[[harness/backends/vllm_docker.py|def device()]]），"
                "Mac 也一樣，在 Docker 的 Linux 虛擬機裡；CPU 版的 image 由 `docker-compose/vllm-cpu/` 建，補上 vLLM 0.32.0 在 CPU 上缺的兩個修正。換到 vLLM 之前，畫面先放掉這台電腦上的模型（[[app/page.py|def release_model():]]）；"
-               "換回 transformers 時，停掉容器（[[harness/backends/vllm_docker.py|def stop():]]）。",
+               "換回 transformers 或結束這個程式時，停掉容器（[[harness/backends/vllm_docker.py|def stop():]]、[[harness/backends/vllm_docker.py|def _stop_at_exit():]]）。",
          "en": "A vLLM server can be any one at `VLLM_URL`, or one the page starts itself: without `VLLM_URL`, when the sidebar's What runs the model picks vLLM, "
                "`harness/backends/vllm_docker.py` starts it with Docker Compose from `docker-compose/compose.yaml` ([[harness/backends/vllm_docker.py|def start(model_id]]). "
                "The weights are downloaded into this machine's `models/` first, and the container mounts that read-only and downloads nothing itself, so the "
-               "server loads exactly the commit `REVISIONS` pins. Where Docker has NVIDIA's runtime, `compose.gpu.yaml` goes on top and the server runs on the GPU; "
+               "server loads exactly the commit `REVISIONS` pins. Where Docker has NVIDIA's runtime, `compose.gpu.yaml` goes on top and the server runs on the GPU, with a 2 GiB KV cache as on the CPU rather than vLLM's 92% of the GPU's memory; "
                "elsewhere it runs on the CPU ([[harness/backends/vllm_docker.py|def device()]]), a Mac's included, in Docker's Linux VM, from an image "
                "`docker-compose/vllm-cpu/` builds with two fixes vLLM 0.32.0 lacks on a CPU. Before vLLM takes over, the page "
-               "lets go of the model on this machine ([[app/page.py|def release_model():]]); picking transformers again stops the container "
-               "([[harness/backends/vllm_docker.py|def stop():]])."},
+               "lets go of the model on this machine ([[app/page.py|def release_model():]]); picking transformers again, or quitting the app, stops the container "
+               "([[harness/backends/vllm_docker.py|def stop():]], [[harness/backends/vllm_docker.py|def _stop_at_exit():]])."},
         {"zh": "`VLLMBackend` 的 prompt 一樣精確。它把 checkpoint 除了權重以外的檔案下載到 `models/`，用的是 `REVISIONS` 固定的同一個 commit"
                "（[[harness/backends/vllm_backend.py|def _checkpoint_files(]]），所以 `render()` 和 `encode()` 用的 tokenizer 和 chat template 跟 `LocalLLM` 一模一樣。"
                "送到伺服器的是 token id 而不是文字，伺服器讀到的就是脈絡分頁上那一串（{{context}}）。側欄的每個設定都照送，其他取樣設定都設成不起作用，"

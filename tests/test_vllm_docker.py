@@ -10,6 +10,7 @@ Docker has one), asks it a question through VLLMBackend and stops it:
     RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real
 """
 
+import atexit
 import json
 import os
 import re
@@ -127,9 +128,12 @@ def docker(monkeypatch):
     downloads = []
     monkeypatch.setattr(vllm_docker, "snapshot_download", lambda repo, **kw: downloads.append((repo, kw)))
     fake.downloads = downloads
+    # The fake starts nothing, so the app's exit must not stop a real server: nothing is left chosen after a test.
     vllm_docker._server.clear()
+    vllm_docker._chosen.clear()
     yield fake
     vllm_docker._server.clear()
+    vllm_docker._chosen.clear()
 
 
 def start(model_id=QWEN):
@@ -276,6 +280,30 @@ def test_stopping_runs_compose_down_and_forgets_the_server(docker):
     assert docker.compose_calls("down") and vllm_docker.serving(QWEN) is None and docker.served is None
 
 
+def test_the_model_the_app_asked_vllm_for_is_kept_through_a_failed_start_until_it_is_stopped(docker):
+    assert vllm_docker.chosen() is None
+    docker.up = (1, ["Error response from daemon: pull access denied"])
+    failure()
+    assert vllm_docker.chosen() == QWEN  # every tab still says vLLM, and why it did not start
+    docker.up = (0, [])
+    start(GEMMA)
+    assert vllm_docker.chosen() == GEMMA
+    vllm_docker.stop()
+    assert vllm_docker.chosen() is None
+
+
+def test_quitting_the_app_stops_the_server_it_started_and_without_one_leaves_docker_alone(docker, monkeypatch):
+    registered = []
+    monkeypatch.setattr(atexit, "register", registered.append)
+    module = runpy.run_path(vllm_docker.__file__)  # the hook is registered at import, apart from the imported module
+    assert registered == [module["_stop_at_exit"]]
+    vllm_docker._stop_at_exit()
+    assert docker.commands == []
+    start()
+    vllm_docker._stop_at_exit()
+    assert len(docker.compose_calls("down")) == 1 and vllm_docker.chosen() is None
+
+
 def test_stopping_without_docker_is_quiet(docker):
     docker.installed = False
     vllm_docker.stop()
@@ -317,13 +345,25 @@ def test_by_default_the_server_serves_qwen_at_its_pinned_revision_under_its_own_
     assert model == QWEN and revision == f"--revision={families.REVISIONS[QWEN]}" and served == f"--served-model-name={QWEN}"
 
 
-def test_the_gpu_file_runs_the_same_vllm_with_the_same_flags_but_the_cpu_only_one():
+GPU_MEMORY = ("--kv-cache-memory-bytes=", "--gpu-memory-utilization=")  # the flags only the GPU file has
+
+
+def test_the_gpu_file_runs_the_same_vllm_with_the_same_flags_but_the_cpu_only_one_and_its_memory():
     cpu, gpu = service("compose.yaml"), service("compose.gpu.yaml")
-    assert [arg for arg in cpu["command"] if arg != "--skip-mm-profiling"] == gpu["command"]
+    assert [arg for arg in cpu["command"] if arg != "--skip-mm-profiling"] == [arg for arg in gpu["command"] if not arg.startswith(GPU_MEMORY)]
     assert "--enable-scale-out" in gpu["command"] and gpu["build"] is None
     assert gpu["deploy"]["resources"]["reservations"]["devices"][0]["driver"] == "nvidia"
     version = re.search(r"FROM vllm/vllm-openai-cpu:v([\d.]+)", (COMPOSE_DIR / "vllm-cpu" / "Dockerfile").read_text()).group(1)
     assert gpu["image"] == f"vllm/vllm-openai:v{version}" and cpu["image"].startswith(f"agent-loop-vllm-cpu:{version}-")
+
+
+def test_on_the_gpu_the_kv_cache_is_the_cpus_size_and_vllm_starts_without_most_of_the_memory_free():
+    # vLLM 0.32 refuses to start unless gpu_memory_utilization (0.92 by default) of the GPU's memory is free, which a
+    # small card beside the page's own CUDA context, or a GPU that shares the machine's memory, does not have.
+    flags = dict(default(arg).split("=", 1) for arg in service("compose.gpu.yaml")["command"] if arg.startswith(GPU_MEMORY))
+    gib = int(default(service("compose.yaml")["environment"]["VLLM_CPU_KVCACHE_SPACE"]))
+    assert flags["--kv-cache-memory-bytes"] == f"{gib}G"  # vLLM reads an upper-case G as GiB
+    assert 0 < float(flags["--gpu-memory-utilization"]) <= 0.5
 
 
 def test_the_cpu_image_keeps_a_step_that_takes_minutes_from_killing_the_engine():

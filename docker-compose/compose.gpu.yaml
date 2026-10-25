@@ -1,6 +1,6 @@
 # compose.yaml's vLLM server on NVIDIA GPUs, for Linux with the NVIDIA Container Toolkit: vLLM's own CUDA image, at
-# the same version, with the same flags but one. The page adds this file when Docker has the nvidia runtime, or when
-# AGENT_LOOP_VLLM_DEVICE=gpu; by hand:
+# the same version, with the same flags but one, and two on the GPU's memory. The page adds this file when Docker has
+# the nvidia runtime, or when AGENT_LOOP_VLLM_DEVICE=gpu; by hand:
 #
 #     docker compose -f docker-compose/compose.yaml -f docker-compose/compose.gpu.yaml up -d
 services:
@@ -15,6 +15,12 @@ services:
       - --served-model-name=${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
       - --enable-scale-out
       - --max-model-len=auto
+      # A KV cache of the CPU's size (2 GiB, G being GiB to vLLM), so the server takes what the model needs and no more,
+      # rather than 92% of the GPU's memory. vLLM then uses gpu_memory_utilization only to refuse to start unless that
+      # much of the memory is free, and at its 0.92 a small card beside the page's own CUDA context, or a GPU that
+      # shares the machine's memory (a DGX Spark, say), never is.
+      - --kv-cache-memory-bytes=${VLLM_KV_CACHE_MEMORY_BYTES:-2G}
+      - --gpu-memory-utilization=${VLLM_GPU_MEMORY_UTILIZATION:-0.3}
     deploy:
       resources:
         reservations:

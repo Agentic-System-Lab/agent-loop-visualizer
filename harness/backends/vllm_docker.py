@@ -2,8 +2,8 @@
 
 Without VLLM_URL, the sidebar's "What runs the model" can still pick vLLM: the page then starts the server that
 docker-compose/compose.yaml describes, with the model picked in the sidebar, waits until it answers, and runs the model through
-VLLMBackend (vllm_backend.py) as on any other vLLM server. Picking transformers again stops it, so that only one of
-the two holds the model at a time.
+VLLMBackend (vllm_backend.py) as on any other vLLM server. Picking transformers again stops it, and so does quitting
+the app, so that only one of the two holds the model at a time; every tab follows what the app asked for (chosen()).
 
 Docker Compose keeps track of the container: `docker compose up -d` with the model already running leaves it be,
 with another model replaces it, and the first time pulls or builds the image. Where Docker has the nvidia runtime
@@ -15,6 +15,7 @@ and the container reads that folder read-only, so it loads the very files the pa
 run_python's sandbox, the page runs `docker` only once vLLM is picked.
 """
 
+import atexit
 import json
 import os
 import re
@@ -44,6 +45,9 @@ EXCEPTION = re.compile(r"\b((?:\w+\.)*\w*(?:Error|Exception): .+)")
 
 _lock = threading.Lock()  # one start or stop at a time, from every tab
 _server: dict = {}  # the server this process started and saw answer: model, url, device
+# The model this process last asked the server to run, from start() until stop(), whether it answered yet or not: what
+# every tab follows, since they share the one model in memory.
+_chosen: dict = {}
 
 
 class DockerError(Exception):
@@ -131,6 +135,12 @@ def _serves(address: str, model_id: str) -> bool:
     return any(card.get("id") == model_id for card in cards)
 
 
+def chosen() -> str | None:
+    """The model this process asked the server to run and has not stopped, even while it starts or after it failed to:
+    a tab that finds one runs the model there rather than loading it beside it. Runs no `docker`."""
+    return _chosen.get("model")
+
+
 def serving(model_id: str) -> dict | None:
     """The server this process started, {"model", "url", "device"}, if it still answers and serves model_id."""
     if _server.get("model") == model_id and _serves(_server["url"], model_id):
@@ -143,6 +153,7 @@ def start(model_id: str, say: Callable[[str, str], None]) -> dict:
     {"model", "url", "device"}. say(stage, line) tells what is going on, with the last line of output: "download"
     (the weights into models/), "up" (Docker Compose pulling or building the image and starting the container) and
     "load" (vLLM loading the model)."""
+    _chosen["model"] = model_id
     if os.path.isdir(model_id):
         raise DockerError(f"vLLM 的容器只讀得到 models/ 裡的模型，讀不到 {model_id} 這個資料夾；請用 Hugging Face 的 id。",
                           f"vLLM's container reads models from models/ only, not the folder {model_id}; use a Hugging Face id.")
@@ -204,7 +215,19 @@ def stop():
     there is nothing to stop."""
     with _lock:
         _server.clear()
+        _chosen.clear()
         try:
             _run(_compose("cpu", "down"), timeout=120)
         except DockerError:
             pass
+
+
+def _stop_at_exit():
+    """When the app quits (Ctrl+C, or a SIGTERM, both of which Streamlit turns into a normal exit), the server it
+    started goes too, rather than holding the model while the next start loads it with transformers. Without one,
+    Docker is left alone."""
+    if _chosen:
+        stop()
+
+
+atexit.register(_stop_at_exit)

@@ -142,8 +142,9 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   vLLM. Until one of those is on, the page never runs `docker`, so the app works without it. Keep the sandbox's flags
   (no network, read-only, limits, unprivileged) in `tools.sandbox_command()`. docker-compose/compose.yaml tags the
   CPU image `agent-loop-vllm-cpu:<vLLM version>-<n>`: bump `n` when vllm-cpu/ changes, so machines with the old
-  image build the new one, and keep compose.gpu.yaml's command the same as compose.yaml's but `--skip-mm-profiling`
-  (tests/test_vllm_docker.py checks it).
+  image build the new one, and keep compose.gpu.yaml's command the same as compose.yaml's but `--skip-mm-profiling`, plus its two flags on GPU
+  memory (tests/test_vllm_docker.py checks it). The app stops the container it started when it quits (`_stop_at_exit`), so a test
+  that fakes a start leaves `vllm_docker._chosen` empty.
 
 ## Tests
 

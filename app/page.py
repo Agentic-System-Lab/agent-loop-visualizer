@@ -188,6 +188,7 @@ def current_llm() -> Backend:
     if st.session_state.pop("stop_vllm", False):  # transformers was just picked again: vLLM's memory goes back first
         with st.spinner(tr("停止 vLLM 的容器…", "Stopping vLLM's container…")):
             vllm_docker.stop()
+    st.session_state.pop("engine_picked", None)  # vLLM is stopped or about to start: from now on this tab follows it too
     url = vllm_server(model_id)["url"] if docker_vllm() else VLLM_URL
     if url:
         loading = tr(f"連線到 {url} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {url} and loading {model_id}'s tokenizer…")
@@ -259,11 +260,20 @@ def init_state():
     st.session_state.setdefault("history", [])
     st.session_state.setdefault("view", None)
     st.session_state.setdefault("viz_tab", "loop")
+    on_vllm = None if VLLM_URL else vllm_docker.chosen()  # the model vLLM's container runs for this app, if it does
     if "model_id" not in st.session_state:  # asking the vLLM server what it serves only when there is no choice yet
-        st.session_state.model_id = default_model()
+        st.session_state.model_id = on_vllm or default_model()  # a new tab or a reload joins the container, not replaces it
     st.session_state.setdefault("sampling_for", None)
     st.session_state.setdefault("chat_id", uuid.uuid4().hex[:12])
-    st.session_state.setdefault("engine", "local")  # what runs the model without VLLM_URL: transformers here, or vLLM in Docker
+    # What runs the model without VLLM_URL: transformers here, or vLLM in Docker. It is one choice for every tab, as the
+    # model in memory is one for every tab: a tab follows a container another started or stopped, rather than loading
+    # the model here beside it. Only once this tab picked, until it has started or stopped vLLM, does it lead.
+    if not st.session_state.get("engine_picked"):
+        engine = "vllm" if on_vllm else "local"
+        if engine != st.session_state.get("engine", "local"):
+            st.session_state.mtp = False  # on vLLM it is the server's, and the drafter is not loaded here
+            st.session_state.pop("vllm_failed", None)
+        st.session_state.engine = engine
 
 
 def chat_folder() -> Path:
@@ -364,6 +374,7 @@ def switch_engine():
     switch_model()
     st.session_state.mtp = False
     st.session_state.stop_vllm = st.session_state.engine == "local"
+    st.session_state.engine_picked = True  # this run starts or stops vLLM, which every other tab then follows
 
 
 def retry_vllm():
