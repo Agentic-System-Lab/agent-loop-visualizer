@@ -751,6 +751,125 @@ llm.py: at = (cand_ids == draft) … pick = int(torch.multinomial(weights, 1))
             weights[at[0]] = 0
         pick = int(torch.multinomial(weights, 1))
 
+== backends ==
+
+[[backend.py|class Backend(Protocol):]]
+    class Backend(Protocol):
+
+backend.py: class Backend(Protocol):
+    class Backend(Protocol):
+        """What runs the model. The page holds one at a time (streamlit_app.current_llm) and runs one turn on it at a time."""
+
+        model_id: str
+        family: families.Family  # how the model writes its turns, thinking and tool calls (families/)
+        modalities: tuple[str, ...]  # what it reads besides text: "image", "audio", "video"
+        context_length: int  # the most tokens it reads at once
+        info: dict  # what the Model tab shows, and in "defaults" the recommended temperature, top_p and top_k
+        drafter_id: str | None  # the MTP drafter that goes with the model (families.DRAFTERS), if any
+        drafter: object | None  # that drafter once load_drafter() has loaded it; Sampling.mtp turns it on only then
+
+        def warmup(self) -> None:
+            """Pay what the first question would otherwise wait for, such as compiling kernels."""
+
+        def load_drafter(self) -> None:
+            """Load the MTP drafter, if the model has one and it is not loaded yet."""
+
+        def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
+            """The chat template's string for the messages and tool schemas, which is what the model reads; with
+            `generation_prompt` it also opens the model's turn. The harness finds what is new in a step by comparing
+            this string with the last step's, so it has to be the prompt itself, not something like it."""
+
+        def encode(self, prompt: str, parts: list[dict]) -> Encoded:
+            """The prompt as the model reads it, with each image, clip or video in `parts` (media.parts) expanded into
+            the tokens it takes."""
+
+        def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
+            """Generate the model's turn, asking should_stop() before every token. It yields, in order:
+
+            - {"type": "prefill", "n_tokens", "ms"}: the prompt has been read, in `ms` milliseconds;
+            - {"type": "token", ...} for each token, with TOKEN_FIELDS and the TOKEN_DETAILS the backend knows;
+            - {"type": "done", "finish", "stop_piece", "n_tokens", "decode_ms", "tok_per_s", "mtp", "raw"}: `finish`
+              is "stop_token", "max_new_tokens" or "user_stopped"; `stop_piece` is the stop token's piece; `mtp` is
+              {"drafted", "accepted", "forwards"} with MTP on, else None; and `raw` is the whole output, special
+              tokens included, which the family parses."""
+
+[[streamlit_app.py|llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)]]
+    llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)
+
+backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
+    TOKEN_FIELDS = ("index", "id", "piece", "text", "special", "channel")
+    # What a token event carries only when the backend knows it:
+    #   p, logprob  the token's probability in the model's own distribution (temperature 1, nothing cut off), and its log
+    #   rank        the token's place in that distribution, 1 for the most likely
+    #   p_sampled   its probability in the distribution it was drawn from, after temperature, top-k and top-p
+    #   kept        how many candidates top-k and top-p left
+    #   top         the 5 most likely tokens, each with id, piece, p, and kept (whether top-k and top-p left it) when known
+    #   draft       with MTP, what the drafter guessed here and whether the model kept it; absent where it guessed nothing
+    TOKEN_DETAILS = ("p", "logprob", "rank", "p_sampled", "kept", "top", "draft")
+
+[[render.py|def known(]]
+    def known(item: dict, key: str) -> bool:
+
+[[render.py|def candidates_html(]]
+    def candidates_html(tok: dict, family: families.Family, lang: str) -> str:
+
+[[vllm_backend.py|self.modalities = ()]]
+    self.modalities = ()  # text only: /v1/completions takes token ids and nothing else
+
+[[tests/fakes.py|class FakeLLM:]]
+    class FakeLLM:
+
+[[vllm_backend.py|def _checkpoint_files(]]
+    def _checkpoint_files(model_id: str) -> str:
+
+vllm_backend.py: def _request(
+    def _request(self, ids: list[int], s: Sampling) -> dict:
+        """The /v1/completions request for one step. Each sidebar setting is sent, and every other sampling setting is
+        set to do nothing, so that a default the server took from the checkpoint (a repetition penalty, say) cannot
+        change the distribution the page shows. The text comes from decoding the ids here, so the server's is unused."""
+        return {
+            "model": self.served_as,
+            "prompt": ids,
+            "max_tokens": max(1, min(s.max_new_tokens, self.context_length - len(ids))),  # vLLM refuses a request that cannot fit
+            "temperature": max(s.temperature, 0.0),  # 0 is greedy there as here
+            "top_p": s.top_p,
+            "top_k": s.top_k,  # 0 is no limit there as here
+            "min_p": 0.0,
+            "repetition_penalty": 1.0,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0,
+            "stop_token_ids": sorted(self.eos_ids),
+            "logprobs": TOP_N,
+            "return_tokens_as_token_ids": True,
+            "return_token_ids": True,
+            "stream": True,
+            "stream_options": {"include_usage": True},  # the last chunk then carries the speculative decoding counts
+        }
+
+vllm_backend.py: def _details(
+    def _details(self, token_id: int, logprobs: dict, n: int) -> dict:
+        """What the server said about the n-th token of a chunk: its log probability, and the 5 most likely tokens
+        with theirs, keyed "token_id:<id>". The token's rank is known only when it is one of those 5."""
+        token_logprobs, top_logprobs = logprobs.get("token_logprobs") or [], logprobs.get("top_logprobs") or []
+        if n >= len(token_logprobs) or token_logprobs[n] is None:
+            return {}
+        logprob = token_logprobs[n]
+        listed = top_logprobs[n] if n < len(top_logprobs) and top_logprobs[n] else {}
+        # The chosen token is listed too, even when it is not among the 5; equally likely tokens go lowest id first, as in LocalLLM.
+        top = sorted(((int(k.removeprefix("token_id:")), v) for k, v in listed.items() if k.startswith("token_id:")),
+                     key=lambda c: (-c[1], c[0]))[:TOP_N]
+        details = {
+            "p": math.exp(logprob),
+            "logprob": logprob,
+            "top": [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in top],
+        }
+        if any(i == token_id for i, _ in top):
+            details["rank"] = 1 + sum(v > logprob for _, v in top)
+        return details
+
+[[vllm_backend.py|end["mtp"] = {]]
+    end["mtp"] = {"drafted": spec["num_draft_tokens"], "accepted": spec["num_accepted_draft_tokens"],
+
 == parse ==
 
 agent.py: prefix = family.thought_prefix if … self.emit("parsed"

@@ -186,6 +186,8 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 - **模型分頁**寫出伺服器和它的版本；規格來自 `config.json`，脈絡上限來自伺服器。裝置、精度和參數量是伺服器的，這裡不顯示；模型資料夾卡片把權重列成「只在伺服器上」。
 - **和 `generate()` 不一定一樣**：vLLM 會把請求合成一批跑，也有自己的 kernel，所以 greedy 的輸出不一定和 `transformers` 逐 token 相同；`llm.py` 的會。
 
+[運作說明](https://cyyeh.github.io/agent-loop-visualizer/zh/)有一段講 `Backend` 介面，把兩個 backend 和它們的程式碼並排說明。
+
 ### 支援更多模型
 
 harness（`agent.py`）、解碼迴圈（`llm.py`）和畫面（`render.py`）都只寫一次，裡面沒有任何「如果是 Gemma」的分支。每個模型不一樣的地方集中在 `families/` 的一個 `Family` 物件裡：

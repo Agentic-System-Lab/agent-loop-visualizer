@@ -332,11 +332,12 @@ def build(out: Path) -> list[Path]:
 INTRO = {
     "zh": "從你按下送出到看到回覆，中間發生的每一件事，照實際執行的順序走一遍。app 的側欄可以選 Gemma 4 E2B 或 Qwen3.5 0.8B，"
     "兩個模型跑的是同一個迴圈，不一樣的地方會並排說明。問題可以附上圖片、聲音或影片（{{media}}），打開「讓模型寫程式」時，"
-    "模型還能在 Docker 沙箱裡執行 Python（{{execute}}）。每段都附上做這件事的程式碼；`agent.py:98` 這類標記是檔名和行號，"
+    "模型還能在 Docker 沙箱裡執行 Python（{{execute}}）。模型可以在這台電腦上用 transformers 跑，也可以交給一台 vLLM 伺服器（{{backends}}）。每段都附上做這件事的程式碼；`agent.py:98` 這類標記是檔名和行號，"
     "滑過去會顯示那一行。行號是產生這一頁時從原始碼查出來的；每次推上 main，GitHub Actions 都會重新產生，程式改了也會跟著更新。",
     "en": "Everything that happens between pressing send and seeing the reply, in the order it really runs. The app's sidebar picks "
     "Gemma 4 E2B or Qwen3.5 0.8B; both models run the same loop, and where they differ, the two are described side by side. "
     "A question can carry images, sound or video ({{media}}), and with Let the model write code on, the model can also run Python in a Docker sandbox ({{execute}}). "
+    "The model runs on this machine with transformers, or on a vLLM server ({{backends}}). "
     "Every part comes with the code that does it; a mark like `agent.py:98` is a file and a line number, and hovering over it shows that line. "
     "The line numbers are looked up in the source when this page is built; GitHub Actions rebuilds it on every push to main, so they follow the code as it changes.",
 }
@@ -377,10 +378,10 @@ SECTIONS = [
                    "and sampling, `_sample()`; with MTP on, a drafter joins in ({{mtp}})."},
             {"zh": "`backend.py`：harness 和畫面對「跑模型的那一層」的全部要求，`Backend`（[[backend.py|class Backend(Protocol):]]）："
                    "`render()`、`encode()`、`generate()`，以及 token 事件裡哪些欄位一定有、哪些要 backend 知道才有。"
-                   "`llm.py` 的 `LocalLLM` 是其中一種；改用 vLLM 這類推論伺服器，就是再寫一種。",
+                   "`llm.py` 的 `LocalLLM` 是其中一種，`vllm_backend.py` 是另一種（{{backends}}）。",
              "en": "`backend.py`: everything the harness and the page ask of whatever runs the model, `Backend` ([[backend.py|class Backend(Protocol):]]): "
                    "`render()`, `encode()` and `generate()`, and which fields of a token event are always there and which only when the backend knows them. "
-                   "`LocalLLM` in `llm.py` is one backend; running the model on a serving engine such as vLLM would mean writing another."},
+                   "`LocalLLM` in `llm.py` is one backend, and `vllm_backend.py` another ({{backends}})."},
             {"zh": "`vllm_backend.py`：設了 `VLLM_URL` 時用的 `Backend`（[[vllm_backend.py|class VLLMBackend:]]）。prompt 照樣在這裡 render、切成 token，"
                    "token id 送到 vLLM 伺服器，每個 token 帶著它的 log 機率和前 5 名候選回來；取樣時剃掉了哪些候選，留在伺服器上。",
              "en": "`vllm_backend.py`: the `Backend` used when `VLLM_URL` is set ([[vllm_backend.py|class VLLMBackend:]]). The prompt is still rendered "
@@ -625,14 +626,14 @@ SECTIONS = [
             {"zh": "送出問題：載入模型、開一條 thread 跑 agent", "en": "Sending a question: load the model, start a thread for the agent"},
             {"zh": "輸入框和範例按鈕都走 `start_run()`：拿鎖、凍結設定、開 thread。",
              "en": "The input box and the example buttons both go through `start_run()`: take the lock, freeze the settings, start a thread."}, (
-        {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`（設了 `VLLM_URL` 時是 `VLLMBackend`）；畫面的其他地方只把它當成一個 `Backend`（{{overview}}）。"
+        {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`（設了 `VLLM_URL` 時是 `VLLMBackend`）；畫面的其他地方只把它當成一個 `Backend`（{{backends}}）。"
                "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，"
                "記憶體裡同時只留一個模型，換模型時舊的就會被放掉。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
                "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[llm.py|def _sampling_defaults(self)]]）。"
                "側欄的模型選單換了之後會開新對話（[[streamlit_app.py|key=\"model_id\", on_change=new_chat]]），MTP 也回到關閉；"
                "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[llm.py|def load_drafter(self):]]）。",
          "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar (a `VLLMBackend` when `VLLM_URL` is set); the rest of the page "
-               "takes it for just a `Backend` ({{overview}}). `load_llm()` is cached with "
+               "takes it for just a `Backend` ({{backends}}). `load_llm()` is cached with "
                "`st.cache_resource(max_entries=1)`, so only one model stays in memory, and switching models lets the old one go. The first time "
                "a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "
                "generation_config.json, so its recommendations come from the family ([[llm.py|def _sampling_defaults(self)]]). "
@@ -883,13 +884,13 @@ SECTIONS = [
                "`kept` 是剃完還剩幾個候選；`p_sampled` 是它在剃完、重新正規化後的分布裡的機率。"
                "step 卡片上 token 的底色深淺就是用 `p` 算的（[[render.py|def heat(p: float)]]）：越深，代表模型原本越不看好它，卻被抽中了。"
                "這些數字列在 `backend.py` 的 `TOKEN_DETAILS`（[[backend.py|TOKEN_DETAILS = (]]）：別的 backend，例如推論伺服器，"
-               "不一定知道，不知道的就不畫，不會用別的數字代替。",
+               "不一定知道，不知道的就不畫，不會用別的數字代替（{{backends}}）。",
          "en": "What it returns are the numbers in the popover: `p` is the chosen token's probability in the model's own distribution; `rank` "
                "is its place; `kept` is how many candidates were left after the cuts; `p_sampled` is its probability in the cut and "
                "renormalized distribution. The shade behind a token in a step card comes from `p` ([[render.py|def heat(p: float)]]): "
                "the darker it is, the less the model expected that token, and yet it was drawn. These numbers are listed in `backend.py`'s "
                "`TOKEN_DETAILS` ([[backend.py|TOKEN_DETAILS = (]]): another backend, a serving engine say, may not know them, and what it "
-               "does not know is left out, never drawn from some other number."},
+               "does not know is left out, never drawn from some other number ({{backends}})."},
     )),
     Section("mtp", "model",
             {"zh": "MTP：草稿模型先猜，主模型一次驗證", "en": "MTP: the drafter guesses, the model checks them all at once"},
@@ -961,6 +962,98 @@ SECTIONS = [
          "en": "How many are kept depends a lot on the content. Measured with greedy decoding on an Apple M5: tool calls are almost all guessed "
                "right (34 of 35 kept, about 15 → 43 tok/s), English code about half, and long answers in Traditional Chinese only about a "
                "tenth, hardly any faster. The drafter guesses well only where the text is fixed in form and predictable."},
+    )),
+    Section("backends", "model",
+            {"zh": "換一層跑模型：Backend 介面、本機 transformers 和 vLLM", "en": "What runs the model: the Backend interface, transformers here or a vLLM server"},
+            {"zh": "harness 和畫面只認得 `Backend`：主要是 render、encode、generate 三個方法，和它送出的事件。上面幾段講的是本機那一個；同一個介面後面也可以是一台 vLLM 伺服器。",
+             "en": "The harness and the page know only a `Backend`: mainly three methods, render, encode and generate, and the events it yields. The sections above are about the local one; "
+                   "behind the same interface there can be a vLLM server instead."}, (
+        {"zh": "前面幾段的 prefill、解碼迴圈、抽樣和 MTP，都是 `llm.py` 的 `LocalLLM`。可是 harness 和畫面從來不直接找 `LocalLLM`，"
+               "只透過 `Backend` 用模型（[[backend.py|class Backend(Protocol):]]）：`render()` 把對話套進 chat template，`encode()` 把 prompt 變成模型讀的 token（媒體展開），"
+               "`generate()` 依序送出 `prefill`、每個 token 一個 `token`、最後的 `done`；再加上畫面會讀的幾個屬性：family、模型讀得懂什麼、脈絡上限、模型分頁用的 `info`。"
+               "誰有這些，誰就能跑模型。",
+         "en": "The prefill, the decoding loop, the sampling and MTP in the sections above are all `LocalLLM` in `llm.py`. Yet the harness and the page never ask "
+               "for `LocalLLM`; they use the model only through a `Backend` ([[backend.py|class Backend(Protocol):]]): `render()` puts the conversation through "
+               "the chat template, `encode()` turns the prompt into the tokens the model reads (media expanded), and `generate()` yields `prefill`, then a `token` "
+               "for each token, then `done`; and the page reads a few attributes: the family, what the model reads, the context limit and the Model tab's `info`. "
+               "Whatever has these can run the model."},
+        Code("backend.py", "class Backend(Protocol):",
+             caption={"zh": "`Protocol` 只是一個型別：`LocalLLM` 不必繼承它，有這些方法和屬性就算數。測試檢查 `LocalLLM`、`VLLMBackend` 和測試用的 `FakeLLM` 都是 `Backend`。",
+                      "en": "A `Protocol` is only a type: `LocalLLM` need not inherit from it, and having these methods and attributes is enough. "
+                            "The tests check that `LocalLLM`, `VLLMBackend` and the tests' `FakeLLM` are each a `Backend`."}),
+        {"zh": "畫面只在一個地方決定用哪一個：`load_llm()` 看有沒有設 `VLLM_URL`"
+               "（[[streamlit_app.py|llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)]]）。"
+               "之後 `current_llm()`、側欄和 `Run`（{{prepare}}）拿到的都只是一個 `Backend`；它放在 `st.cache_resource` 裡，換模型才換掉（{{submit}}）。",
+         "en": "The page decides which one in a single place: `load_llm()` looks for `VLLM_URL` "
+               "([[streamlit_app.py|llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)]]). "
+               "From then on `current_llm()`, the sidebar and `Run` ({{prepare}}) get just a `Backend`; it stays in `st.cache_resource` until the model changes ({{submit}})."},
+        {"zh": "兩種 backend 對模型知道的不一樣多，差別全在 `token` 事件裡。`TOKEN_FIELDS` 每個 backend 都要送：位置、token 的 id 和 piece、它加上的文字、"
+               "是不是特殊 token、正在寫思考、工具呼叫還是回覆。`TOKEN_DETAILS` 則是知道才送：機率、排名、取樣時的機率、剩下的候選、前 5 名，以及 MTP 草稿猜了什麼。",
+         "en": "The two backends know different amounts about the model, and the difference is all in the `token` event. Every backend sends `TOKEN_FIELDS`: "
+               "the place, the token's id and piece, the text it adds, whether it is special, and whether it is thinking, a tool call or the reply. `TOKEN_DETAILS` "
+               "it sends only when it knows them: the probability, the rank, the sampling probability, the candidates left, the top 5, and what the MTP drafter guessed."},
+        Code("backend.py", "TOKEN_FIELDS = (", end="TOKEN_DETAILS = ("),
+        {"zh": "畫面拿到什麼就畫什麼（[[render.py|def known(]]）：沒回報的數字整列不畫，沒有機率就沒有熱度底色，沒說哪些候選被剃掉，前 5 名就不會變灰"
+               "（[[render.py|def candidates_html(]]）。畫面寧可少畫，也不拿別的數字湊。",
+         "en": "The page draws what it gets ([[render.py|def known(]]): a number nobody reported is not a row, a token without a probability gets no heat, and when "
+               "nobody said which candidates were cut, none of the top 5 is grayed out ([[render.py|def candidates_html(]]). The page would rather show less than "
+               "fill in a number from something else."},
+        {"zh": "三個 backend：", "en": "The three backends:"},
+        (
+            {"zh": "**`LocalLLM`（`llm.py`）**：用 transformers 把權重載到這台電腦，自己寫的解碼迴圈每個 token 都看得到完整的分布，所以 `TOKEN_DETAILS` 每一項都有；"
+                   "MTP 的每個猜測收下或退回都知道（{{mtp}}）；greedy 的輸出和 `generate()` 一樣；checkpoint 有編碼器的圖片、聲音、影片都讀得懂。",
+             "en": "**`LocalLLM` (`llm.py`)**: loads the weights onto this machine with transformers, and its hand-written decoding loop sees the whole distribution at "
+                   "every token, so it sends every one of `TOKEN_DETAILS`; it knows each MTP guess it kept or turned down ({{mtp}}); its greedy output equals "
+                   "`generate()`'s; it reads the images, sound and video the checkpoint has encoders for."},
+            {"zh": "**`VLLMBackend`（`vllm_backend.py`）**：權重在 vLLM 伺服器上。每個 token 回來時帶著它的 log 機率和前 5 名，所以有機率、前 5 名候選，"
+                   "token 在前 5 名裡時還有排名；取樣時的機率、剩下的候選和被剃掉的是哪些，都留在伺服器上。只讀文字（[[vllm_backend.py|self.modalities = ()]]）。",
+             "en": "**`VLLMBackend` (`vllm_backend.py`)**: the weights are on a vLLM server. Each token comes back with its log probability and the top 5, so it has "
+                   "the probability, the top 5 candidates and, when the token is one of them, its rank; the sampling probability, the candidates left and which ones "
+                   "were cut stay on the server. It reads text only ([[vllm_backend.py|self.modalities = ()]])."},
+            {"zh": "**`FakeLLM`（`tests/fakes.py`）**：照劇本一個 token 一個 token 吐出寫好的輸出，不載入權重；大部分測試用它跑完整個 harness 和網頁"
+                   "（[[tests/fakes.py|class FakeLLM:]]）。",
+             "en": "**`FakeLLM` (`tests/fakes.py`)**: replays scripted output token by token and loads no weights; most tests run the whole harness and page "
+                   "with it ([[tests/fakes.py|class FakeLLM:]])."},
+        ),
+        {"zh": "`VLLMBackend` 的 prompt 一樣精確。它把 checkpoint 除了權重以外的檔案下載到 `models/`，用的是 `REVISIONS` 固定的同一個 commit"
+               "（[[vllm_backend.py|def _checkpoint_files(]]），所以 `render()` 和 `encode()` 用的 tokenizer 和 chat template 跟 `LocalLLM` 一模一樣。"
+               "送到伺服器的是 token id 而不是文字，伺服器讀到的就是脈絡分頁上那一串（{{context}}）。側欄的每個設定都照送，其他取樣設定都設成不起作用，"
+               "免得伺服器從 checkpoint 帶來的預設值改變分布。",
+         "en": "`VLLMBackend`'s prompt is just as exact. It downloads every file of the checkpoint but the weights into `models/`, at the same commit `REVISIONS` pins "
+               "([[vllm_backend.py|def _checkpoint_files(]]), so `render()` and `encode()` use the very tokenizer and chat template `LocalLLM` does. What goes to "
+               "the server is token ids, not text, so the server reads exactly the string in the Context tab ({{context}}). Every sidebar setting is sent, and every "
+               "other sampling setting is set to do nothing, so that defaults the server took from the checkpoint cannot change the distribution."},
+        Code("vllm_backend.py", "def _request("),
+        {"zh": "伺服器用 server-sent events 一段一段送回 token。每個 token 帶著它的 log 機率，以及那個位置機率最高的 5 個 token 和它們的 log 機率，"
+               "key 寫成 `token_id:<id>`。vLLM 預設回傳的是模型原本的分布（`--logprobs-mode raw_logprobs`），和 `LocalLLM` 的 `p` 意思一樣。",
+         "en": "The server streams the tokens back as server-sent events. Each token comes with its log probability and the 5 most likely tokens at its position "
+               "with theirs, keyed `token_id:<id>`. By default vLLM sends the model's own distribution (`--logprobs-mode raw_logprobs`), which means the same as "
+               "`LocalLLM`'s `p`."},
+        Code("vllm_backend.py", "def _details("),
+        {"zh": "畫面上還有這些不同：", "en": "What else differs on the page:"},
+        (
+            {"zh": "prefill 是等到第一個 token 的時間，包含網路。vLLM 會留著和上一個 prompt 相同開頭的 KV cache（prefix caching），第 2 步開始只讀和上一步不一樣的部分："
+                   "chat template 重新寫過的模型回合，加上新的觀察；`LocalLLM` 每一步都從頭讀完整個 prompt（{{model}}）。",
+             "en": "Prefill is the time to the first token, the network included. vLLM keeps the KV cache of what a prompt shares with the last one (prefix caching), "
+                   "so from step 2 on it reads only what differs from the last step: the model's turn as the chat template rewrote it, and the new observation; "
+                   "`LocalLLM` reads the whole prompt from the start every step ({{model}})."},
+            {"zh": "推測解碼是伺服器啟動時決定的（`--speculative-config`），側欄的 MTP 開關不能按。伺服器加上 `--per-request-spec-decode-metrics summary` 時，"
+                   "最後一段回應帶著這一步的統計，變成 step 卡片上的「草稿收下幾個、forward 幾次」（[[vllm_backend.py|end[\"mtp\"] = {]]）；"
+                   "哪幾個 token 是猜中的，伺服器不說，所以沒有底線。",
+             "en": "Speculative decoding is decided when the server starts (`--speculative-config`), so the sidebar's MTP switch is disabled. With "
+                   "`--per-request-spec-decode-metrics summary`, the last part of the response carries the step's counts, which become the step card's guesses kept "
+                   "and forward passes ([[vllm_backend.py|end[\"mtp\"] = {]]); the server does not say which tokens were guesses, so there are no underlines."},
+            {"zh": "greedy 的輸出不一定和 `generate()` 逐 token 相同：vLLM 會把請求合成一批跑，也有自己的 kernel。和 `generate()` 完全一樣，是 `LocalLLM` 才有的保證。",
+             "en": "Greedy output need not match `generate()` token for token: vLLM batches requests and has kernels of its own. Matching `generate()` exactly is "
+                   "`LocalLLM`'s promise only."},
+            {"zh": "模型分頁寫出伺服器和它的版本，不寫裝置、精度和參數量；模型資料夾把權重列成「只在伺服器上」（{{files}}）。",
+             "en": "The Model tab names the server and its version and leaves out the device, the precision and the parameter count; the model folder lists the "
+                   "weights as on the server only ({{files}})."},
+        ),
+        {"zh": "要接 SGLang、Ollama 之類的另一層，就是再寫一個有這些方法和屬性的類別，送出一樣的事件，在 `load_llm()` 多一個選擇；"
+               "`TOKEN_DETAILS` 裡它知道的才送。`tests/test_vllm_backend.py` 裡的假伺服器可以當寫測試的樣板。",
+         "en": "To use another serving layer, SGLang or Ollama say, write one more class with these methods and attributes that yields the same events, and give "
+               "`load_llm()` one more choice; it sends only the `TOKEN_DETAILS` it knows. The fake server in `tests/test_vllm_backend.py` is a pattern for its tests."},
     )),
     Section("parse", "harness",
             {"zh": "Harness：把輸出拆成思考、工具呼叫、回覆", "en": "Harness: splitting the output into thinking, tool calls and the reply"},
@@ -1243,9 +1336,9 @@ EVENTS = [
      {"zh": "迴圈圖「模型」格、模型分頁的 prefill ms", "en": "the Model box in the loop diagram, prefill ms in the Model tab"}),
     ("token", "llm.py", '"type": "token",',
      {"zh": "id、piece、文字、channel、是否為特殊 token、機率、排名、前 5 名候選；開 MTP 時還有 `draft`（草稿猜了什麼、有沒有收下）。"
-            "機率以後的欄位要 backend 知道才有，`llm.py` 全都有",
+            "機率以後的欄位要 backend 知道才有：`llm.py` 全都有，vLLM 伺服器有機率、前 5 名和前 5 名內的排名",
       "en": "id, piece, text, channel, whether it is special, probability, rank, the top 5 candidates; with MTP, also `draft` (what the drafter guessed and whether it was kept). "
-            "The fields from the probability on are there only when the backend knows them, and `llm.py` knows them all"},
+            "The fields from the probability on are there only when the backend knows them: `llm.py` knows them all, a vLLM server the probability, the top 5 and a rank within them"},
      {"zh": "token 的熱度顏色、底線與浮窗、左邊逐字出現的回覆", "en": "the token's heat color, underline and popover; the reply appearing bit by bit on the left"}),
     ("model_end", "agent.py", 'self.emit("model_end"',
      {"zh": "停止原因、停止 token、token 數、tok/s、MTP 統計、原始輸出", "en": "why it stopped, the stop token, the token count, tok/s, the MTP counts, the raw output"},

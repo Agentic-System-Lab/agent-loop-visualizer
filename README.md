@@ -186,6 +186,8 @@ The Model menu then lists what the server serves. If the server was started with
 - **The Model tab** names the server and its version; the specs come from `config.json` and the context limit from the server. The device, the precision and the parameter count are the server's and are not shown, and the folder card lists the weights as on the server only.
 - **Not identical to `generate()`**: vLLM batches requests and has kernels of its own, so greedy output need not match `transformers`' token for token, as `llm.py`'s does.
 
+[How it works](https://cyyeh.github.io/agent-loop-visualizer/en/) has a section on the `Backend` interface that sets the two backends side by side, with their code.
+
 ### Supporting more models
 
 The harness (`agent.py`), the decoding loop (`llm.py`) and the page (`render.py`) are written once, without a single "if Gemma" branch. Whatever differs between models is gathered in one `Family` object in `families/`:
