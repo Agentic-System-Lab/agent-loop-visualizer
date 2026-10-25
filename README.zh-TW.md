@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" alt="" width="72">
+
 # Agent Loop 可視化
 
 [English](README.md) | 繁體中文
