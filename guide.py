@@ -947,11 +947,13 @@ SECTIONS = [
                       "en": "Walks the syntax tree recursively and raises `ToolError` at any node outside the allowlist."}),
         {"zh": "`calculator` 只算得了一行算式；`run_python` 則讓模型寫完整的程式，所以環境要關得更緊。每次呼叫都從 `sandbox/Dockerfile` 建的 image"
                "（Python 3.12 加上 numpy、pandas，以及讀 Excel 的 openpyxl、印表格的 tabulate）開一個新容器：沒有網路，檔案系統唯讀、只有 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，"
-               "拿掉所有 Linux capability，用沒有權限的使用者執行；這段對話的資料夾唯讀掛在 `/data`。程式從 stdin 送進去，跑完容器就刪掉。",
+               "拿掉所有 Linux capability，用你自己的使用者執行、絕不用 root（[[tools.py|def sandbox_user(]]：在 Linux 上，掛進容器的資料夾保留原本的權限，換成別的使用者可能進不去）；"
+               "這段對話的資料夾唯讀掛在 `/data`。程式從 stdin 送進去，跑完容器就刪掉。",
          "en": "`calculator` can only work out one expression; `run_python` lets the model write whole programs, so its environment is shut "
                "tighter. Every call starts a new container from the image `sandbox/Dockerfile` builds (Python 3.12 with numpy and pandas, plus openpyxl to read Excel and tabulate to print tables): no "
                "network, a read-only file system where only `/tmp` can be written, 512 MB of memory, one CPU, at most 64 processes, no Linux "
-               "capabilities and an unprivileged user; the conversation's folder is mounted read-only at `/data`. The code goes in on stdin, "
+               "capabilities, and your own user, never root ([[tools.py|def sandbox_user(]]: on Linux a folder mounted in the container keeps its "
+               "permissions, which might not let another user in); the conversation's folder is mounted read-only at `/data`. The code goes in on stdin, "
                "and the container is deleted when it is done."},
         Code("tools.py", "def sandbox_command("),
         {"zh": "跑超過 30 秒就把容器停掉；結束代碼不是 0（例如丟出例外）、記憶體用太多或什麼都沒印，都當成 `ToolError`，模型下一步讀到 traceback 或提醒，可以改了再跑。"

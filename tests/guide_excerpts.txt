@@ -962,16 +962,19 @@ tools.py: def _eval(node):
             return FUNCS[node.func.id](*args)
         raise ToolError(f"不支援的運算：{ast.unparse(node)}", f"Unsupported operation: {ast.unparse(node)}")
 
+[[tools.py|def sandbox_user(]]
+    def sandbox_user() -> str:
+
 tools.py: def sandbox_command(
     def sandbox_command(name: str, files: Path | None) -> list[str]:
         """docker run for one piece of code, read from stdin. The container has no network, a read-only file system
-        except a small /tmp, a cap on memory, CPU and processes, no Linux capabilities, an unprivileged user, and the
-        conversation's files read-only at /data; --rm deletes it afterwards."""
+        except a small /tmp, a cap on memory, CPU and processes, no Linux capabilities, the host's own user (never root),
+        and the conversation's files read-only at /data; --rm deletes it afterwards."""
         cmd = [
             "docker", "run", "--rm", "-i", "--name", name, "--network", "none",
             "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--pids-limit", "64",
             "--read-only", "--tmpfs", "/tmp:rw,size=64m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--user", "65534:65534", "-e", "HOME=/tmp", "-w", "/tmp",
+            "--user", sandbox_user(), "-e", "HOME=/tmp", "-w", "/tmp",
         ]
         if files is not None:
             cmd += ["-v", f"{Path(files).resolve()}:/data:ro"]

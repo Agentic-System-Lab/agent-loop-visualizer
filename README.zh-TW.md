@@ -140,7 +140,7 @@ chat template 在每個檔案的位置寫一個佔位 token（Gemma 是 `<|image
 
 ### 在 Docker 沙箱裡寫程式
 
-打開「讓模型寫程式」而且 Docker 準備好時，模型多一個工具 `run_python`。每次呼叫都從 `sandbox/Dockerfile` 建的 image 開一個新容器：沒有網路，檔案系統唯讀、只有一小塊 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，拿掉所有 Linux capability，用沒有權限的使用者執行，這段對話的資料夾唯讀掛在 `/data`；程式從 stdin 送進去，跑完容器就刪掉。超過 30 秒就停掉；結束代碼不是 0、記憶體用太多或什麼都沒印，都用這一輪的語言當成錯誤回給模型，附上 traceback，模型下一步可以改。
+打開「讓模型寫程式」而且 Docker 準備好時，模型多一個工具 `run_python`。每次呼叫都從 `sandbox/Dockerfile` 建的 image 開一個新容器：沒有網路，檔案系統唯讀、只有一小塊 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，拿掉所有 Linux capability，用你自己的使用者執行、絕不用 root（在 Linux 上，掛進去的資料夾保留原本的權限，換成別的使用者可能進不去），這段對話的資料夾唯讀掛在 `/data`；程式從 stdin 送進去，跑完容器就刪掉。超過 30 秒就停掉；結束代碼不是 0、記憶體用太多或什麼都沒印，都用這一輪的語言當成錯誤回給模型，附上 traceback，模型下一步可以改。
 
 模型看不到資料檔的內容，所以 harness 在使用者訊息後面加一段說明：`run_python` 在哪裡找得到每個檔案，以及文字檔的第一行（CSV 就是欄位名稱）。少了這一行，小模型寫程式時會亂猜欄位，例如不存在的 `Date`，然後出錯；多給幾列資料也不行，Gemma 會把那幾列抄進程式，只用它們算答案。image 裡有 `tabulate`，因為小模型很愛用的 `DataFrame.to_markdown()` 需要它。
 

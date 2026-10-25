@@ -306,10 +306,20 @@ def test_run_python_runs_the_code_in_a_locked_down_container(monkeypatch, tmp_pa
     [(cmd, kwargs)] = docker.calls
     assert cmd[:3] == ["docker", "run", "--rm"] and cmd[-4:] == [tools.SANDBOX_IMAGE, "python", "-I", "-"]
     flags = " ".join(cmd)
-    for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges", "--user 65534:65534", "--memory 512m"):
+    for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges", f"--user {tools.sandbox_user()}", "--memory 512m"):
         assert flag in flags
     assert f"-v {tmp_path.resolve()}:/data:ro" in flags  # the conversation's files, read-only
     assert kwargs["input"] == "print(6 * 7)" and kwargs["timeout"] == tools.SANDBOX_TIMEOUT
+
+
+def test_the_sandbox_runs_as_the_host_user_and_never_as_root(monkeypatch):
+    monkeypatch.setattr(tools.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(tools.os, "getgid", lambda: 1001, raising=False)
+    assert tools.sandbox_user() == "1000:1001"
+    monkeypatch.setattr(tools.os, "getuid", lambda: 0)
+    assert tools.sandbox_user() == "65534:65534"
+    monkeypatch.delattr(tools.os, "getuid")  # Windows
+    assert tools.sandbox_user() == "65534:65534"
 
 
 def test_run_python_without_files_mounts_nothing(monkeypatch):

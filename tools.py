@@ -16,6 +16,7 @@ sandbox_problem() what is missing, tells the user, and leaves the tool out until
 import ast
 import math
 import operator
+import os
 import re
 import subprocess
 import uuid
@@ -213,15 +214,24 @@ def read_wikipedia(title: str, lang: str = "en") -> dict:
 
 # --- Python: the model's code in a Docker container that cannot reach the network or change the files ---
 
+def sandbox_user() -> str:
+    """The uid:gid the container runs as: the host's own user, because on Linux a mounted folder keeps its permissions
+    and another user may not be let in (pytest's tmp_path is 0700); nobody when that user is root or, on Windows, has
+    no uid, since Docker Desktop shares the folder with every user there."""
+    if not hasattr(os, "getuid") or os.getuid() == 0:
+        return "65534:65534"
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 def sandbox_command(name: str, files: Path | None) -> list[str]:
     """docker run for one piece of code, read from stdin. The container has no network, a read-only file system
-    except a small /tmp, a cap on memory, CPU and processes, no Linux capabilities, an unprivileged user, and the
-    conversation's files read-only at /data; --rm deletes it afterwards."""
+    except a small /tmp, a cap on memory, CPU and processes, no Linux capabilities, the host's own user (never root),
+    and the conversation's files read-only at /data; --rm deletes it afterwards."""
     cmd = [
         "docker", "run", "--rm", "-i", "--name", name, "--network", "none",
         "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--pids-limit", "64",
         "--read-only", "--tmpfs", "/tmp:rw,size=64m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-        "--user", "65534:65534", "-e", "HOME=/tmp", "-w", "/tmp",
+        "--user", sandbox_user(), "-e", "HOME=/tmp", "-w", "/tmp",
     ]
     if files is not None:
         cmd += ["-v", f"{Path(files).resolve()}:/data:ro"]
