@@ -599,7 +599,7 @@ def pick_engine(at, value):
 
 
 def test_without_vllm_url_transformers_runs_the_model_and_docker_is_left_alone(docker_vllm, at, models):
-    assert engine(at).value == "local" and engine(at).options == ["transformers", "vLLM（Docker）"]
+    assert engine(at).value == "local" and engine(at).options == ["transformers", "vLLM (Docker)"]  # the same in both languages: full-width parentheses wrap the switch
     assert [m.model_id for m in models] == ["google/gemma-4-E2B-it"] and docker_vllm["started"] == [] and docker_vllm["stopped"] == 0
 
 

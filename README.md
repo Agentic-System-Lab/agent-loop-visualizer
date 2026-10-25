@@ -4,7 +4,7 @@
 
 English | [繁體中文](README.zh-TW.md)
 
-![The top bar links to the How it works page, the switch at the top right changes the language, and the sidebar picks the model; on the left is the chat, with the sample files to ask about above the input box, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates.](docs/screenshot-en.png)
+![The top bar links to the How it works page, the switch at the top right changes the language, and the sidebar picks the model and what runs it; on the left is the chat, with the sample files to ask about above the input box, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates.](docs/screenshot-en.png)
 
 This project is for learning: it shows how an agent loop works underneath, in a way more intuitive and visual than reading about it. Behind an agent's chat box runs a loop: step after step, the model proposes an action and the harness carries it out, until it stops. A chat app shows only the question and the answer; this page draws every step as it happens, down to each token the model writes, so the whole mechanism is laid out in front of you. Each part of the page matches a section of the Unit 01 reading of [Agent Atlas](https://cyyeh.github.io/agent-atlas-learning/) (in Traditional Chinese), the course this project belongs to, and [Experiments to try](#experiments-to-try) turns those ideas into things you can try yourself.
 

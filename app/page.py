@@ -404,7 +404,8 @@ def model_picker(menu: dict[str, str], busy: bool):
                     "The harness, the tools and the page stay the same."),
         )
         if not VLLM_URL:
-            engines = {"local": "transformers", "vllm": tr("vLLM（Docker）", "vLLM (Docker)")}
+            # The same in both languages: with full-width parentheses the two options no longer fit side by side.
+            engines = {"local": "transformers", "vllm": "vLLM (Docker)"}
             st.segmented_control(
                 tr("用什麼跑模型", "What runs the model"), list(engines), format_func=engines.get, key="engine", required=True,
                 on_change=switch_engine, disabled=busy,

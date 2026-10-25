@@ -4,7 +4,7 @@
 
 [English](README.md) | 繁體中文
 
-![上方可以切換到「運作說明」頁，右上角可以切換語言，側欄可以選模型；左邊是對話，輸入框上方是可以拿來問的範例檔案，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot-zh.png)
+![上方可以切換到「運作說明」頁，右上角可以切換語言，側欄可以選模型和用什麼跑它；左邊是對話，輸入框上方是可以拿來問的範例檔案，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot-zh.png)
 
 這個專案是學習用的：用更直覺、更視覺化的方式，讓你看懂 agent 迴圈在底層怎麼運作。Agent 的聊天框背後跑著一個迴圈：一步接著一步，模型提出動作、harness 去執行，直到停止。一般的聊天 app 只讓你看到問題和答案；這個網頁在每一步發生的當下把它畫出來，細到模型寫下的每一個 token，整個機制攤開在你眼前。畫面上的每個部分都對應 [Agent Atlas 技術與實戰交流](https://cyyeh.github.io/agent-atlas-learning/) unit 01 導讀的一節，本專案就是它的專案之一；[可以試試看的實驗](#可以試試看的實驗)則把這些概念變成可以自己動手試的實驗。
 
@@ -59,7 +59,7 @@ docker build -t agent-loop-sandbox harness/sandbox  # 選用：「讓模型寫�
 
 模型下載到專案資料夾裡的 `models/`（git 會忽略它），不是其他專案共用的 `~/.cache/huggingface/hub`；刪掉這個資料夾就能把空間拿回來。每個模型都照固定的 revision 下載，也就是 `harness/families/__init__.py` 裡 `REVISIONS` 的 commit（上面的 `--revision`），所以不管什麼時候下載，拿到的都是這一頁寫作和測試時用的檔案，在每種作業系統上都一樣。想放在別的地方，就把 `AGENT_LOOP_MODELS` 設成那個資料夾（上面的下載指令的 `--cache-dir` 也改成它）；`AGENT_LOOP_MODELS=$HOME/.cache/huggingface/hub` 會用之前已經下載在那裡的模型。`HF_HUB_CACHE` 不會改變位置，因為它常是整台電腦所有專案共用的設定。
 
-想改用 vLLM 跑模型，可以在側欄的「用什麼跑模型」選 vLLM（Docker），網頁會替你在 Docker 裡啟動一台 vLLM 伺服器（見[由網頁在 Docker 裡啟動 vLLM](#由網頁在-docker-裡啟動-vllm)）；也可以讓網頁連到你自己的伺服器（見[在 vLLM 伺服器上跑模型](#在-vllm-伺服器上跑模型)）。
+想改用 vLLM 跑模型，可以在側欄的「用什麼跑模型」選 vLLM (Docker)，網頁會替你在 Docker 裡啟動一台 vLLM 伺服器（見[由網頁在 Docker 裡啟動 vLLM](#由網頁在-docker-裡啟動-vllm)）；也可以讓網頁連到你自己的伺服器（見[在 vLLM 伺服器上跑模型](#在-vllm-伺服器上跑模型)）。
 
 > 下載時出現 401，可是模型明明是公開的？多半是本機存的 Hugging Face token 過期了。重新登入（`uv run hf auth login`），或加上 `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` 不送 token。
 
@@ -96,7 +96,7 @@ harness/               跑一輪的東西；從不 import Streamlit
     backend.py         harness 和畫面透過它使用模型的 Backend：render、encode、generate，以及 token 事件的欄位
     simple_backend.py  本機推論，自己寫的解碼迴圈；MTP 的草稿與驗證也在這裡
     vllm_backend.py    在 vLLM 伺服器上跑模型（VLLM_URL）：prompt 在這裡 render、切 token，token id 送給伺服器，它對每個 token 說得出的都傳回來；伺服器加了對應的參數時，還有媒體、sampling mask 和 MTP 的猜測
-    vllm_docker.py     側欄選 vLLM（Docker）時在 Docker 裡跑 vLLM：用選的模型 docker compose up、等它能回應；換回時 docker compose down
+    vllm_docker.py     側欄選 vLLM (Docker)時在 Docker 裡跑 vLLM：用選的模型 docker compose up、等它能回應；換回時 docker compose down
   families/            跟著模型走的東西：每個模型家族怎麼寫回合、思考、工具呼叫，哪些 token 會停、各是什麼意思
     __init__.py        Family 的定義、模型選單 MODELS、MTP 草稿模型 DRAFTERS、依 config.json 的 model_type 找家族
     gemma4.py          Gemma 4：輸出的 parser 與 24 個特殊 token 的說明
@@ -214,7 +214,7 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 
 ### 由網頁在 Docker 裡啟動 vLLM
 
-沒設 `VLLM_URL` 時，側欄的「用什麼跑模型」可以在 transformers 和 vLLM（Docker）之間切換。選 vLLM 時，網頁先放掉在這裡載入的模型（`release_model()` 清掉快取、把記憶體還給系統），接著 `harness/backends/vllm_docker.py` 把還沒下載的模型下載到 `models/`，用 `docker compose up -d` 啟動 `docker-compose/` 裡的伺服器，等待時顯示 Docker 和 vLLM 印出的內容。換回 transformers 或結束這個程式（Ctrl+C）時執行 `docker compose down`，所以兩邊不會同時佔著模型。「用什麼跑模型」也和記憶體裡的模型一樣，是所有分頁共用的一個選擇：停在 transformers 的分頁，會跟著另一個分頁換到 vLLM 或換回來；新開的分頁或重新整理，也會接上正在跑的伺服器和它的模型，不會在這裡再載入一份。在 vLLM 上換模型會再跑一次 `docker compose up`，它會換掉容器；伺服器已經在跑時，重跑頁面不會再啟動一次。啟動失敗（沒有 Docker、Docker 沒在執行、記憶體不夠）時，頁面用目前的語言說明原因，要按「再試一次」才會重試；換回 transformers 的切換鈕一直留在側欄。
+沒設 `VLLM_URL` 時，側欄的「用什麼跑模型」可以在 transformers 和 vLLM (Docker)之間切換。選 vLLM 時，網頁先放掉在這裡載入的模型（`release_model()` 清掉快取、把記憶體還給系統），接著 `harness/backends/vllm_docker.py` 把還沒下載的模型下載到 `models/`，用 `docker compose up -d` 啟動 `docker-compose/` 裡的伺服器，等待時顯示 Docker 和 vLLM 印出的內容。換回 transformers 或結束這個程式（Ctrl+C）時執行 `docker compose down`，所以兩邊不會同時佔著模型。「用什麼跑模型」也和記憶體裡的模型一樣，是所有分頁共用的一個選擇：停在 transformers 的分頁，會跟著另一個分頁換到 vLLM 或換回來；新開的分頁或重新整理，也會接上正在跑的伺服器和它的模型，不會在這裡再載入一份。在 vLLM 上換模型會再跑一次 `docker compose up`，它會換掉容器；伺服器已經在跑時，重跑頁面不會再啟動一次。啟動失敗（沒有 Docker、Docker 沒在執行、記憶體不夠）時，頁面用目前的語言說明原因，要按「再試一次」才會重試；換回 transformers 的切換鈕一直留在側欄。
 
 ```bash
 # 自己啟動同一台伺服器（VLLM_MODEL 和 VLLM_REVISION 預設是 Qwen3.5 0.8B 和它固定的 commit）；權重要先在 models/ 裡：
@@ -290,7 +290,7 @@ RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real         
 | `test_simple_backend.py` | `LocalLLM` 有 `Backend` 的每個方法和屬性，它的 token 帶著每個欄位和細節；自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；`encode()` 照順序把每種媒體和家族的設定交給 processor、短影片給它全部畫格；圖片和影片在 prefill 前先跑視覺編碼器，上一個 prompt 的位置偏移不會留下來；greedy 遇到兩個 token 打平時和 `generate()` 一樣拿 id 小的；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布；模型照固定的 revision 下載到 `models/`（`AGENT_LOOP_MODELS` 可以換位置，相對路徑從啟動 app 的地方算起；`HF_HUB_CACHE` 不行），模型資料夾的檔案、大小（經過快取的連結）和說明提到的欄位 |
 | `test_agent.py` | 假模型是一個 `Backend`，它的 token 帶的欄位和 `LocalLLM` 的一樣；harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止；附件變成問題裡的 part 和給 `run_python` 的說明、每一輪的媒體都交給 processor、展開後的脈絡仍然只把工具結果標成新加入、`run_python` 拿到這段對話的資料夾、沒有 `run_python` 的一輪；模型讀到圖在哪裡，圖本身只給頁面 |
 | `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；一串同樣的特殊 token 畫成一個標籤加個數、截斷的片段不會切開 token、媒體佔了幾個 token、好幾行的程式碼和輸出照行寫出來、這一輪沒提供的工具、一次執行和每一步的圖；模型資料夾卡片：檔案的順序、大小和說明、家族有說明但 checkpoint 沒有的檔案、草稿模型的資料夾、跳脫；backend 沒回報機率、或只回報 log 機率時，token 照它帶的內容畫，不多畫；英文畫面上沒有留下中文 |
-| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案；設了 `VLLM_URL` 時，選單列出伺服器提供的模型、側欄和模型分頁寫出伺服器、MTP 由伺服器決定、開了 sampling mask 的伺服器不會從側欄收到 greedy 或不限的 top-k、模型讀伺服器收的媒體，頁面說明它不收哪些和原因，選單不列伺服器上的 LoRA adapter，伺服器跑到一半送來的錯誤用頁面的語言顯示，載入時或之後連不上伺服器，都用頁面的語言說明；沒設 `VLLM_URL` 時，「用什麼跑模型」一開始是 transformers、完全不碰 Docker，選 vLLM（Docker）會放掉本機的模型（沒有東西留著它）再用它啟動伺服器，重跑不會再啟動，換模型就用新模型啟動，換回 transformers 會停掉容器，vLLM 在跑時新開分頁或重新整理會接上它的伺服器和模型，停在 transformers 的分頁會跟著另一個分頁換到 vLLM 再換回來（模型在這裡只載入一次），啟動失敗時用頁面的語言說明，只有按「再試一次」才重試，換回 transformers 的切換鈕也還在 |
+| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案；設了 `VLLM_URL` 時，選單列出伺服器提供的模型、側欄和模型分頁寫出伺服器、MTP 由伺服器決定、開了 sampling mask 的伺服器不會從側欄收到 greedy 或不限的 top-k、模型讀伺服器收的媒體，頁面說明它不收哪些和原因，選單不列伺服器上的 LoRA adapter，伺服器跑到一半送來的錯誤用頁面的語言顯示，載入時或之後連不上伺服器，都用頁面的語言說明；沒設 `VLLM_URL` 時，「用什麼跑模型」一開始是 transformers、完全不碰 Docker，選 vLLM (Docker)會放掉本機的模型（沒有東西留著它）再用它啟動伺服器，重跑不會再啟動，換模型就用新模型啟動，換回 transformers 會停掉容器，vLLM 在跑時新開分頁或重新整理會接上它的伺服器和模型，停在 transformers 的分頁會跟著另一個分頁換到 vLLM 再換回來（模型在這裡只載入一次），啟動失敗時用頁面的語言說明，只有按「再試一次」才重試，換回 transformers 的切換鈕也還在 |
 | `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（已經下載到 `models/` 才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、token 浮窗顯示的是它代表的文字、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字），用真的 processor、問題附上圖片和影片時也一樣；每個模型（和草稿模型）資料夾裡的每個檔案都有說明，說明提到的欄位在檔案裡都找得到 |
 | `test_vllm_backend.py` | vLLM backend 對上一個假伺服器，它說的是 vLLM 0.32 的串流格式：`/v1/completions` 收到 render 好的 prompt 的 token id、側欄的每個設定（其他取樣設定都設成不起作用）、停止 token，以及放得進伺服器脈絡的 `max_tokens`；每個 token 的機率和前 5 名，排名只在前 5 名裡才有；加了 `--enable-scale-out` 時走 `/inference/v1/generate`，每個 token 都有排名，雖然選中的 token 排在清單第一個，前 5 名仍照排名；有 sampling mask 時（vLLM 只在 processed log 機率下送），有剩下的候選和取樣時的機率，沒有模型自己的機率，temperature 0 和 top-k 0 在每條路上都照 vLLM 的做法被拒絕，有 mask 但沒加 `--enable-scale-out` 的伺服器，網頁載入時也會發現，而還沒準備好的伺服器不算這種拒絕；載入時用一個 token 判斷伺服器的 `--logprobs-mode`，沒有 mask 的 processed log 機率在前幾名有被剃掉時看得到剩下幾個，logits 只有排名；greedy 是只剩一個、一定抽中的候選；伺服器收哪幾種媒體、每個檔案跟著佔位 token 送過去、脈絡分頁顯示伺服器的展開、生成時展開得不一樣就是錯誤、不收的種類成為一般檔案；兩條路上都有 MTP 的統計，每一步的統計對得上時才標出猜中的 token，收下的只算到停止 token 為止；停止 token、token 上限、按停止就關掉串流；連不上伺服器、它沒有提供的模型、用它自己的資料夾、或用網頁（或它的 transformers）不認得的家族的模型、或沒有 config.json 的模型啟動的伺服器、沒有或出錯的 `/inference/v1/generate`、它的拒絕和錯誤，兩種語言都有，跑到一半的錯誤用頁面的語言顯示；暖機，以及第一個 token 之前就結束的一步；模型卡片上的規格、伺服器、每種 logprobs 模式下數字代表什麼、sampling mask 和它不收的媒體；一整輪呼叫工具再回答、一輪附上圖片的問題，每個時刻都畫得出來；用真的 tokenizer 和 chat template（在 `models/` 裡時），伺服器拿到的就是脈絡分頁上的 prompt；設了 `VLLM_TEST_URL` 時問真的伺服器，伺服器加了哪些參數就測哪些 |
 | `test_vllm_docker.py` | 在 Docker 裡啟動 vLLM，Docker 在 `subprocess` 這一層換成假的：先照固定的 commit 下載權重，再用模型、它的 revision 和 `models/` 以 `docker compose up` 跑 `docker-compose/compose.yaml`，Docker 有 nvidia runtime（或 `AGENT_LOOP_VLLM_DEVICE` 指定）時再疊上 `compose.gpu.yaml`；模型已經在跑的伺服器不會再啟動一次，換模型會換掉它；沒有 Docker、Docker 沒在執行、沒有 Compose、`docker compose up` 失敗、容器因為記憶體不夠被停掉、容器結束（列出記錄裡的例外，原因在前）和伺服器一直沒回應，都用兩種語言說明；Compose 還在忙時頁面重跑，也會停掉它；`docker compose down`；程式要求的模型在啟動失敗後還記著，直到停掉為止；結束程式時停掉它啟動的伺服器（沒有的話不碰 Docker）。compose 檔：只聽 127.0.0.1、`models/` 唯讀又離線、預設是固定 commit 的 Qwen3.5、GPU 版是同一個 vLLM、除了只給 CPU 的那個以外參數都一樣，再加上和 CPU 一樣大的 KV cache 和偏低的 `--gpu-memory-utilization`，Docker Compose 讀得懂兩個檔、掛載的是相對的 `AGENT_LOOP_MODELS` 指的資料夾（有裝的話）；設了 `RUN_VLLM_DOCKER_TESTS=1` 時，Docker 裡真的伺服器透過 `VLLMBackend` 回答 |
