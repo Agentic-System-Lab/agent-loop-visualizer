@@ -2,6 +2,8 @@
 
 English | [繁體中文](README.zh-TW.md)
 
+![The top bar links to the How it works page, the switch at the top right changes the language, and the sidebar picks the model; on the left is the chat, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates.](docs/screenshot-en.png)
+
 One of the projects of [Agent Atlas](https://cyyeh.github.io/agent-atlas-learning/) (in Traditional Chinese).
 
 - Models: pick [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) or [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) in the sidebar; they run on your machine with Hugging Face `transformers`
@@ -14,8 +16,6 @@ One of the projects of [Agent Atlas](https://cyyeh.github.io/agent-atlas-learnin
 On the left is a chat like ChatGPT's; on the right the agent loop is drawn step by step: the model reads the context and proposes an action, the harness carries it out, and the result goes back into the context, until it stops. The model runs on your own computer, so every token's probability, the candidate tokens, the special tokens, the prefill and the generation speed are all in view. The models run the same harness, so switching models changes only their text formats, which makes them easy to compare.
 
 [How it works](https://cyyeh.github.io/agent-loop-visualizer/en/) maps each step of one turn, from sending a question to the reply, to the code that does it, with file names, line numbers and excerpts. It lives on GitHub Pages; How it works at the top of the app opens it in a new tab, in the language the app is in.
-
-![The top bar links to the How it works page, the switch at the top right changes the language, and the sidebar picks the model; on the left is the chat, on the right the loop diagram and the tokens of step 1. The pointer rests on the special token <|tool_call>, whose popover says what it is for and shows its probability, its rank and the top 5 candidates.](docs/screenshot-en.png)
 
 ## What the page shows
 
