@@ -2,7 +2,7 @@
 
 The harness (agent.Run) and the page (streamlit_app.py) reach the model only through a Backend. It renders the
 conversation into a prompt with the model's chat template, encodes the prompt into the tokens the model reads,
-and generates, yielding the events render.py draws. llm.LocalLLM is the backend the app runs: transformers on
+and generates, yielding the events render.py draws. simple_backend.LocalLLM is the backend the app runs: transformers on
 this machine, with a hand-written decoding loop that sees the whole distribution at every token.
 tests/fakes.FakeLLM replays scripted replies. A backend that asks a serving engine such as vLLM, SGLang or
 Ollama would be one more; this module says what it has to provide.

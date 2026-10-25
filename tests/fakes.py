@@ -1,4 +1,4 @@
-"""A stand-in for llm.LocalLLM that replays scripted model outputs.
+"""A stand-in for simple_backend.LocalLLM that replays scripted model outputs.
 
 It is a Backend (backend.py) like the real thing (render, encode, generate, family, modalities,
 info, load_drafter), and it has a tokenizer too; it renders prompts in a simplified form of its family's chat format
@@ -21,7 +21,7 @@ STR = '<|"|>'
 
 
 def fake_folder(repo: str, sizes: dict[str, int], fields: dict[str, dict]) -> dict:
-    """A checkpoint's folder as llm.describe_folder describes it, with the files and sizes of the real one."""
+    """A checkpoint's folder as simple_backend.describe_folder describes it, with the files and sizes of the real one."""
     return {
         "path": f"models/models--{repo}/snapshots/0123456789abcdef", "revision": "0123456789abcdef",
         "files": [{"name": name, "bytes": n, "fields": fields.get(name, {})} for name, n in sizes.items()],

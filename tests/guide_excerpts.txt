@@ -22,7 +22,7 @@
 [[agent.py|def run(self):]]
     def run(self):
 
-[[llm.py|def generate(self, prompt]]
+[[simple_backend.py|def generate(self, prompt]]
     def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
 
 [[backend.py|class Backend(Protocol):]]
@@ -97,7 +97,7 @@ families/__init__.py: class Family: … def special_re(self)
             pieces = sorted(self.special_tokens, key=len, reverse=True)
             return re.compile("|".join(re.escape(p) for p in pieces))
 
-llm.py: self.family = families.for_model_type( … self.special_ids = set(
+simple_backend.py: self.family = families.for_model_type( … self.special_ids = set(
     self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
     files = self.folder = _download(model_id)
     # The processor holds the tokenizer and, for a model that reads more than text, what turns files into its inputs.
@@ -165,13 +165,13 @@ families/qwen3_5.py: QWEN3_5 = Family(
 
 == files ==
 
-[[llm.py|MODELS_DIR = Path(]]
+[[simple_backend.py|MODELS_DIR = Path(]]
     MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser()
 
 [[families/__init__.py|REVISIONS = {]]
     REVISIONS = {
 
-llm.py: def _download(
+simple_backend.py: def _download(
     def _download(model_id: str, only: str | None = None) -> str:
         """The model's folder in MODELS_DIR, after fetching the files it lacks (only `only`, if given), at the revision
         families.REVISIONS pins it to.
@@ -184,34 +184,34 @@ llm.py: def _download(
             return model_id
         return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
 
-[[llm.py|def pick_device()]]
+[[simple_backend.py|def pick_device()]]
     def pick_device() -> str:
 
-[[llm.py|self.family = families.for_model_type(]]
+[[simple_backend.py|self.family = families.for_model_type(]]
     self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
 
-[[llm.py|self.processor = AutoProcessor.from_pretrained(files)]]
+[[simple_backend.py|self.processor = AutoProcessor.from_pretrained(files)]]
     self.processor = AutoProcessor.from_pretrained(files)
 
-[[llm.py|def render(self, messages]]
+[[simple_backend.py|def render(self, messages]]
     def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
 
-[[llm.py|self.model = AutoModelForMultimodalLM.from_pretrained(]]
+[[simple_backend.py|self.model = AutoModelForMultimodalLM.from_pretrained(]]
     self.model = AutoModelForMultimodalLM.from_pretrained(files, dtype=self.dtype, device_map=self.device).eval()
 
-[[llm.py|eos = self.model.generation_config.eos_token_id]]
+[[simple_backend.py|eos = self.model.generation_config.eos_token_id]]
     eos = self.model.generation_config.eos_token_id
 
-[[llm.py|def _sampling_defaults(self)]]
+[[simple_backend.py|def _sampling_defaults(self)]]
     def _sampling_defaults(self) -> dict:
 
 [[families/qwen3_5.py|sampling={]]
     sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},
 
-[[llm.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]]
+[[simple_backend.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]]
     self.draft_tokens = self.drafter.generation_config.num_assistant_tokens  # guesses per forward pass
 
-[[llm.py|def describe_folder(]]
+[[simple_backend.py|def describe_folder(]]
     def describe_folder(folder: str, notes: dict) -> dict:
 
 [[families/gemma4.py|file_notes=FILES,]]
@@ -230,13 +230,13 @@ families/__init__.py: class FileNote:
 
 == submit ==
 
-[[llm.py|def _sampling_defaults(self)]]
+[[simple_backend.py|def _sampling_defaults(self)]]
     def _sampling_defaults(self) -> dict:
 
 [[streamlit_app.py|key="model_id", on_change=new_chat]]
     tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=new_chat, disabled=busy,
 
-[[llm.py|def load_drafter(self):]]
+[[simple_backend.py|def load_drafter(self):]]
     def load_drafter(self):
 
 streamlit_app.py: @st.cache_resource(max_entries=1 … def current_llm() -> Backend:
@@ -400,7 +400,7 @@ agent.py: for step in range(1, s.max_steps + 1): … roles=_role_counts([system,
             roles=_role_counts([system, *self.messages]),
         )
 
-llm.py: def render(self, messages
+simple_backend.py: def render(self, messages
     def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
         """The chat template turns messages and tool schemas into the one string the model reads.
         With `generation_prompt` it also opens the model's turn, so the model writes next."""
@@ -424,7 +424,7 @@ agent.py: def common_prefix(
 
 == media ==
 
-llm.py: def _modalities(self)
+simple_backend.py: def _modalities(self)
     def _modalities(self) -> tuple[str, ...]:
         """What the checkpoint reads besides text: each kind needs an encoder in the config and a part of the processor
         to feed it. It is asked of the checkpoint, not the family, since checkpoints of one family can differ."""
@@ -452,7 +452,7 @@ media.py: def user_content(
         words = "\n\n".join(t for t in (text, note) if t)
         return [a.part() for a in attachments if a.kind != "file"] + ([{"type": "text", "text": words}] if words else [])
 
-llm.py: def encode(self, prompt
+simple_backend.py: def encode(self, prompt
     def encode(self, prompt: str, parts: list[dict]) -> Encoded:
         """The prompt as the model reads it. Without media that is the prompt's tokens. With media (`parts`, the
         conversation's media in the order of their placeholders), the processor replaces each placeholder with the
@@ -484,7 +484,7 @@ llm.py: def encode(self, prompt
 [[media.py|def load_video(]]
     def load_video(path: str) -> tuple[np.ndarray, dict]:
 
-llm.py: def _encoded_media(
+simple_backend.py: def _encoded_media(
     def _encoded_media(self, inputs: dict) -> dict:
         """Run the vision encoder over the prompt's images and videos before the prefill, as generate() does, and pass
         its output in their place. Leaving it to the forward pass breaks videos on Gemma 4: transformers 5.20's
@@ -515,10 +515,10 @@ agent.py: done = None … self.emit("model_end"
     raw = done.pop("raw")
     self.emit("model_end", step=step, raw=raw, **done)
 
-[[llm.py|def _forward(]]
+[[simple_backend.py|def _forward(]]
     def _forward(self, ids: torch.Tensor, past, keep: int, drafting: bool = False, **media):
 
-llm.py: def generate(self, prompt … yield {"type": "prefill"
+simple_backend.py: def generate(self, prompt … yield {"type": "prefill"
     def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
         """Yield a prefill event, one event per token, then a done event."""
         ids = prompt.ids.to(self.device)
@@ -545,7 +545,7 @@ llm.py: def generate(self, prompt … yield {"type": "prefill"
 [[families/qwen3_5.py|channel_switch={]]
     channel_switch={"<think>": "thought", "</think>": "content", "<tool_call>": "tool_call", "</tool_call>": "content"},
 
-llm.py: decode_start = time.perf_counter() … **details,
+simple_backend.py: decode_start = time.perf_counter() … **details,
     decode_start = time.perf_counter()
     tokens = self._drafted(out, sampling, mtp) if drafting else self._one_at_a_time(out, sampling)
     for token_id, details in tokens:
@@ -578,14 +578,14 @@ llm.py: decode_start = time.perf_counter() … **details,
             **details,
         }
 
-llm.py: if token_id in self.eos_ids: … if len(generated) == sampling.max_new_tokens:
+simple_backend.py: if token_id in self.eos_ids: … if len(generated) == sampling.max_new_tokens:
     if token_id in self.eos_ids:
         finish = "stop_token"
         break
     if len(generated) == sampling.max_new_tokens:
         break
 
-llm.py: def _one_at_a_time(
+simple_backend.py: def _one_at_a_time(
     def _one_at_a_time(self, out, s: Sampling) -> Iterator[tuple[int, dict]]:
         """Plain decoding: sample a token, feed it back with the cache for the next position's logits, repeat."""
         while True:
@@ -593,7 +593,7 @@ llm.py: def _one_at_a_time(
             yield token_id, details
             out = self._forward(torch.tensor([[token_id]], device=self.device), out.past_key_values, 1)
 
-llm.py: decode_s = time.perf_counter() - decode_start … "raw": self.tokenizer.decode(generated
+simple_backend.py: decode_s = time.perf_counter() - decode_start … "raw": self.tokenizer.decode(generated
     decode_s = time.perf_counter() - decode_start
     yield {
         "type": "done",
@@ -608,7 +608,7 @@ llm.py: decode_s = time.perf_counter() - decode_start … "raw": self.tokenizer.
 
 == sampling ==
 
-llm.py: def _sample(self, logits
+simple_backend.py: def _sample(self, logits
     def _sample(self, logits: torch.Tensor, s: Sampling, draft: int | None = None) -> tuple[int, dict]:
         """Pick the next token and report the model's distribution and what the settings did to it.
         A `draft` (the MTP drafter's guess) is kept with the probability the settings give it, which in greedy
@@ -670,7 +670,7 @@ llm.py: def _sample(self, logits
 [[families/__init__.py|DRAFTERS = {]]
     DRAFTERS = {
 
-llm.py: def load_drafter(self):
+simple_backend.py: def load_drafter(self):
     def load_drafter(self):
         """Load the MTP drafter that goes with this model (families.DRAFTERS), if any, and warm it up."""
         with self._drafter_lock:
@@ -692,7 +692,7 @@ llm.py: def load_drafter(self):
                 "folder": describe_folder(folder, self.family.drafter_file_notes),
             }
 
-llm.py: def _draft(
+simple_backend.py: def _draft(
     def _draft(self, token_id: int, hidden: torch.Tensor, shared: dict, position: int) -> list[int]:
         """The drafter's greedy guesses for the tokens after `token_id`. It has no cache of its own: it attends to the
         model's keys and values, so every guess sits at the position of `token_id`, and what it has guessed so far
@@ -707,7 +707,7 @@ llm.py: def _draft(
             guesses.append(token_id)
         return guesses
 
-llm.py: def _drafted(
+simple_backend.py: def _drafted(
     def _drafted(self, out, s: Sampling, stats: dict) -> Iterator[tuple[int, dict]]:
         """MTP decoding. After each token the drafter guesses the next few, and one forward pass over the token and the
         guesses gives the model's distribution at every guessed position. _sample checks the guesses in order: each
@@ -741,7 +741,7 @@ llm.py: def _drafted(
             shared = {k: (key[:, :, : key.shape[2] - dropped], value[:, :, : value.shape[2] - dropped])
                       for k, (key, value) in out.shared_kv_states.items()}
 
-llm.py: at = (cand_ids == draft) … pick = int(torch.multinomial(weights, 1))
+simple_backend.py: at = (cand_ids == draft) … pick = int(torch.multinomial(weights, 1))
     at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
     if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
         pick = int(at[0])
@@ -1399,10 +1399,10 @@ agent.py: def stop(self): … def decide(self, call_id
 [[agent.py|"context",]]
     "context",
 
-[[llm.py|yield {"type": "prefill"]]
+[[simple_backend.py|yield {"type": "prefill"]]
     yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
 
-[[llm.py|"type": "token",]]
+[[simple_backend.py|"type": "token",]]
     "type": "token",
 
 [[agent.py|self.emit("model_end"]]

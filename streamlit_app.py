@@ -40,7 +40,7 @@ import vllm_backend
 from agent import Run, RunSettings
 from backend import Backend, Sampling
 from i18n import LANGS, from_locale, pick
-from llm import LocalLLM
+from simple_backend import LocalLLM
 from tools import TOOLS
 
 # The model menu; MODEL_ID picks the one selected at first, and may name a model the menu does not list.

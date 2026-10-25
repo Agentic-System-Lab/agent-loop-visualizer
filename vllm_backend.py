@@ -1,7 +1,7 @@
 """Running the model on a vLLM server instead of on this machine.
 
 With VLLM_URL set (say http://localhost:8000, where `vllm serve Qwen/Qwen3.5-0.8B` listens), the page runs the
-model through VLLMBackend, a Backend (backend.py) like llm.LocalLLM. The harness, the tools and the page stay the
+model through VLLMBackend, a Backend (backend.py) like simple_backend.LocalLLM. The harness, the tools and the page stay the
 same; what changes is how much of the model the page can see, which depends on how the server was started.
 
 The prompt stays exact. Everything of the checkpoint but its weights (the config, the tokenizer, the chat
@@ -54,7 +54,7 @@ from transformers import AutoConfig, AutoProcessor, GenerationConfig
 import families
 import media
 from backend import Encoded, Sampling
-from llm import MODELS_DIR, TOP_N, describe_folder
+from simple_backend import MODELS_DIR, TOP_N, describe_folder
 
 # The weights stay on the server; downloading them here as well would only take up space.
 WEIGHTS = ["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"]
