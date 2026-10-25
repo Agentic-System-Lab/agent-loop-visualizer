@@ -39,6 +39,7 @@ guide.py           the 運作說明 page: content in both languages, code refere
 i18n.py            the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
 assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach, also offered above the input box)
 tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
+models/            downloaded models (llm.MODELS_DIR), which git ignores; HF_HUB_CACHE moves them
 ```
 
 ## Rules that keep it working
@@ -50,9 +51,12 @@ tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; samples
   every event the harness sends and points at the line that sends it) and the event list in both READMEs.
 - **Nothing model-specific outside `families/`.** agent.py, llm.py and render.py have no "if Gemma".
   Parsing output, the tokens that switch to thinking / tool call / reply, stop tokens, special-token
-  explanations and recommended sampling all live on the `Family`. Another checkpoint of a supported
-  family is one line in `MODELS` (and `DRAFTERS` if it has an MTP drafter); a new family is a module
-  like `families/qwen3_5.py` added to `FAMILIES`.
+  explanations, notes on the files of its checkpoints and recommended sampling all live on the
+  `Family`. Another checkpoint of a supported family is one line in `MODELS` and one in `REVISIONS`,
+  the commit it downloads at (and `DRAFTERS` and its drafter's commit if it has an MTP drafter); a new family is a module like
+  `families/qwen3_5.py` added to `FAMILIES`. Moving a model to a newer commit means rerunning
+  tests/test_chat_template.py and tests/test_real_model.py and rereading the guide's model folder
+  section, whose numbers come from those files.
 - **The decoding loop stays exact.** Greedy output equals `model.generate()`. MTP only changes how many
   forward passes run: greedy with MTP equals greedy without, and sampling with MTP keeps each token's
   distribution. `tests/test_llm.py` and `tests/test_real_model.py` check this; don't loosen them.
@@ -109,7 +113,7 @@ tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; samples
   form of each family's chat format, scripted replies streamed token by token. Cover new harness or UI
   behavior with it; tests/test_app.py drives the whole page through Streamlit's `AppTest`.
 - tests/test_chat_template.py checks each family against the model's real tokenizer and chat template
-  and skips models missing from the local Hugging Face cache. tests/test_real_model.py loads the real
+  and skips models not yet downloaded into models/. tests/test_real_model.py loads the real
   weights and runs only with `RUN_MODEL_TESTS=1`. After changing parsing, prompts, stop tokens or the
   decoding loop, run them if the models are available, and say whether they ran or were skipped.
 - Wikipedia is faked over HTTP; the default suite never touches the network. Tests that need Docker

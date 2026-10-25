@@ -14,15 +14,20 @@ checks them all (_drafted); every token still comes from the model's distributio
 Images, sound and video go in through the model's processor: encode() expands each placeholder the
 chat template wrote into the tokens of its file, and the prefill hands the encoders their inputs.
 After the prefill, decoding is the same as for text.
+
+The models download into MODELS_DIR (the project's models/) at the commits families.REVISIONS pins,
+and describe_folder() lists what a model's folder holds for the Model tab.
 """
 
 import inspect
+import json
 import logging
 import os
 import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Iterator
 
 import torch
@@ -33,6 +38,10 @@ import families
 import media
 
 TOP_N = 5
+ROOT = Path(__file__).resolve().parent
+# Models download into models/ next to this file, which git ignores, rather than into the shared
+# ~/.cache/huggingface/hub, so they are easy to find and leave with the project. HF_HUB_CACHE puts them elsewhere.
+MODELS_DIR = Path(os.environ.get("HF_HUB_CACHE") or ROOT / "models").expanduser()
 
 
 @dataclass
@@ -56,7 +65,8 @@ class Encoded:
 
 
 def _download(model_id: str, only: str | None = None) -> str:
-    """The model's folder in the local Hugging Face cache, after fetching the files it lacks (only `only`, if given).
+    """The model's folder in MODELS_DIR, after fetching the files it lacks (only `only`, if given), at the revision
+    families.REVISIONS pins it to.
 
     from_pretrained(local_files_only=True) is no test of the cache: once config.json is cached, a tokenizer whose
     own files are missing raises a ValueError (Gemma 4) or loads empty (Qwen3.5) rather than an OSError.
@@ -64,7 +74,44 @@ def _download(model_id: str, only: str | None = None) -> str:
     can't be reached it returns the cached folder, so a downloaded model still starts offline."""
     if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
         return model_id
-    return snapshot_download(model_id, allow_patterns=only)
+    return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
+
+
+def describe_folder(folder: str, notes: dict) -> dict:
+    """A checkpoint's folder as the Model tab lists it: where it is, the Hub revision it was downloaded at, and every
+    file with its size and the values of the fields its family's note on it names (families.FileNote). In the cache a
+    file is a link into blobs/, and the size is that of the file it links to."""
+    path = Path(folder).absolute()
+    files = []
+    for file in sorted(f for f in path.rglob("*") if f.is_file()):
+        name = file.relative_to(path).as_posix()
+        if name.startswith(".cache/"):  # what `hf download --local-dir` keeps about the download, not part of the checkpoint
+            continue
+        note = notes.get(name)
+        files.append({"name": name, "bytes": file.stat().st_size, "fields": _fields(file, note.fields) if note else {}})
+    return {"path": _shown(path), "revision": path.name if path.parent.name == "snapshots" else None, "files": files}
+
+
+def _fields(file: Path, fields: tuple[str, ...]) -> dict:
+    """The values at dotted paths (text_config.sliding_window) in a JSON file; a path the file lacks is left out."""
+    if not fields:
+        return {}
+    data, out = json.loads(file.read_text(encoding="utf-8")), {}
+    for dotted in fields:
+        value = data
+        for key in dotted.split("."):
+            value = value.get(key) if isinstance(value, dict) else None
+        if value is not None:
+            out[dotted] = value
+    return out
+
+
+def _shown(path: Path) -> str:
+    """A path as the page shows it: from the project's folder when it is inside, else from the home folder."""
+    for base, prefix in ((ROOT, ""), (Path.home(), "~/")):
+        if path.is_relative_to(base):
+            return prefix + path.relative_to(base).as_posix()
+    return path.as_posix()
 
 
 def _not_a_kernel_notice(record: logging.LogRecord) -> bool:
@@ -99,7 +146,7 @@ class LocalLLM:
         start = time.perf_counter()
         # config.json alone says which family the model belongs to; an unsupported one fails before the weights download.
         self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
-        files = _download(model_id)
+        files = self.folder = _download(model_id)
         # The processor holds the tokenizer and, for a model that reads more than text, what turns files into its inputs.
         self.processor = AutoProcessor.from_pretrained(files)
         self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
@@ -146,6 +193,7 @@ class LocalLLM:
             "defaults": self._sampling_defaults(),
             "drafter_id": self.drafter_id,
             "drafter": None,
+            "folder": describe_folder(self.folder, self.family.file_notes),
         }
 
     def _modalities(self) -> tuple[str, ...]:
@@ -183,7 +231,8 @@ class LocalLLM:
             if self.drafter is not None or self.drafter_id is None:
                 return
             start = time.perf_counter()
-            self.drafter = AutoModelForCausalLM.from_pretrained(_download(self.drafter_id), dtype=self.dtype, device_map=self.device).eval()
+            folder = _download(self.drafter_id)
+            self.drafter = AutoModelForCausalLM.from_pretrained(folder, dtype=self.dtype, device_map=self.device).eval()
             self.draft_tokens = self.drafter.generation_config.num_assistant_tokens  # guesses per forward pass
             self.warmup(mtp=True)
             cfg = self.drafter.config.get_text_config()
@@ -194,6 +243,7 @@ class LocalLLM:
                 "hidden_size": cfg.hidden_size,
                 "draft_tokens": self.draft_tokens,
                 "load_seconds": round(time.perf_counter() - start, 1),
+                "folder": describe_folder(folder, self.family.drafter_file_notes),
             }
 
     def piece(self, token_id: int) -> str:

@@ -17,7 +17,7 @@ qwen3_coder parser does). Thinking sits between <think> and </think>.
 import json
 import re
 
-from families import Family
+from families import Family, FileNote
 from i18n import pick
 
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
@@ -202,6 +202,69 @@ GROUPS = {"zh": [
     ]),
 ]}
 
+# What each file in a Qwen3.5 checkpoint's folder holds, for the Model tab; render.MODEL_FILES says what each kind of
+# file is in any checkpoint. A note points at fields by name and the tab shows their values, so it fits every Qwen3.5.
+FILES = {
+    "config.json": FileNote({
+        "zh": "`text_config` 是語言模型，`vision_config` 是圖片和影片共用的編碼器；沒有聲音的編碼器，所以聲音檔對這個模型只是給 `run_python` 的普通檔案。"
+              "`text_config` 的 `layer_types` 交錯 `linear_attention`（Gated DeltaNet）和 `full_attention`，每 `full_attention_interval` 層有一層 full attention。"
+              "`mtp_num_hidden_layers` 描述權重裡附帶的一層 MTP，但 transformers 不載入它。`vocab_size` 比 tokenizer 的詞彙多一點，是 embedding 表補齊的空位。",
+        "en": "`text_config` is the language model and `vision_config` the encoder that images and video share; there is no sound encoder, so to this "
+              "model a sound file is just a file for `run_python`. In `text_config`, `layer_types` interleaves `linear_attention` (Gated DeltaNet) with "
+              "`full_attention`, one full attention layer every `full_attention_interval`. `mtp_num_hidden_layers` describes an MTP layer that comes "
+              "with the weights, which transformers does not load. `vocab_size` is a little more than the tokenizer's vocabulary: the embedding table is padded.",
+    }, ("architectures", "text_config.full_attention_interval", "text_config.mtp_num_hidden_layers", "text_config.vocab_size", "vision_config.depth")),
+    "generation_config.json": FileNote({
+        "zh": "沒有這個檔案時，停止 token 是 `config.json` 寫的 `<|endoftext|>`，加上 family 補的 `<|im_end|>`（每個回合的結尾）；"
+              "建議的 temperature、top-p、top-k 來自 family，抄自模型卡裡不思考時的設定。",
+        "en": "Without it, the stop tokens are the `<|endoftext|>` that `config.json` names plus the `<|im_end|>` the family adds, which ends every turn; "
+              "the recommended temperature, top-p and top-k are the family's, taken from the model card's settings for answers without thinking.",
+    }),
+    "model.safetensors": FileNote({
+        "zh": "權重，大多是 bfloat16；就算只有一個檔案，檔名也照分片的格式取。除了語言模型和視覺編碼器（`visual`），還有 `config.json` 說的那層 MTP（`mtp.`），"
+              "transformers 載入時跳過；這裡沒有 Qwen 的草稿模型，側欄的 MTP 只給 Gemma 用。Gated DeltaNet 層的 `A_log`（狀態衰減的速度）和它們的 norm 以 float32 存。",
+        "en": "The weights, mostly in bfloat16, in files named in the sharded format even when there is only one. Besides the language model and the "
+              "vision encoder (`visual`), they hold the MTP layer `config.json` mentions (`mtp.`), which transformers skips when loading; there is no "
+              "drafter for Qwen here, and MTP in the sidebar is for Gemma only. The Gated DeltaNet layers' `A_log` (how fast their state decays) and "
+              "their norms are stored in float32.",
+    }),
+    "tokenizer.json": FileNote({
+        "zh": "跟 GPT-2 一樣的 byte-level BPE：先用正規表示式切出詞、數字和標點，每個 byte 寫成一個可印出的字元"
+              "（空白是 `Ġ`，「如果」兩個字的 6 個 byte 是 `å¦Ĥæŀľ`），再照 merges 合併；每個 byte 都有自己的字元，所以不會有 unknown token。"
+              "token 浮窗顯示的是它代表的文字（family 的 `byte_level`）。",
+        "en": "A byte-level BPE as in GPT-2: a regular expression first splits out words, numbers and punctuation, every byte is spelled as one "
+              "printable character (a space is `Ġ`, and the six bytes of a two-character Chinese word are `å¦Ĥæŀľ`), and the merges join them; "
+              "every byte has its own character, so nothing is ever unknown. A token's popover shows the text it stands for (the family's `byte_level`).",
+    }),
+    "tokenizer_config.json": FileNote({
+        "zh": "`eos_token` 是結束每個回合的 `<|im_end|>`，`pad_token` 是 `<|endoftext|>`。added tokens 裡有 `<think>` 和 `<tool_call>`，"
+              "但沒有標成 special，所以由 family 補上（見「特殊 token」）。裡面還有一份 chat template，和 `chat_template.jinja` 一模一樣。",
+        "en": "`eos_token` is the `<|im_end|>` that ends every turn, and `pad_token` is `<|endoftext|>`. The added tokens include `<think>` and "
+              "`<tool_call>` but do not mark them special, so the family does (see Special tokens). It also holds a copy of the chat template, "
+              "the same as `chat_template.jinja`.",
+    }, ("tokenizer_class", "eos_token", "pad_token", "model_max_length")),
+    "chat_template.jinja": FileNote({
+        "zh": "寫成 ChatML：`<|im_start|>system`、`user`、`assistant` 訊息，各以 `<|im_end|>` 結尾。工具的 schema 放在 system 訊息的 `<tools>…</tools>` 裡，"
+              "後面附上怎麼寫呼叫；工具結果是一則新的 `user` 訊息，包在 `<tool_response>` 裡；思考模式在 assistant 訊息開頭先寫 `<think>`（關掉時寫一段空的）；"
+              "圖片和影片寫成 `<|vision_start|><|image_pad|><|vision_end|>` 這樣，再由 `encode()` 展開。",
+        "en": "Writes ChatML: `<|im_start|>system`, `user` and `assistant` messages, each ending in `<|im_end|>`. The tool schemas go in the system "
+              "message inside `<tools>…</tools>`, followed by how to write a call; a tool result is a new `user` message wrapped in `<tool_response>`; "
+              "thinking opens the assistant message with `<think>` (an empty one when it is off); an image or a video is written like "
+              "`<|vision_start|><|image_pad|><|vision_end|>`, which `encode()` expands.",
+    }),
+    "preprocessor_config.json": FileNote({
+        "zh": "圖片的設定：切成 `patch_size` 像素的 patch，每 `merge_size` × `merge_size` 個合成一個 token；"
+              "`size` 的兩個值是一張圖最少和最多的像素數（名字雖然叫 edge）。",
+        "en": "For images: cut into patches of `patch_size` pixels, every `merge_size` × `merge_size` of them merged into one token; "
+              "the two values in `size` are the fewest and most pixels an image may have (though they are named edges).",
+    }, ("processor_class", "patch_size", "merge_size", "size.shortest_edge", "size.longest_edge")),
+    "video_preprocessor_config.json": FileNote({
+        "zh": "影片畫面的設定，跟圖片一樣切 patch，再加上時間：每 `temporal_patch_size` 格畫面合成一組 token。family 另外限制每格畫面的像素（`processor_kwargs`）。",
+        "en": "For video frames: patches as for images, and in time too, `temporal_patch_size` frames making one set of tokens. "
+              "The family also caps each frame's pixels (`processor_kwargs`).",
+    }, ("video_processor_type", "temporal_patch_size", "size.longest_edge")),
+}
+
 QWEN3_5 = Family(
     key="qwen3_5",
     name="Qwen3.5",
@@ -239,4 +302,5 @@ QWEN3_5 = Family(
     # Cap each video frame at the pixels the reference implementation (qwen-vl-utils) allows; transformers asks
     # for this to be said outright until it becomes the default.
     processor_kwargs={"cap_pixels_per_frame": True},
+    file_notes=FILES,
 )

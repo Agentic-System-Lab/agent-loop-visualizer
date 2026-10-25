@@ -19,6 +19,14 @@ from llm import Encoded
 
 STR = '<|"|>'
 
+
+def fake_folder(repo: str, sizes: dict[str, int], fields: dict[str, dict]) -> dict:
+    """A checkpoint's folder as llm.describe_folder describes it, with the files and sizes of the real one."""
+    return {
+        "path": f"models/models--{repo}/snapshots/0123456789abcdef", "revision": "0123456789abcdef",
+        "files": [{"name": name, "bytes": n, "fields": fields.get(name, {})} for name, n in sizes.items()],
+    }
+
 INFO = {
     "model_id": "fake/gemma-test",
     "architecture": "FakeForTests",
@@ -47,10 +55,18 @@ INFO = {
     "modalities": ["image", "audio", "video"],
     "drafter_id": None,
     "drafter": None,
+    "folder": fake_folder("fake--gemma-test", {
+        ".gitattributes": 1570, "README.md": 27_955, "chat_template.jinja": 18_569, "config.json": 4954, "generation_config.json": 208,
+        "model.safetensors": 10_246_621_918, "processor_config.json": 1689, "tokenizer.json": 32_169_626, "tokenizer_config.json": 3082,
+    }, {
+        "config.json": {"architectures": ["Gemma4ForConditionalGeneration"], "text_config.sliding_window": 512},
+        "generation_config.json": {"eos_token_id": [1, 106, 50], "top_k": 64},
+    }),
 }
 DRAFTER = {
     "model_id": "fake/gemma-test-assistant", "parameters": 77_700_000, "layers": 4, "hidden_size": 256,
     "draft_tokens": 6, "load_seconds": 0.1,
+    "folder": fake_folder("fake--gemma-test-assistant", {"config.json": 2315, "model.safetensors": 157_565_344}, {"config.json": {"num_centroids": 2048}}),
 }
 QWEN_INFO = {
     **INFO,
@@ -70,6 +86,11 @@ QWEN_INFO = {
     "special_tokens": {piece: 248044 + i for i, piece in enumerate(QWEN3_5.special_tokens)},
     "defaults": {"temperature": 1.0, "top_p": 1.0, "top_k": 20},
     "modalities": ["image", "video"],
+    "folder": fake_folder("fake--qwen-test", {
+        ".gitattributes": 1570, "LICENSE": 11_544, "README.md": 61_705, "chat_template.jinja": 7755, "config.json": 2907, "merges.txt": 3_353_259,
+        "model.safetensors-00001-of-00001.safetensors": 1_746_942_600, "model.safetensors.index.json": 50_900, "preprocessor_config.json": 390,
+        "tokenizer.json": 12_807_982, "tokenizer_config.json": 16_709, "video_preprocessor_config.json": 385, "vocab.json": 6_722_759,
+    }, {"config.json": {"text_config.full_attention_interval": 4}}),
 }
 MEDIA_TOKENS = 6  # tokens one image, clip or video becomes
 # What the chat template writes for each kind of media, and what the processor turns it into.

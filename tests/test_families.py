@@ -48,6 +48,11 @@ def test_a_byte_that_is_only_part_of_a_character_shows_in_hex():
     assert GEMMA4.show_piece("<0xF0>") == "<0xF0>"
 
 
+def test_every_model_and_drafter_downloads_at_a_pinned_commit():
+    assert set(families.REVISIONS) == set(families.MODELS) | set(families.DRAFTERS.values())
+    assert all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in families.REVISIONS.values())
+
+
 def test_the_menu_lists_one_model_of_each_family():
     assert len(families.MODELS) == len(families.FAMILIES)
 
@@ -64,3 +69,13 @@ def test_a_family_explains_itself_in_both_languages(family):
     english += [meaning["en"] for meaning in family.stop_tokens.values()]
     english += [part for title, sub, rows in family.special_groups["en"] for part in (title, sub, *(n + d for _, n, d in rows))]
     assert not [text for text in english if CJK.search(text)]
+
+
+@pytest.mark.parametrize("family", list(families.FAMILIES.values()), ids=lambda f: f.key)
+def test_a_family_explains_its_files_in_both_languages(family):
+    """A note on a file names the same fields and tokens in both languages, and the fields it shows are dotted names."""
+    for name, note in {**family.file_notes, **family.drafter_file_notes}.items():
+        assert set(note.text) == set(LANGS) and all(note.text.values()), name
+        assert sorted(re.findall(r"`(.+?)`", note.text["zh"])) == sorted(re.findall(r"`(.+?)`", note.text["en"])), name
+        assert not CJK.search(note.text["en"]), name
+        assert all(re.fullmatch(r"\w+(\.\w+)*", f) for f in note.fields), name

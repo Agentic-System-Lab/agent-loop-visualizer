@@ -304,8 +304,12 @@ mark.added { background: color-mix(in srgb, var(--c-context) 20%, transparent); 
 .glossary dd { margin: 0; font-size: 13px; line-height: 1.55; color: var(--ink-2); }
 .glossary dd b { color: var(--ink); }
 .glossary dd > span { display: block; }
+.glossary.files div { grid-template-columns: 240px 1fr; }
+.file-fields { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 4px 0 0; padding: 0 !important; list-style: none; font: 500 11.5px/1.6 var(--mono); color: var(--muted); }
+.file-fields li { margin: 0; }
+.file-fields .tk { margin-right: 4px; font-size: 1em; }
 .stop-tag { margin-left: 8px; padding: 1px 6px; border: 1px solid currentColor; border-radius: 999px; font: 600 10.5px/1 var(--mono); font-style: normal; color: var(--accent); vertical-align: 1px; }
 
 @media (max-width: 640px) {
-  .knobs div, .glossary div { grid-template-columns: 1fr; gap: 0; }
+  .knobs div, .glossary div, .glossary.files div { grid-template-columns: 1fr; gap: 0; }
 }

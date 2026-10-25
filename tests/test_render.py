@@ -152,7 +152,8 @@ def test_an_english_page_has_no_chinese_left(scenario):
 def test_the_model_tab_in_english_has_no_chinese(info):
     family = families.get(info["family"])
     pieces = [
-        render.model_html(info, lang="en"), render.special_tokens_html(info, lang="en"), render.INTRO["en"], render.CONTEXT_LEGEND["en"],
+        render.model_html(info, lang="en"), render.special_tokens_html(info, lang="en"), render.folder_html(info, lang="en"),
+        render.INTRO["en"], render.CONTEXT_LEGEND["en"],
         render.tools_html(TOOLS, True, family, lang="en"), render.tools_html(TOOLS, False, family, lang="en"),
         render.knobs_html({"temperature": 0, "top_k": 0, "top_p": 0.9, "max_new_tokens": 512, "max_steps": 4, "mtp": True}, INFO["defaults"], lang="en"),
         render.diagram_html(None, dark=False, lang="en"),
@@ -555,6 +556,74 @@ def test_model_card_names_the_drafter():
     assert "77.7M 參數 · 4 層" in loaded and "每次猜 6 個 token" in loaded
     assert_balanced(waiting)
     assert_balanced(loaded)
+
+
+def test_the_model_folder_lists_each_file_with_its_size_what_it_is_and_what_it_holds():
+    html = render.folder_html(INFO, lang="en")
+    assert "models/models--fake--gemma-test/snapshots/0123456789abcdef" in html and "at revision 0123456, the commit" in html
+    names = re.findall(r'<dt><span class="tk">(.*?)</span>', html)
+    assert names == ["config.json", "generation_config.json", "model.safetensors", "tokenizer.json", "tokenizer_config.json",
+                     "chat_template.jinja", "processor_config.json", "README.md", ".gitattributes"]
+    assert "<small>10.2 GB</small>" in html and "<small>208 B</small>" in html and "<small>5.0 kB</small>" in html
+    assert "<b>architecture</b>" in html and "Gemma 4: Three parts in one file" in html
+    assert '<li><span class="tk">text_config.sliding_window</span> 512</li>' in html
+    assert '<li><span class="tk">architectures</span> [&quot;Gemma4ForConditionalGeneration&quot;]</li>' in html
+    assert "<b>git settings</b>" in html and "Gemma 4: " not in html.split(".gitattributes")[1]  # no family note on it
+    assert "gloss-head" not in html  # no drafter loaded, so one folder
+    assert "a later download may get a newer one" in html  # fake/gemma-test is not pinned
+    pinned = render.folder_html({**INFO, "model_id": "google/gemma-4-E2B-it", "folder": {**INFO["folder"], "revision": families.REVISIONS["google/gemma-4-E2B-it"]}}, "en")
+    assert "revision 3e22461, the commit the app pins it to" in pinned
+    assert_balanced(html)
+
+
+def test_the_model_folder_lists_a_file_the_family_notes_but_the_checkpoint_lacks():
+    html = render.folder_html(QWEN_INFO, lang="zh")
+    names = re.findall(r'<dt><span class="tk">(.*?)</span>', html)
+    assert names[:3] == ["config.json", "generation_config.json", "model.safetensors-00001-of-00001.safetensors"]
+    assert "generation_config.json</span><small>這個 checkpoint 沒有</small>" in html
+    assert "Qwen3.5：沒有這個檔案時" in html
+    shard = html.split("model.safetensors-00001-of-00001.safetensors")[1]
+    assert "<b>權重</b>" in shard and "1.7 GB" in shard and "transformers 載入時跳過" in shard  # a shard is read as the weights
+    assert names[3:8] == ["model.safetensors.index.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"]
+    assert names[-3:] == ["README.md", "LICENSE", ".gitattributes"] and html.count("這個 checkpoint 沒有") == 1
+    assert_balanced(html)
+
+
+def test_the_model_folder_shows_the_drafter_once_it_is_loaded():
+    assert "gloss-head" not in render.folder_html({**INFO, "drafter_id": DRAFTER["model_id"]}, lang="zh")
+    html = render.folder_html({**INFO, "drafter_id": DRAFTER["model_id"], "drafter": DRAFTER}, lang="zh")
+    drafter = html.split('<h5 class="gloss-head">MTP 草稿模型')[1]
+    assert "models/models--fake--gemma-test-assistant/snapshots/0123456789abcdef" in drafter
+    assert 'Gemma 4：<span class="tk">Gemma4AssistantForCausalLM</span>' in drafter
+    assert "tokenizer.json</span><small>這個 checkpoint 沒有</small>" in drafter  # the fake drafter lists two of its files
+    assert '<li><span class="tk">num_centroids</span> 2048</li>' in drafter
+    assert_balanced(html)
+
+
+def test_the_notes_on_the_weights_are_said_once_for_all_their_shards():
+    shards = [{"name": f"model-0000{i}-of-00002.safetensors", "bytes": 5_000_000_000, "fields": {}} for i in (1, 2)]
+    html = render.folder_html({**QWEN_INFO, "folder": {**QWEN_INFO["folder"], "files": shards}}, lang="en")
+    assert html.count("The weights: a header") == 1 and html.count("Qwen3.5: The weights") == 1
+    assert "Another shard of the weights." in html.split("model-00002-of-00002.safetensors")[1]
+
+
+def test_sizes_round_up_to_the_next_unit():
+    assert [render.fmt_bytes(n) for n in (208, 999, 999_999, 1_746_942_600, 10_246_621_918)] == ["208 B", "1.0 kB", "1.0 MB", "1.7 GB", "10.2 GB"]
+
+
+def test_the_model_folder_escapes_what_the_files_hold():
+    files = [{"name": "<b>x</b>.json", "bytes": 1, "fields": {}}, {"name": "config.json", "bytes": 1, "fields": {"architectures": "<script>"}}]
+    html = render.folder_html({**INFO, "folder": {"path": "<i>models</i>", "revision": None, "files": files}}, lang="en")
+    assert "<script>" not in html and "<b>x</b>" not in html and "<i>models</i>" not in html
+    assert "&lt;script&gt;" in html and "A checkpoint on disk, loaded in place." in html
+    assert "<b>other</b>" in html
+    assert_balanced(html)
+
+
+def test_every_file_a_family_notes_is_a_kind_the_page_knows():
+    for family in families.FAMILIES.values():
+        for name in (*family.file_notes, *family.drafter_file_notes):
+            assert render.file_kind(name) == name
 
 
 def test_step_rows_with_mtp():

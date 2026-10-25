@@ -47,6 +47,77 @@ PARAM_PARTS = {
     "zh": {"language_model": "語言模型", "audio_tower": "音訊編碼器", "vision_tower": "視覺編碼器", "visual": "視覺編碼器"},
     "en": {"language_model": "language model", "audio_tower": "audio encoder", "vision_tower": "vision encoder", "visual": "vision encoder"},
 }
+# Each kind of file a checkpoint's folder may hold, in the order the Model tab lists them: language -> (what it is,
+# what it is for and what reads it). What one holds in a family's checkpoints is the family's (families.FileNote).
+MODEL_FILES = {
+    "config.json": {
+        "zh": ("架構", "模型由什麼組成：類別、層數、寬度、head 數、詞彙量和脈絡上限。`AutoConfig` 最先讀它：`model_type` 決定 family，這個分頁上方的規格也來自它。"),
+        "en": ("architecture", "What the model is made of: its class, layers, widths, heads, vocabulary and context limit. `AutoConfig` reads it first: "
+                               "its `model_type` picks the family, and the specs at the top of this tab come from it."),
+    },
+    "generation_config.json": {
+        "zh": ("生成預設值", "生成的預設值：停止 token（`eos_token_id`）和建議的 temperature / top-p / top-k。停止 token 和 family 的合在一起；建議值就是「解碼設定」裡寫的那些。"),
+        "en": ("generation defaults", "Defaults for generating: the stop tokens (`eos_token_id`) and the recommended temperature / top-p / top-k. "
+                                      "The stop tokens join the family's, and the recommendations are those under Decoding settings."),
+    },
+    "model.safetensors": {
+        "zh": ("權重", "權重：開頭是每個 tensor 的名稱、形狀和型別，後面是原始數字。safetensors 載入時不執行任何程式（pickle 存的 checkpoint 會），"
+                       "也能直接映射進記憶體。`from_pretrained` 用上面寫的精度把它放到裝置上；在 CPU 上是 float32，記憶體是 bfloat16 權重的兩倍。"),
+        "en": ("weights", "The weights: a header with every tensor's name, shape and type, then the raw numbers. Loading safetensors runs no code, "
+                          "unlike a pickled checkpoint, and the file can be mapped straight into memory. `from_pretrained` puts them on the device in the precision above, "
+                          "which on a CPU is float32: twice the memory of bfloat16 weights."),
+    },
+    "model.safetensors.index.json": {
+        "zh": ("權重索引", "權重拆成好幾個檔案時，記下每個 tensor 在哪個檔案（`weight_map`）。"),
+        "en": ("weight index", "For weights split into several files: which file holds each tensor (`weight_map`)."),
+    },
+    "tokenizer.json": {
+        "zh": ("tokenizer", "tokenizers 函式庫的完整 tokenizer：文字怎麼正規化、怎麼切，詞彙表、BPE merges 和 added tokens。processor 載入它；頁面上每個 token 都是它的一個條目。"),
+        "en": ("tokenizer", "The whole tokenizer for the tokenizers library: how text is normalized and split, the vocabulary, the BPE merges and the added tokens. "
+                            "The processor loads it, and every token on the page is one of its entries."),
+    },
+    "tokenizer_config.json": {
+        "zh": ("tokenizer 設定", "transformers 怎麼包裝這個 tokenizer：類別、哪些 token 扮演什麼角色（開頭、結尾、padding），以及輸入最長多長。"),
+        "en": ("tokenizer settings", "How transformers wraps that tokenizer: its class, which tokens play which part (beginning, end, padding) and the longest input it takes."),
+    },
+    "vocab.json": {
+        "zh": ("詞彙表", "只有詞彙表（token → id），舊的格式；`tokenizer.json` 裡也有。"),
+        "en": ("vocabulary", "The vocabulary alone, token → id, in the older format; `tokenizer.json` holds it too."),
+    },
+    "merges.txt": {
+        "zh": ("merges", "只有 BPE merges，一行一組，舊的格式；`tokenizer.json` 裡也有。"),
+        "en": ("merges", "The BPE merges alone, one pair per line, in the older format; `tokenizer.json` holds them too."),
+    },
+    "chat_template.jinja": {
+        "zh": ("chat template", "chat template：一段 Jinja 程式，把訊息、工具 schema 和思考開關寫成模型讀的那一個字串。`render()` 執行它，「脈絡」分頁顯示它寫出來的東西。"),
+        "en": ("chat template", "The chat template: a Jinja program that turns the messages, the tool schemas and the thinking switch into the one string the model reads. "
+                                "`render()` runs it, and the Context tab shows what it wrote."),
+    },
+    "processor_config.json": {
+        "zh": ("processor", "processor 怎麼把附件變成編碼器的輸入：圖片的大小和 patch、聲音的特徵、影片的畫面。`AutoProcessor` 讀它。"),
+        "en": ("processor", "How the processor turns attachments into the encoders' inputs: image sizes and patches, sound features, video frames. `AutoProcessor` reads it."),
+    },
+    "preprocessor_config.json": {
+        "zh": ("圖片 processor", "processor 怎麼把圖片變成視覺編碼器的輸入。`AutoProcessor` 讀它。"),
+        "en": ("image processor", "How the processor turns images into the vision encoder's input. `AutoProcessor` reads it."),
+    },
+    "video_preprocessor_config.json": {
+        "zh": ("影片 processor", "processor 怎麼把影片變成給視覺編碼器的畫面。`AutoProcessor` 讀它。"),
+        "en": ("video processor", "How the processor turns videos into frames for the vision encoder. `AutoProcessor` reads it."),
+    },
+    "README.md": {
+        "zh": ("模型卡", "Hub 上的模型卡：模型是什麼、授權、benchmark 和建議用法。app 不讀它。"),
+        "en": ("model card", "The model card on the Hub: what the model is, its license, benchmarks and recommended use. The app does not read it."),
+    },
+    "LICENSE": {
+        "zh": ("授權", "權重的授權條款全文。app 不讀它。"),
+        "en": ("license", "The license the weights are released under. The app does not read it."),
+    },
+    ".gitattributes": {
+        "zh": ("git 設定", "Hub 上 git repository 的設定（哪些檔案當大型檔案存）。app 不讀它。"),
+        "en": ("git settings", "Settings for the model's repository on the Hub (which files are stored as large files). The app does not read it."),
+    },
+}
 
 INTRO = {
     "zh": """
@@ -117,6 +188,13 @@ def pct(p: float) -> str:
 
 def fmt_params(n: int) -> str:
     return f"{n / 1e9:.2f}B" if n >= 1e8 else f"{n / 1e6:.1f}M"
+
+
+def fmt_bytes(n: int) -> str:
+    for unit, size in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+        if round(n / size, 1) >= 1:
+            return f"{n / size:.1f} {unit}"
+    return f"{n} B"
 
 
 def n_steps(n: int, lang: str) -> str:
@@ -994,4 +1072,82 @@ def special_tokens_html(info: dict, lang: str) -> str:
             "In the Loop and Context tabs, hovering over a dark token shows its note from here.",
         )
         + f'</p>{"".join(sections)}</div>'
+    )
+
+
+def file_kind(name: str) -> str | None:
+    """Which entry of MODEL_FILES a file is; the shards of a model's weights all count as model.safetensors."""
+    if name in MODEL_FILES:
+        return name
+    return "model.safetensors" if name.endswith(".safetensors") else None
+
+
+def field_value(value) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= 80 else text[:79] + "…"
+
+
+def files_html(folder: dict, notes: dict, family: families.Family, lang: str) -> str:
+    """One folder's files, in MODEL_FILES order: size, what the kind of file is for, what the family's note says it
+    holds and the values of the fields the note names. A file the family has a note on but the folder lacks is listed too."""
+    present = {file_kind(f["name"]) or f["name"] for f in folder["files"]}
+    rows = [(f["name"], f) for f in folder["files"]] + [(name, None) for name in notes if name not in present]
+    order = list(MODEL_FILES)
+    rows.sort(key=lambda row: (order.index(file_kind(row[0])) if file_kind(row[0]) else len(order), row[0]))
+    out, said = [], set()
+    for name, file in rows:
+        kind = file_kind(name)
+        label, what = MODEL_FILES[kind][lang] if kind else (pick(lang, "其他", "other"), pick(lang, "這一頁沒有它的說明。", "This page has no note on it."))
+        note = notes.get(kind or name)
+        held = f"<span>{esc(family.name)}{pick(lang, '：', ': ')}{prose_html(note.text[lang])}</span>" if note else ""
+        if kind and kind in said:  # another shard of the weights: the notes are on the first
+            what, held = pick(lang, "權重的另一個分片。", "Another shard of the weights."), ""
+        said.add(kind)
+        size = fmt_bytes(file["bytes"]) if file else pick(lang, "這個 checkpoint 沒有", "not in this checkpoint")
+        fields = "".join(f'<li><span class="tk">{esc(k)}</span> {esc(field_value(v))}</li>' for k, v in (file or {}).get("fields", {}).items())
+        out.append(
+            f'<div><dt><span class="tk">{esc(name)}</span><small>{size}</small></dt>'
+            f'<dd><b>{label}</b><span>{prose_html(what)}</span>{held}'
+            + (f'<ul class="file-fields">{fields}</ul>' if fields else "") + "</dd></div>"
+        )
+    return f'<dl class="glossary files">{"".join(out)}</dl>'
+
+
+def folder_html(info: dict, lang: str) -> str:
+    """The files in the model's folder, and in its MTP drafter's once that is loaded."""
+    family = families.get(info["family"])
+    folder = info["folder"]
+    where = f'<span class="tk">{esc(folder["path"])}</span>'
+    if folder["revision"]:
+        rev = folder["revision"][:7]
+        if families.REVISIONS.get(info["model_id"]) == folder["revision"]:
+            which = pick(lang, f"從 Hub 下載的 checkpoint，revision {rev}：app 固定下載這個 commit（`REVISIONS`），所以每次下載都是同樣的檔案。",
+                         f"A checkpoint downloaded from the Hub at revision {rev}, the commit the app pins it to (`REVISIONS`), so every download gets these same files. ")
+        else:
+            which = pick(lang, f"從 Hub 下載的 checkpoint，revision {rev}，是下載當時 `main` 指向的 commit；之後再下載可能拿到更新的。",
+                         f"A checkpoint downloaded from the Hub at revision {rev}, the commit `main` pointed to then; a later download may get a newer one. ")
+        how = which + pick(
+            lang,
+            "檔案放在 `snapshots/<revision>/`，每個都是連結，指向 `blobs/` 裡用 hash 命名的檔案（系統不能建連結時，例如沒開開發者模式的 Windows，就直接複製），"
+            "所以兩個 revision 共用的檔案只存一份。同一個 revision 在每台電腦、每種作業系統上都是同樣的檔案，不同的只有載入的方式（上面的裝置和精度）。",
+            "The files sit in `snapshots/<revision>/`, each a link to a file in `blobs/` named by its hash (a copy where the system cannot make links, "
+            "as on Windows without developer mode), so a file two revisions share is stored once. A revision is the same files on every computer and "
+            "every operating system; only how they are loaded differs (the device and precision above).",
+        )
+    else:
+        how = pick(lang, "一個磁碟上的 checkpoint，直接從這裡載入。", "A checkpoint on disk, loaded in place.")
+    drafter = info.get("drafter") or {}
+    extra = ""
+    if drafter.get("folder"):
+        extra = (
+            f'<h5 class="gloss-head">{pick(lang, "MTP 草稿模型", "The MTP drafter")} <small>{esc(drafter["folder"]["path"])}</small></h5>'
+            + files_html(drafter["folder"], family.drafter_file_notes, family, lang)
+        )
+    return (
+        f'<div class="card"><h4>{pick(lang, "模型資料夾", "The model folder")}</h4><p class="card-sub">'
+        + pick(lang, f"模型的每個檔案都在 {where}。", f"Every file of the model is in {where}. ")
+        + prose_html(how)
+        + pick(lang, "下面是每個檔案的大小和用途，以及它在這個家族的 checkpoint 裡裝了什麼；欄位的值是從檔案讀出來的。",
+               " Below is each file's size and purpose, and what it holds in this family's checkpoints; the values of the fields are read from the files.")
+        + f'</p>{files_html(folder, family.file_notes, family, lang)}{extra}</div>'
     )

@@ -1,7 +1,7 @@
 """The harness, the parsers and the UI all assume things about each model's real tokenizer
 and chat template. These tests check those assumptions against the real files, for every
 model in the menu. Only the tokenizer is loaded (a few seconds), and the processor for the
-tests with media; a model that is not in the local Hugging Face cache is skipped."""
+tests with media; a model not yet downloaded into models/ (llm.MODELS_DIR) is skipped."""
 
 import os
 import re
@@ -11,11 +11,13 @@ import pytest
 from huggingface_hub import try_to_load_from_cache
 
 import families
+import llm
 import render
 import media
 from agent import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, Run, RunSettings
 from fakes import FakeLLM, gemma_call, qwen_call
-from llm import LocalLLM
+from html_check import assert_balanced
+from llm import MODELS_DIR, LocalLLM
 from tools import TOOLS
 
 SAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
@@ -34,15 +36,16 @@ def model(request):
 
     # Look for the files themselves: with only config.json cached, local_files_only=True fails on Gemma's
     # tokenizer with a ValueError and loads Qwen's empty, rather than raising an OSError.
-    files = [try_to_load_from_cache(request.param, f) for f in ("config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja")]
+    revision = families.REVISIONS.get(request.param)
+    files = [try_to_load_from_cache(request.param, f, cache_dir=MODELS_DIR, revision=revision) for f in ("config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja")]
     if not all(isinstance(f, str) for f in files):
-        pytest.skip(f"{request.param} is not in the local Hugging Face cache")
+        pytest.skip(f"{request.param} at {revision} is not downloaded into {MODELS_DIR}")
     folder = os.path.dirname(files[0])
     m = LocalLLM.__new__(LocalLLM)
     m.tokenizer = AutoTokenizer.from_pretrained(folder)
     m.config = AutoConfig.from_pretrained(folder)
     m.family = families.for_model_type(m.config.model_type)
-    m.folder = folder
+    m.folder, m.model_id = folder, request.param
     return m
 
 
@@ -85,6 +88,22 @@ def after_call(name, args, result='{"ok": true}'):
         ]},
         {"role": "tool", "tool_call_id": "call_1_0", "name": name, "content": result},
     ]
+
+
+def test_every_file_in_the_model_folder_is_explained_and_has_the_fields_its_note_names(model):
+    folders = [(model.folder, model.family.file_notes)]
+    if model.model_id in families.DRAFTERS:
+        drafter = families.DRAFTERS[model.model_id]
+        config = try_to_load_from_cache(drafter, "config.json", cache_dir=MODELS_DIR, revision=families.REVISIONS.get(drafter))
+        if isinstance(config, str):
+            folders.append((os.path.dirname(config), model.family.drafter_file_notes))
+    for folder, notes in folders:
+        files = llm.describe_folder(folder, notes)["files"]
+        assert [f["name"] for f in files if render.file_kind(f["name"]) is None] == []
+        for f in files:
+            if f["name"] in notes:
+                assert set(f["fields"]) == set(notes[f["name"]].fields), f["name"]
+        assert_balanced(render.files_html({"files": files}, notes, model.family, "en"))
 
 
 def test_control_tokens_are_single_tokens(model):

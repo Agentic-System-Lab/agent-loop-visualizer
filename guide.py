@@ -388,6 +388,8 @@ SECTIONS = [
                    "message and decodes them for the model's processor ({{media}})."},
             {"zh": "`render.py`：把事件列表折成 step（[[render.py|def build(events: list[dict])]]），再畫成 HTML。",
              "en": "`render.py`: folds the event list into steps ([[render.py|def build(events: list[dict])]]) and draws them as HTML."},
+            {"zh": "`models/`：下載的模型，每個模型一個資料夾，git 不追蹤（{{files}}）。",
+             "en": "`models/`: the downloaded models, one folder each, which git ignores ({{files}})."},
             {"zh": "`i18n.py`：頁面的兩種語言，繁體中文和英文；`pick()` 照語言挑出其中一段文字（[[i18n.py|def pick(]]）。",
              "en": "`i18n.py`: the page's two languages, Traditional Chinese and English; `pick()` chooses the text for one of them ([[i18n.py|def pick(]])."},
         ),
@@ -422,9 +424,10 @@ SECTIONS = [
          "en": "All of these differences go into a `Family`, and the rest of the code just asks the family; there is no `if Gemma` branch anywhere:"},
         Code("families/__init__.py", "class Family:", end="def special_re(self)",
              caption={"zh": "欄位分三組：讀模型輸出用的、把對話寫回 chat template 用的、畫面用的。最後幾個有預設值，只有某些家族需要，"
-                            "例如 Qwen 在 `processor_kwargs` 裡給 processor 的影片設定。",
+                            "例如 Qwen 在 `processor_kwargs` 裡給 processor 的影片設定；`file_notes` 和 `drafter_file_notes` 說明模型資料夾裡的每個檔案（{{files}}）。",
                       "en": "The fields come in three groups: for reading the model's output, for writing the conversation back for the chat template, and for the page. "
-                            "The last few have defaults and only some families need them, such as the video setting Qwen gives its processor in `processor_kwargs`."}),
+                            "The last few have defaults and only some families need them, such as the video setting Qwen gives its processor in `processor_kwargs`; "
+                            "`file_notes` and `drafter_file_notes` explain each file in the model folder ({{files}})."}),
         {"zh": "載入模型時，用 checkpoint 的 `config.json` 裡的 `model_type` 找出 family。停止 token 是 generation config 列的，再加上 family 宣告的："
                "Qwen3.5 的 checkpoint 只列了 `<|endoftext|>`，沒有列每個回合結尾的 `<|im_end|>`，少了 family 這一層，模型回答完會繼續寫下去。"
                "Qwen 的 `<think>`、`<tool_call>` 在 tokenizer 裡也沒有標成 special，同樣由 family 補上。"
@@ -444,6 +447,168 @@ SECTIONS = [
                "a matching `model_type` picks it automatically."},
         Code("families/qwen3_5.py", "QWEN3_5 = Family(",
              caption={"zh": "Qwen3.5 的 family 幾乎都是資料，只有 `parse` 是程式。", "en": "Qwen3.5's family is almost all data; only `parse` is code."}),
+    )),
+    Section("files", "model",
+            {"zh": "模型資料夾：models/ 裡的每個檔案", "en": "The model folder: every file in models/"},
+            {"zh": "`from_pretrained` 載入的東西，全部來自 `models/` 裡每個模型各自的資料夾；兩個模型和 Gemma 的草稿模型分別說明。",
+             "en": "Everything `from_pretrained` loads comes from one folder per model in `models/`; here is each, for both models and Gemma's drafter."}, (
+        {"zh": "`_download()` 用 `snapshot_download()` 把模型下載到 `MODELS_DIR`（[[llm.py|MODELS_DIR = Path(]]）：預設是專案裡的 `models/`，git 不會追蹤它；"
+               "設定 `HF_HUB_CACHE` 就換到別的地方。下載的是 `REVISIONS` 固定的 commit（[[families/__init__.py|REVISIONS = {]]），不是當下的 `main`，"
+               "所以不管什麼時候下載，拿到的都是這一頁寫作和測試時用的檔案。已經下載過的檔案不會再抓，連不上 Hub 時直接用資料夾裡現有的。",
+         "en": "`_download()` has `snapshot_download()` fetch a model into `MODELS_DIR` ([[llm.py|MODELS_DIR = Path(]]): by default the project's `models/`, "
+               "which git ignores; `HF_HUB_CACHE` moves it elsewhere. It downloads the commit pinned in `REVISIONS` "
+               "([[families/__init__.py|REVISIONS = {]]), not whatever `main` is by then, so whenever it runs, it gets the files this page was "
+               "written and tested against. Files already there are not fetched again, and when the Hub cannot be reached, what the folder holds is used."},
+        Code("llm.py", "def _download("),
+        {"zh": "`models/` 裡是 Hugging Face 的快取格式：", "en": "Inside, `models/` is laid out as Hugging Face's cache:"},
+        (
+            {"zh": "`models--google--gemma-4-E2B-it/`：每個 repository 一個資料夾，id 裡的 `/` 換成 `--`。",
+             "en": "`models--google--gemma-4-E2B-it/`: one folder per repository, with the `/` in its id turned into `--`."},
+            {"zh": "`refs/main`：下載時 `main` 指向的 revision（一個 commit hash），只有照 `main` 下載時才會寫，例如沒加 `--revision` 的 `hf download`；"
+                   "app 照 `REVISIONS` 的 commit 下載，用不到它。",
+             "en": "`refs/main`: the revision (a commit hash) that `main` pointed to, written only by a download that asks for `main`, such as "
+                   "`hf download` without `--revision`; the app downloads the commit in `REVISIONS` and does not need it."},
+            {"zh": "`snapshots/<revision>/`：照 repository 原樣排好的檔案，`from_pretrained` 拿到的就是這個資料夾。裡面每個檔案都是連結（Windows 不能建連結時是複製）。",
+             "en": "`snapshots/<revision>/`: the files as the repository has them; this is the folder `from_pretrained` is given. "
+                   "Each file in it is a link (a copy on Windows when links cannot be made)."},
+            {"zh": "`blobs/`：檔案本身，用 hash 命名，兩個 revision 共用的檔案只存一份。Hub 用 Xet 存的檔案（權重和 `tokenizer.json`）放在 `models/` 最上層的 `blobs/`，"
+                   "不同的 repository 也共用，模型自己的 `blobs/` 再連過去。",
+             "en": "`blobs/`: the files themselves, named by their hash, so a file two revisions share is stored once. Files the Hub stores with Xet "
+                   "(the weights and `tokenizer.json`) sit in the `blobs/` at the top of `models/`, shared across repositories too, and the model's "
+                   "own `blobs/` links there."},
+            {"zh": "`trees/<revision>.json`：那個 revision 有哪些檔案的清單，存下來備用。",
+             "en": "`trees/<revision>.json`: a cached list of that revision's files."},
+            {"zh": "`CACHEDIR.TAG`：標明這是快取資料夾，備份工具可以跳過。",
+             "en": "`CACHEDIR.TAG`: marks the folder as a cache, so backup tools can skip it."},
+        ),
+        {"zh": "同一個 revision 在 macOS、Linux 加 CUDA 或只有 CPU 的電腦上，都是一模一樣的檔案。不同的是載入的方式：`pick_device()` 選裝置（[[llm.py|def pick_device()]]），"
+               "權重在 GPU 上照檔案的 bfloat16 載入，在 CPU 上轉成 float32，記憶體是兩倍。",
+         "en": "A revision is exactly the same files on macOS, on Linux with CUDA or on a computer with only a CPU. What differs is how they load: "
+               "`pick_device()` picks the device ([[llm.py|def pick_device()]]), and the weights load in the files' bfloat16 on a GPU but become "
+               "float32 on a CPU, twice the memory."},
+        {"zh": "載入時，每個檔案由誰讀：", "en": "When the model loads, which code reads which file:"},
+        (
+            {"zh": "`config.json`：`AutoConfig` 先讀它，`model_type` 決定 family（[[llm.py|self.family = families.for_model_type(]]），模型分頁上方的規格也來自它。",
+             "en": "`config.json`: `AutoConfig` reads it first, and its `model_type` picks the family ([[llm.py|self.family = families.for_model_type(]]); "
+                   "the specs at the top of the Model tab come from it too."},
+            {"zh": "`tokenizer.json`、`tokenizer_config.json`、`chat_template.jinja` 和 processor 的設定檔：`AutoProcessor` 把它們讀成一個 processor"
+                   "（[[llm.py|self.processor = AutoProcessor.from_pretrained(files)]]）；chat template 由 `render()` 執行（[[llm.py|def render(self, messages]]）。",
+             "en": "`tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja` and the processor's settings: `AutoProcessor` reads them into one "
+                   "processor ([[llm.py|self.processor = AutoProcessor.from_pretrained(files)]]); `render()` runs the chat template ([[llm.py|def render(self, messages]])."},
+            {"zh": "權重：`AutoModelForMultimodalLM` 照 `config.json` 建好模型，再把 `.safetensors` 裡的 tensor 依名稱填進去"
+                   "（[[llm.py|self.model = AutoModelForMultimodalLM.from_pretrained(]]）。",
+             "en": "The weights: `AutoModelForMultimodalLM` builds the model from `config.json` and fills it with the tensors of the `.safetensors` file "
+                   "by name ([[llm.py|self.model = AutoModelForMultimodalLM.from_pretrained(]])."},
+            {"zh": "`generation_config.json`：停止 token（[[llm.py|eos = self.model.generation_config.eos_token_id]]）和建議的抽樣設定（[[llm.py|def _sampling_defaults(self)]]）。",
+             "en": "`generation_config.json`: the stop tokens ([[llm.py|eos = self.model.generation_config.eos_token_id]]) and the recommended sampling "
+                   "settings ([[llm.py|def _sampling_defaults(self)]])."},
+            {"zh": "`README.md`、`LICENSE`、`.gitattributes`：給人看的模型卡、授權和 Hub 上 git 的設定，app 不讀。",
+             "en": "`README.md`, `LICENSE` and `.gitattributes`: the model card, the license and the settings of the Hub's git, for people; the app does not read them."},
+        ),
+        {"zh": "**Gemma 4 E2B**（`google/gemma-4-E2B-it`，9 個檔案，約 10.3 GB）：",
+         "en": "**Gemma 4 E2B** (`google/gemma-4-E2B-it`, 9 files, about 10.3 GB):"},
+        (
+            {"zh": "`config.json`（5 kB）：`Gemma4ForConditionalGeneration`，分三部分。`text_config` 是 35 層的語言模型：28 層 sliding window（只看最後 512 個 token）、"
+                   "7 層 full attention，hidden size 1536，8 個 attention head 共用 1 組 key / value；最後 20 層（`num_kv_shared_layers`）不自己算 key / value，"
+                   "用前面的層算好的。`vision_config` 是 16 層的視覺編碼器，一張圖最多變成 280 個 token；`audio_config` 是 12 層的音訊編碼器。脈絡上限 131,072 個 token。",
+             "en": "`config.json` (5 kB): `Gemma4ForConditionalGeneration`, in three parts. `text_config` is the 35-layer language model: 28 sliding window "
+                   "layers, which see only the last 512 tokens, and 7 full attention layers, hidden size 1536, 8 attention heads sharing 1 set of keys and "
+                   "values; the last 20 layers (`num_kv_shared_layers`) compute no keys and values of their own but use those of earlier layers. "
+                   "`vision_config` is a 16-layer vision encoder that makes an image at most 280 tokens, and `audio_config` a 12-layer audio encoder. "
+                   "The context limit is 131,072 tokens."},
+            {"zh": "`generation_config.json`（208 B）：停止 token `[1, 106, 50]`，也就是 `<eos>`、`<turn|>`、`<|tool_response>`；建議 T 1.0、top-p 0.95、top-k 64。",
+             "en": "`generation_config.json` (208 B): the stop tokens `[1, 106, 50]`, that is `<eos>`, `<turn|>` and `<|tool_response>`; recommended "
+                   "T 1.0, top-p 0.95, top-k 64."},
+            {"zh": "`model.safetensors`（10.2 GB）：2,011 個 tensor、5.12B 個參數，全部 bfloat16。最大的是 Per-Layer Embeddings（`embed_tokens_per_layer`，2.35B，占 46%）："
+                   "35 層各替 262,144 個 token 存一個 256 維的向量，只查表、不做矩陣乘法，所以名字裡算的是有效參數（E2B）。"
+                   "其餘是 35 層本身 1.88B、輸入的 embedding 0.40B、音訊編碼器 0.30B、視覺編碼器 0.17B。",
+             "en": "`model.safetensors` (10.2 GB): 2,011 tensors, 5.12B parameters, all bfloat16. The largest part is the Per-Layer Embeddings "
+                   "(`embed_tokens_per_layer`, 2.35B, 46%): each of the 35 layers keeps a 256-wide vector for each of the 262,144 tokens, only looked up "
+                   "and never multiplied, which is why the name counts effective parameters (E2B). The rest is the 35 layers themselves at 1.88B, "
+                   "the input embedding at 0.40B, the audio encoder at 0.30B and the vision encoder at 0.17B."},
+            {"zh": "`tokenizer.json`（32 MB）：SentencePiece 風格的 BPE，262,144 個 token、514,906 條 merges；空白換成 `▁` 接在下一個詞前面，詞彙表沒有的字元拆成 UTF-8 byte。"
+                   "`tokenizer_config.json`（3 kB）替控制 token 取角色名稱（`sot_token` 是 `<|turn>`、`stc_token` 是 `<|tool_call>` 等等）。",
+             "en": "`tokenizer.json` (32 MB): a SentencePiece-style BPE with 262,144 tokens and 514,906 merges; a space becomes `▁` in front of the next word, "
+                   "and a character the vocabulary lacks splits into UTF-8 bytes. `tokenizer_config.json` (3 kB) gives the control tokens their roles "
+                   "(`sot_token` is `<|turn>`, `stc_token` `<|tool_call>` and so on)."},
+            {"zh": "`chat_template.jinja`（19 kB）：寫出 `<|turn>system` / `user` / `model` 回合、思考的 `<|think|>`、工具的 `<|tool>declaration:…<tool|>`，以及附件的佔位 token（{{context}}）。",
+             "en": "`chat_template.jinja` (19 kB): writes the `<|turn>system` / `user` / `model` turns, the `<|think|>` for thinking, the tools as "
+                   "`<|tool>declaration:…<tool|>` and the attachments' placeholders ({{context}})."},
+            {"zh": "`processor_config.json`（1.7 kB）：一個檔案管三種輸入。圖片切成 16 像素的 patch、每 3×3 合併，最多 280 個 token；聲音取樣 16 kHz、128 個 mel 頻帶，"
+                   "每 40 ms 一個 token，最多 750 個（30 秒）；影片最多 32 格，每格最多 70 個 token（{{media}}）。",
+             "en": "`processor_config.json` (1.7 kB): one file for all three inputs. An image is cut into 16-pixel patches pooled 3×3, at most 280 tokens; "
+                   "sound is sampled at 16 kHz into 128 mel bands, one token per 40 ms and at most 750 (30 seconds); a video takes at most 32 frames of "
+                   "at most 70 tokens each ({{media}})."},
+        ),
+        {"zh": "**Qwen3.5 0.8B**（`Qwen/Qwen3.5-0.8B`，13 個檔案，約 1.8 GB）：",
+         "en": "**Qwen3.5 0.8B** (`Qwen/Qwen3.5-0.8B`, 13 files, about 1.8 GB):"},
+        (
+            {"zh": "`config.json`（2.9 kB）：`Qwen3_5ForConditionalGeneration`。`text_config` 是 24 層的語言模型，18 層 Gated DeltaNet（`linear_attention`）、"
+                   "6 層 full attention（每 4 層一層），hidden size 1024，8 個 head 配 2 組 key / value，脈絡上限 262,144；`vision_config` 是 12 層的視覺編碼器，"
+                   "圖片和影片共用；沒有聲音的編碼器。`mtp_num_hidden_layers: 1` 說權重裡附了一層 MTP。",
+             "en": "`config.json` (2.9 kB): `Qwen3_5ForConditionalGeneration`. `text_config` is the 24-layer language model, 18 Gated DeltaNet layers "
+                   "(`linear_attention`) and 6 full attention layers (one in every 4), hidden size 1024, 8 heads with 2 sets of keys and values, a context "
+                   "limit of 262,144; `vision_config` is a 12-layer vision encoder that images and video share; there is no sound encoder. "
+                   "`mtp_num_hidden_layers: 1` says the weights come with an MTP layer."},
+            {"zh": "沒有 `generation_config.json`：停止 token 只剩 `config.json` 的 `<|endoftext|>`，所以 family 補上 `<|im_end|>`；"
+                   "建議的抽樣設定（T 1.0、top-p 1.0、top-k 20）也由 family 提供（[[families/qwen3_5.py|sampling={]]）。",
+             "en": "No `generation_config.json`: the only stop token left is `config.json`'s `<|endoftext|>`, so the family adds `<|im_end|>`; the "
+                   "recommended sampling settings (T 1.0, top-p 1.0, top-k 20) come from the family too ([[families/qwen3_5.py|sampling={]])."},
+            {"zh": "`model.safetensors-00001-of-00001.safetensors`（1.7 GB）：只有一個分片，檔名照分片的格式取；`model.safetensors.index.json` 記下 488 個 tensor 各在哪個分片。"
+                   "0.87B 個參數：24 層 0.50B、embedding 0.25B、視覺編碼器 0.10B，還有 20M 的 MTP 層（`mtp.`），transformers 載入時跳過。"
+                   "大多是 bfloat16，Gated DeltaNet 層的 `A_log` 和 norm 以 float32 存。",
+             "en": "`model.safetensors-00001-of-00001.safetensors` (1.7 GB): a single shard, named in the sharded format, with "
+                   "`model.safetensors.index.json` recording which shard each of the 488 tensors is in. 0.87B parameters: the 24 layers at 0.50B, the "
+                   "embedding at 0.25B, the vision encoder at 0.10B, and a 20M MTP layer (`mtp.`) that transformers skips when loading. Most are "
+                   "bfloat16; the Gated DeltaNet layers' `A_log` and norms are stored in float32."},
+            {"zh": "`tokenizer.json`（12.8 MB）：GPT-2 式的 byte-level BPE，248,044 個 token 加上 26 個 added tokens、247,587 條 merges，先做 NFC 正規化；每個 byte 寫成一個可印出的字元，空白是 `Ġ`。"
+                   "`vocab.json`（6.7 MB）和 `merges.txt`（3.4 MB）是同一份詞彙和 merges 的舊格式。"
+                   "`tokenizer_config.json`（16.7 kB）把 `<|im_end|>` 當 `eos_token`，裡面還有一份和 `chat_template.jinja` 一樣的 chat template。",
+             "en": "`tokenizer.json` (12.8 MB): a byte-level BPE as GPT-2's, 248,044 tokens plus 26 added ones and 247,587 merges after NFC normalization; every byte is "
+                   "spelled as one printable character, a space as `Ġ`. `vocab.json` (6.7 MB) and `merges.txt` (3.4 MB) are the same vocabulary and "
+                   "merges in the older format. `tokenizer_config.json` (16.7 kB) takes `<|im_end|>` as its `eos_token` and also holds a chat template "
+                   "identical to `chat_template.jinja`."},
+            {"zh": "`chat_template.jinja`（7.8 kB）：ChatML 格式，工具 schema 放在 `<tools>…</tools>`，工具結果是一則 `user` 訊息，思考寫在 `<think>` 裡（{{context}}）。",
+             "en": "`chat_template.jinja` (7.8 kB): ChatML, with the tool schemas in `<tools>…</tools>`, a tool result as a `user` message and the "
+                   "thinking inside `<think>` ({{context}})."},
+            {"zh": "`preprocessor_config.json` 和 `video_preprocessor_config.json`：圖片切成 16 像素的 patch，每 2×2 合成一個 token，所以一個 token 涵蓋 32×32 像素，"
+                   "一張圖介於 65,536 和 16,777,216 像素之間；影片每 2 格畫面合成一組 token（{{media}}）。",
+             "en": "`preprocessor_config.json` and `video_preprocessor_config.json`: an image is cut into 16-pixel patches, 2×2 of them merged into one "
+                   "token, so a token covers 32×32 pixels, and an image is kept between 65,536 and 16,777,216 pixels; in a video, every 2 frames make "
+                   "one set of tokens ({{media}})."},
+        ),
+        {"zh": "**Gemma 4 E2B 的 MTP 草稿模型**（`google/gemma-4-E2B-it-assistant`，7 個檔案，約 190 MB）：",
+         "en": "**Gemma 4 E2B's MTP drafter** (`google/gemma-4-E2B-it-assistant`, 7 files, about 190 MB):"},
+        (
+            {"zh": "`config.json`：`Gemma4AssistantForCausalLM`，4 層（3 層 sliding window、1 層 full attention），hidden size 256，主模型是 1536（`backbone_hidden_size`）；"
+                   "4 層都讀主模型的 key / value（`num_kv_shared_layers: 4`）。輸出用分群：262,144 個 token 分成 2,048 群、每群 128 個，先替各群打分，"
+                   "只對最高的 32 群、共 4,096 個 token 算 logits（{{mtp}}）。",
+             "en": "`config.json`: `Gemma4AssistantForCausalLM`, 4 layers (3 sliding window, 1 full attention), hidden size 256 next to the model's 1536 "
+                   "(`backbone_hidden_size`); all 4 read the model's keys and values (`num_kv_shared_layers: 4`). Its output is clustered: the 262,144 "
+                   "tokens are sorted into 2,048 clusters of 128, the clusters are scored first, and logits are computed only for the 4,096 tokens of "
+                   "the best 32 ({{mtp}})."},
+            {"zh": "`generation_config.json`：`num_assistant_tokens: 6`，每次猜 6 個 token（[[llm.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]]）。",
+             "en": "`generation_config.json`: `num_assistant_tokens: 6`, six guesses at a time "
+                   "([[llm.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]])."},
+            {"zh": "`model.safetensors`（158 MB）：77.7M 個參數。67M 是 `embed_tokens`（262,144 個 token × 256 維），當作輸出的表；"
+                   "`pre_projection` 把主模型的 token embedding 接上 hidden state（3,072 維）壓成 256 維，`post_projection` 再放大回 1,536；4 層本身只有約 9M。"
+                   "`masked_embedding.token_ordering` 是 262,144 個整數，依群列出 token。",
+             "en": "`model.safetensors` (158 MB): 77.7M parameters. 67M of them are `embed_tokens` (262,144 tokens × 256), used as the output table; "
+                   "`pre_projection` narrows the model's token embedding next to its hidden state (3,072 wide) to 256, and `post_projection` widens it "
+                   "back to 1,536; the 4 layers themselves are only about 9M. `masked_embedding.token_ordering` is 262,144 integers listing the tokens "
+                   "cluster by cluster."},
+            {"zh": "`tokenizer.json`、`tokenizer_config.json`：和主模型同一套詞彙，app 不載入，草稿模型讀寫的都是主模型的 token id。",
+             "en": "`tokenizer.json` and `tokenizer_config.json`: the same vocabulary as the model's; the app does not load them, since the drafter reads "
+                   "and writes the model's token ids."},
+        ),
+        {"zh": "模型分頁最下面的「模型資料夾」列出目前載入的模型的這些檔案：`describe_folder()` 讀出每個檔案的大小，以及 family 的說明提到的欄位在檔案裡的值"
+               "（[[llm.py|def describe_folder(]]）。說明本身寫在 family 裡（Gemma：[[families/gemma4.py|file_notes=FILES,]]；Qwen：[[families/qwen3_5.py|file_notes=FILES,]]），"
+               "所以換成同一家族的另一個 checkpoint，數字會跟著它的檔案變。",
+         "en": "The model folder card at the bottom of the Model tab lists these files for the model that is loaded: `describe_folder()` reads each "
+               "file's size and the values of the fields the family's notes mention ([[llm.py|def describe_folder(]]). The notes themselves are on the "
+               "family (Gemma: [[families/gemma4.py|file_notes=FILES,]]; Qwen: [[families/qwen3_5.py|file_notes=FILES,]]), so another checkpoint of "
+               "the family shows its own numbers."},
+        Code("families/__init__.py", "class FileNote:"),
     )),
     Section("submit", "ui",
             {"zh": "送出問題：載入模型、開一條 thread 跑 agent", "en": "Sending a question: load the model, start a thread for the agent"},

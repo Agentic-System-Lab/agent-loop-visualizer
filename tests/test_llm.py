@@ -1,14 +1,18 @@
 """The hand-written decoding loop, run against a tiny scripted model and tokenizer."""
 
+import json
 import logging
+import os
 from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+import families
 import llm
-from families import GEMMA4
+from families import GEMMA4, FileNote
 from llm import LocalLLM, Sampling
 
 VOCAB = [
@@ -530,7 +534,7 @@ def fake_hub(monkeypatch, model_type="gemma4"):
     """Records each download and each from_pretrained, in order, and where it loaded from."""
     seen = []
 
-    def snapshot_download(model_id, allow_patterns=None):
+    def snapshot_download(model_id, revision=None, allow_patterns=None, cache_dir=None):
         seen.append(("download", model_id, allow_patterns))
         return f"/hub/{model_id}"
 
@@ -578,6 +582,44 @@ def test_a_checkpoint_on_disk_loads_in_place(monkeypatch, tmp_path):
         LocalLLM(str(tmp_path))
     assert [s for s in seen if s[0] == "download"] == []
     assert {path for _, path, _ in seen} == {str(tmp_path)}
+
+
+def test_models_download_at_their_pinned_revision_into_the_project_folder_git_ignores(monkeypatch):
+    seen = []
+    monkeypatch.setattr(llm, "snapshot_download", lambda model_id, **kwargs: seen.append(kwargs) or "/hub")
+    llm._download("google/gemma-4-E2B-it")
+    llm._download("someone/unpinned", "config.json")
+    assert seen == [
+        {"revision": families.REVISIONS["google/gemma-4-E2B-it"], "allow_patterns": None, "cache_dir": llm.MODELS_DIR},
+        {"revision": None, "allow_patterns": "config.json", "cache_dir": llm.MODELS_DIR},  # main
+    ]
+    root = Path(llm.__file__).resolve().parent
+    if not os.environ.get("HF_HUB_CACHE"):  # which moves them out of the project
+        assert llm.MODELS_DIR == root / "models"
+    assert "/models/" in (root / ".gitignore").read_text().split()
+
+
+def test_a_model_folder_lists_its_files_their_sizes_and_the_fields_its_notes_name(monkeypatch, tmp_path):
+    repo = tmp_path / "models--fake--gemma-test"
+    blob = repo / "blobs" / "3a5f"
+    blob.parent.mkdir(parents=True)
+    blob.write_text(json.dumps({"model_type": "gemma4", "text_config": {"sliding_window": 512}}))
+    snapshot = repo / "snapshots" / "3e22461f"
+    (snapshot / "extra").mkdir(parents=True)
+    (snapshot / "config.json").symlink_to("../../blobs/3a5f")  # as the Hub cache links it
+    (snapshot / "extra" / "notes.txt").write_text("hi")
+    (snapshot / ".cache" / "huggingface").mkdir(parents=True)
+    (snapshot / ".cache" / "huggingface" / "config.json.metadata").write_text("3a5f")  # hf download --local-dir's bookkeeping
+    monkeypatch.setattr(llm, "ROOT", tmp_path)
+    notes = {"config.json": FileNote({"zh": "", "en": ""}, ("text_config.sliding_window", "text_config.missing", "model_type.deeper"))}
+    assert llm.describe_folder(str(snapshot), notes) == {
+        "path": "models--fake--gemma-test/snapshots/3e22461f", "revision": "3e22461f",
+        "files": [
+            {"name": "config.json", "bytes": blob.stat().st_size, "fields": {"text_config.sliding_window": 512}},
+            {"name": "extra/notes.txt", "bytes": 2, "fields": {}},
+        ],
+    }
+    assert llm.describe_folder(str(snapshot / "extra"), notes)["revision"] is None  # a checkpoint on disk, not a download
 
 
 def test_the_drafter_loads_from_its_downloaded_files(monkeypatch):

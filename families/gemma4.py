@@ -8,7 +8,7 @@ so the arguments are not JSON and need their own small parser.
 import json
 import re
 
-from families import Family
+from families import Family, FileNote
 from i18n import pick
 
 STR = '<|"|>'
@@ -283,6 +283,108 @@ GROUPS = {"zh": [
     ]),
 ]}
 
+# What each file in a Gemma 4 checkpoint's folder holds, for the Model tab; render.MODEL_FILES says what each kind of
+# file is in any checkpoint. A note points at fields by name and the tab shows their values, so it fits every Gemma 4.
+FILES = {
+    "config.json": FileNote({
+        "zh": "一個檔案分三部分：`text_config` 是語言模型，`vision_config` 和 `audio_config` 是圖片和聲音的編碼器；"
+              "`image_token_id`、`audio_token_id`、`video_token_id` 是佔位 token，編碼器的輸出會放進它們的位置。"
+              "`text_config` 的 `layer_types` 混用 sliding window 層（只看最後 `sliding_window` 個 token）和 full attention 層；"
+              "最後 `num_kv_shared_layers` 層不自己算 key / value，直接用前面的層算好的，MTP 草稿模型讀的也是這一份；"
+              "`hidden_size_per_layer_input` 是 Per-Layer Embeddings 每個向量的長度。",
+        "en": "Three parts in one file: `text_config` is the language model, `vision_config` and `audio_config` are the image and sound encoders, "
+              "and `image_token_id`, `audio_token_id` and `video_token_id` are the placeholder tokens whose places the encoders' outputs take. "
+              "In `text_config`, `layer_types` mixes sliding window layers, which see only the last `sliding_window` tokens, with full attention layers; "
+              "the last `num_kv_shared_layers` layers compute no keys and values of their own but use those of earlier layers, which the MTP drafter reads too; "
+              "and `hidden_size_per_layer_input` is the length of each vector of the Per-Layer Embeddings.",
+    }, ("architectures", "text_config.sliding_window", "text_config.num_kv_shared_layers", "text_config.hidden_size_per_layer_input",
+        "vision_soft_tokens_per_image")),
+    "generation_config.json": FileNote({
+        "zh": "`eos_token_id` 列了三個停止 token：`<eos>`、結束回答的 `<turn|>`，以及 `<|tool_response>`：模型寫完工具呼叫就自己停下，"
+              "等 harness 把結果接上。`temperature`、`top_p`、`top_k` 是 Google 建議的抽樣設定，也是側欄的預設值。",
+        "en": "`eos_token_id` lists three stop tokens: `<eos>`, `<turn|>`, which ends an answer, and `<|tool_response>`, so the model stops by itself "
+              "after a tool call and waits for the harness to add the result. `temperature`, `top_p` and `top_k` are the sampling settings Google "
+              "recommends, and the sidebar's defaults.",
+    }, ("eos_token_id", "temperature", "top_p", "top_k")),
+    "model.safetensors": FileNote({
+        "zh": "權重，bfloat16：語言模型、視覺編碼器（`vision_tower`）和音訊編碼器（`audio_tower`）。"
+              "很大一部分是 `embed_tokens_per_layer`，也就是 Per-Layer Embeddings：每一層替每個 token 各存一個小向量。"
+              "這些向量只查表、不參與矩陣乘法，所以 Gemma 4 的名字算的是有效參數，E2B 的 E 就是 effective。",
+        "en": "The weights, in bfloat16: the language model, the vision encoder (`vision_tower`) and the audio encoder (`audio_tower`). "
+              "A large share of them is `embed_tokens_per_layer`, the Per-Layer Embeddings: every layer keeps a small vector for every token. "
+              "Those vectors are only looked up, never multiplied, so Gemma 4's names count effective parameters: the E in E2B stands for effective.",
+    }),
+    "tokenizer.json": FileNote({
+        "zh": "SentencePiece 風格的 BPE，262,144 個 token：空白先換成 `▁`，接在下一個詞的開頭（`▁world`）；"
+              "詞彙表裡沒有的字元拆回 UTF-8 的 byte（`<0xE5>` 這種），不會變成 unknown token。"
+              "`<|turn>`、`<|tool_call>`、`<|channel>` 這些控制 token 是 added tokens，各佔一個 id。",
+        "en": "A BPE vocabulary of 262,144 tokens in SentencePiece's style: a space becomes `▁` at the start of the next word (`▁world`), "
+              "and a character the vocabulary lacks falls back to its UTF-8 bytes (like `<0xE5>`) instead of an unknown token. "
+              "Control tokens such as `<|turn>`, `<|tool_call>` and `<|channel>` are added tokens, one id each.",
+    }),
+    "tokenizer_config.json": FileNote({
+        "zh": "替每個控制 token 取了角色名稱：`sot_token` 是 `<|turn>`、`eot_token` 是 `<turn|>`、`stc_token` 是 `<|tool_call>`、"
+              "`soc_token` 是 `<|channel>`、`think_token` 是 `<|think|>`。`response_schema` 描述怎麼把回覆讀回思考、內容和工具呼叫；"
+              "這個 app 不用它，而是用 family 自己的 `parse` 讀回覆（見運作說明）。",
+        "en": "Gives each control token a role: `sot_token` is `<|turn>`, `eot_token` `<turn|>`, `stc_token` `<|tool_call>`, "
+              "`soc_token` `<|channel>` and `think_token` `<|think|>`. `response_schema` describes how to read a reply back into thinking, "
+              "content and tool calls; this app does not use it, and reads replies with the family's own `parse` (see How it works).",
+    }, ("tokenizer_class", "backend")),
+    "chat_template.jinja": FileNote({
+        "zh": "把對話寫成 `<|turn>system`、`<|turn>user`、`<|turn>model` 三種回合，每個以 `<turn|>` 結尾。打開思考時在 system turn 放 `<|think|>`；"
+              "工具寫成 `<|tool>declaration:…<tool|>` 放進 system turn；之前的工具呼叫和結果寫回 model turn；"
+              "附件寫成 `<|image|>`、`<|audio|>`、`<|video|>`，再由 `encode()` 展開成媒體的 token。",
+        "en": "Writes the conversation as `<|turn>system`, `<|turn>user` and `<|turn>model` turns, each ending in `<turn|>`. With thinking on, "
+              "it puts `<|think|>` in the system turn; it writes the tools as `<|tool>declaration:…<tool|>` in the system turn, earlier tool calls "
+              "and their results back into the model turn, and an attachment as `<|image|>`, `<|audio|>` or `<|video|>`, which `encode()` "
+              "expands into the media's tokens.",
+    }),
+    "processor_config.json": FileNote({
+        "zh": "三個編碼器的輸入設定都在這裡：`image_processor` 把圖片切成 `patch_size` 像素的 patch 再合併，一張圖最多 `max_soft_tokens` 個 token；"
+              "`feature_extractor` 把 `sampling_rate` 的聲音轉成 mel 特徵，每 `audio_ms_per_token` 毫秒一個 token；"
+              "`video_processor` 最多取 `num_frames` 格畫面，每格的 token 比一張圖少。",
+        "en": "The inputs of all three encoders are set here: `image_processor` cuts an image into patches of `patch_size` pixels and pools them, "
+              "at most `max_soft_tokens` tokens per image; `feature_extractor` turns sound at `sampling_rate` into mel features, one token per "
+              "`audio_ms_per_token` ms; `video_processor` takes at most `num_frames` frames, each with fewer tokens than an image.",
+    }, ("processor_class", "image_processor.patch_size", "image_processor.max_soft_tokens", "feature_extractor.sampling_rate",
+        "audio_ms_per_token", "video_processor.num_frames", "video_processor.max_soft_tokens")),
+}
+
+# The MTP drafter's own files (DRAFTERS); llm.LocalLLM.load_drafter loads its config and weights, not its tokenizer.
+SAME_VOCABULARY = FileNote({
+    "zh": "和主模型同一套詞彙。這個 app 不載入它：草稿模型讀寫的都是主模型的 token id。",
+    "en": "The same vocabulary as the model's. The app does not load it: the drafter reads and writes the model's token ids.",
+})
+DRAFTER_FILES = {
+    "config.json": FileNote({
+        "zh": "`Gemma4AssistantForCausalLM`：只有幾層，`hidden_size` 比主模型的（`backbone_hidden_size`）小得多，"
+              "而且每一層都讀主模型的 key / value（`num_kv_shared_layers`），自己不存。輸出也不替每個 token 打分："
+              "詞彙表事先分成 `num_centroids` 群，先替各群打分，只對最高的 `centroid_intermediate_top_k` 群裡的 token 算 logits。",
+        "en": "`Gemma4AssistantForCausalLM`: only a few layers, with a `hidden_size` far smaller than the model's (`backbone_hidden_size`), "
+              "every one of which reads the model's keys and values (`num_kv_shared_layers`) instead of keeping its own. Its output does not score "
+              "every token either: the vocabulary is sorted into `num_centroids` clusters, the clusters are scored first, and logits are computed "
+              "only for the tokens of the best `centroid_intermediate_top_k`.",
+    }, ("text_config.num_hidden_layers", "text_config.hidden_size", "backbone_hidden_size", "text_config.num_kv_shared_layers",
+        "num_centroids", "centroid_intermediate_top_k")),
+    "generation_config.json": FileNote({
+        "zh": "`num_assistant_tokens` 是草稿模型每次先猜幾個 token 再交給主模型驗證，`load_drafter()` 讀的就是它；`is_assistant` 標明這是草稿模型。"
+              "抽樣設定和停止 token 跟主模型一樣，這個 app 用的是主模型的。",
+        "en": "`num_assistant_tokens` is how many tokens the drafter guesses before the model checks them, which is what `load_drafter()` reads; "
+              "`is_assistant` marks it as a drafter. The sampling settings and stop tokens are the model's, and the app uses the model's.",
+    }, ("num_assistant_tokens", "num_assistant_tokens_schedule", "is_assistant")),
+    "model.safetensors": FileNote({
+        "zh": "大部分是 `embed_tokens`：整個詞彙表在草稿模型窄窄的寬度下的向量，當作輸出的表（`lm_head` 跟它共用），因為輸入用的是主模型自己的 embedding。"
+              "`pre_projection` 把輸入（主模型的 token embedding 接上它的 hidden state）壓到草稿模型的寬度，`post_projection` 再把結果放大回主模型的寬度，"
+              "給下一次猜測用。`masked_embedding` 是分群的輸出：`centroids` 替各群打分，`token_ordering` 依群列出 token。",
+        "en": "Most of it is `embed_tokens`, the vocabulary at the drafter's narrow width, which serves as the output table (`lm_head` is tied to it), "
+              "since the input is the model's own embedding. `pre_projection` narrows that input, the model's token embedding next to its hidden state, "
+              "to the drafter's width, and `post_projection` widens the result back to the model's for the next guess. `masked_embedding` is the "
+              "clustered output: `centroids` scores the clusters and `token_ordering` lists the tokens cluster by cluster.",
+    }),
+    "tokenizer.json": SAME_VOCABULARY,
+    "tokenizer_config.json": SAME_VOCABULARY,
+}
+
 GEMMA4 = Family(
     key="gemma4",
     name="Gemma 4",
@@ -313,4 +415,6 @@ GEMMA4 = Family(
         "zh": "官方標示 2.3B effective：每層各自的 embedding 表（Per-Layer Embeddings）只做查表，不算進有效參數。",
         "en": "Officially 2.3B effective: each layer's own embedding table (Per-Layer Embeddings) is only looked up, so it does not count as effective parameters.",
     },
+    file_notes=FILES,
+    drafter_file_notes=DRAFTER_FILES,
 )

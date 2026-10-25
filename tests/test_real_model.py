@@ -44,6 +44,8 @@ def test_model_info_feeds_the_ui(gemma):
         assert isinstance(info["defaults"][key], (int, float)), key
     assert_balanced(render.model_html(info, lang="zh"))
     assert_balanced(render.special_tokens_html(info, lang="zh"))
+    assert_balanced(render.folder_html(info, lang="zh"))
+    assert {f["name"] for f in info["folder"]["files"]} >= {"config.json", "tokenizer.json", "chat_template.jinja"}
 
 
 def test_greedy_decoding_matches_generate(gemma):
@@ -82,6 +84,7 @@ def test_mtp_writes_what_plain_decoding_writes(gemma):
         pytest.skip(f"{gemma.model_id} has no MTP drafter")
     gemma.load_drafter()
     assert gemma.info["drafter"]["draft_tokens"] > 0
+    assert "num_assistant_tokens" in next(f for f in gemma.info["drafter"]["folder"]["files"] if f["name"] == "generation_config.json")["fields"]
     messages = [{"role": "system", "content": SYSTEM_WITH_TOOLS}, {"role": "user", "content": "台北現在幾點？紐約呢？"}]
     prompt = gemma.render(messages, [t.schema() for t in TOOLS.values()], False)
 

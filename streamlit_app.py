@@ -117,7 +117,7 @@ def current_llm() -> LocalLLM:
             st.session_state[key] = value
         st.session_state.sampling_for = model_id
     if st.session_state.mtp and llm.drafter_id and llm.drafter is None:
-        with st.spinner(tr(f"載入 MTP 草稿模型 {llm.drafter_id}（第一次要下載約 160 MB）…", f"Loading the MTP drafter {llm.drafter_id} (the first time downloads about 160 MB)…")):
+        with st.spinner(tr(f"載入 MTP 草稿模型 {llm.drafter_id}（第一次要下載約 190 MB）…", f"Loading the MTP drafter {llm.drafter_id} (the first time downloads about 190 MB)…")):
             llm.load_drafter()
     return llm
 
@@ -561,6 +561,7 @@ def model_panel(llm: LocalLLM, data: dict | None):
     offered = data["settings"].get("tools") if data else list(offered_tools())
     st.html(render.tools_html(TOOLS, settings["use_tools"], llm.family, lang, offered))
     st.html(render.special_tokens_html(llm.info, lang))
+    st.html(render.folder_html(llm.info, lang))
 
 
 # ---------- pages ----------

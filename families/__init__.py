@@ -5,10 +5,11 @@ What differs between Gemma 4 and Qwen3.5 is how the model writes its turns, its 
 tool calls, which tokens stop it, and what its control tokens mean. A family module describes all
 of that in one Family, and everything else asks the family.
 
-To run another checkpoint of a family that is already here, add its Hugging Face id to MODELS.
+To run another checkpoint of a family that is already here, add its Hugging Face id to MODELS, and the
+revision to download it at to REVISIONS (its MTP drafter's too, if it has one in DRAFTERS).
 To support a new family, write a module like qwen3_5.py (a parser for the model's output and
-notes on its control tokens) and add its Family to FAMILIES; the `model_type` in the checkpoint's
-config.json decides which family a model belongs to.
+notes on its control tokens and on the files of its checkpoints) and add its Family to FAMILIES; the
+`model_type` in the checkpoint's config.json decides which family a model belongs to.
 """
 
 import re
@@ -30,11 +31,30 @@ DRAFTERS = {
     "google/gemma-4-E2B-it": "google/gemma-4-E2B-it-assistant",
 }
 
+# The Hub revision (a commit) each model and drafter downloads at, so that whenever someone downloads one they get
+# the files the page was written and tested against, not whatever `main` has become. An id missing here downloads
+# at `main`. Moving one to a newer revision means rerunning test_chat_template.py and test_real_model.py, and
+# rereading the guide's section on the model folder, whose numbers come from these files.
+REVISIONS = {
+    "google/gemma-4-E2B-it": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "google/gemma-4-E2B-it-assistant": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+    "Qwen/Qwen3.5-0.8B": "2fc06364715b967f1860aea9cf38778875588b17",
+}
+
 # GPT-2's byte-level BPE, which Qwen's vocabulary uses, spells every byte as one printable character: printable
 # Latin-1 bytes stand for themselves and the rest move up to U+0100 and beyond, so a space is Ġ, a newline Ċ and
 # 如果 (six bytes of UTF-8) is å¦Ĥæŀľ. This maps each of those characters back to its byte.
 _PRINTABLE = [*range(0x21, 0x7F), *range(0xA1, 0xAD), *range(0xAE, 0x100)]
 BYTE_OF = {chr(b): b for b in _PRINTABLE} | {chr(0x100 + n): b for n, b in enumerate(b for b in range(256) if b not in _PRINTABLE)}
+
+
+@dataclass(frozen=True)
+class FileNote:
+    """What one file in a checkpoint's folder holds in this family. The Model tab shows the note next to the file,
+    with the values in this checkpoint of `fields`, dotted paths into a JSON file (text_config.sliding_window)."""
+
+    text: dict[str, str]  # language -> the note
+    fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -62,6 +82,8 @@ class Family:
     sampling: dict | None = None  # recommended temperature / top_p / top_k when a checkpoint ships none
     byte_level: bool = False  # the vocabulary spells bytes as characters, GPT-2 style (BYTE_OF); otherwise it is SentencePiece's
     processor_kwargs: dict = field(default_factory=dict)  # passed to the processor along with images, audio and video
+    file_notes: dict[str, FileNote] = field(default_factory=dict)  # a file in the checkpoint's folder -> what it holds in this family
+    drafter_file_notes: dict[str, FileNote] = field(default_factory=dict)  # the same for the folder of its MTP drafter (DRAFTERS)
 
     def show_piece(self, piece: str) -> str:
         """A vocabulary entry as the text it stands for, which is what a token's popover shows: ␣ for a space,

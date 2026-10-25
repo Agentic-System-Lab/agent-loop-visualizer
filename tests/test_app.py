@@ -333,6 +333,7 @@ def test_model_view(at, outputs):
     assert "huggingface.co/google/gemma-4-E2B-it" in html
     assert "解碼設定" in html and "動作空間：模型看得到的工具" in html
     assert "特殊 token（24 個）" in html
+    assert "模型資料夾" in html and "models/models--fake--gemma-test/snapshots/0123456789abcdef" in html
     assert len(at.dataframe) == 0  # no steps yet
 
     outputs += [tool_call("calculator", expression="6*7"), ANSWER]

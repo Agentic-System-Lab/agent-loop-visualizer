@@ -61,6 +61,8 @@ families/__init__.py: class Family: … def special_re(self)
         sampling: dict | None = None  # recommended temperature / top_p / top_k when a checkpoint ships none
         byte_level: bool = False  # the vocabulary spells bytes as characters, GPT-2 style (BYTE_OF); otherwise it is SentencePiece's
         processor_kwargs: dict = field(default_factory=dict)  # passed to the processor along with images, audio and video
+        file_notes: dict[str, FileNote] = field(default_factory=dict)  # a file in the checkpoint's folder -> what it holds in this family
+        drafter_file_notes: dict[str, FileNote] = field(default_factory=dict)  # the same for the folder of its MTP drafter (DRAFTERS)
 
         def show_piece(self, piece: str) -> str:
             """A vocabulary entry as the text it stands for, which is what a token's popover shows: ␣ for a space,
@@ -91,7 +93,7 @@ families/__init__.py: class Family: … def special_re(self)
 
 llm.py: self.family = families.for_model_type( … self.special_ids = set(
     self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
-    files = _download(model_id)
+    files = self.folder = _download(model_id)
     # The processor holds the tokenizer and, for a model that reads more than text, what turns files into its inputs.
     self.processor = AutoProcessor.from_pretrained(files)
     self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
@@ -152,7 +154,73 @@ families/qwen3_5.py: QWEN3_5 = Family(
         # Cap each video frame at the pixels the reference implementation (qwen-vl-utils) allows; transformers asks
         # for this to be said outright until it becomes the default.
         processor_kwargs={"cap_pixels_per_frame": True},
+        file_notes=FILES,
     )
+
+== files ==
+
+[[llm.py|MODELS_DIR = Path(]]
+    MODELS_DIR = Path(os.environ.get("HF_HUB_CACHE") or ROOT / "models").expanduser()
+
+[[families/__init__.py|REVISIONS = {]]
+    REVISIONS = {
+
+llm.py: def _download(
+    def _download(model_id: str, only: str | None = None) -> str:
+        """The model's folder in MODELS_DIR, after fetching the files it lacks (only `only`, if given), at the revision
+        families.REVISIONS pins it to.
+
+        from_pretrained(local_files_only=True) is no test of the cache: once config.json is cached, a tokenizer whose
+        own files are missing raises a ValueError (Gemma 4) or loads empty (Qwen3.5) rather than an OSError.
+        snapshot_download lists the model's files on the Hub and fetches only those the cache lacks; when the Hub
+        can't be reached it returns the cached folder, so a downloaded model still starts offline."""
+        if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
+            return model_id
+        return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
+
+[[llm.py|def pick_device()]]
+    def pick_device() -> str:
+
+[[llm.py|self.family = families.for_model_type(]]
+    self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
+
+[[llm.py|self.processor = AutoProcessor.from_pretrained(files)]]
+    self.processor = AutoProcessor.from_pretrained(files)
+
+[[llm.py|def render(self, messages]]
+    def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
+
+[[llm.py|self.model = AutoModelForMultimodalLM.from_pretrained(]]
+    self.model = AutoModelForMultimodalLM.from_pretrained(files, dtype=self.dtype, device_map=self.device).eval()
+
+[[llm.py|eos = self.model.generation_config.eos_token_id]]
+    eos = self.model.generation_config.eos_token_id
+
+[[llm.py|def _sampling_defaults(self)]]
+    def _sampling_defaults(self) -> dict:
+
+[[families/qwen3_5.py|sampling={]]
+    sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},
+
+[[llm.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]]
+    self.draft_tokens = self.drafter.generation_config.num_assistant_tokens  # guesses per forward pass
+
+[[llm.py|def describe_folder(]]
+    def describe_folder(folder: str, notes: dict) -> dict:
+
+[[families/gemma4.py|file_notes=FILES,]]
+    file_notes=FILES,
+
+[[families/qwen3_5.py|file_notes=FILES,]]
+    file_notes=FILES,
+
+families/__init__.py: class FileNote:
+    class FileNote:
+        """What one file in a checkpoint's folder holds in this family. The Model tab shows the note next to the file,
+        with the values in this checkpoint of `fields`, dotted paths into a JSON file (text_config.sliding_window)."""
+
+        text: dict[str, str]  # language -> the note
+        fields: tuple[str, ...] = ()
 
 == submit ==
 
@@ -182,7 +250,7 @@ streamlit_app.py: @st.cache_resource(max_entries=1 … def current_llm() -> Loca
                 st.session_state[key] = value
             st.session_state.sampling_for = model_id
         if st.session_state.mtp and llm.drafter_id and llm.drafter is None:
-            with st.spinner(tr(f"載入 MTP 草稿模型 {llm.drafter_id}（第一次要下載約 160 MB）…", f"Loading the MTP drafter {llm.drafter_id} (the first time downloads about 160 MB)…")):
+            with st.spinner(tr(f"載入 MTP 草稿模型 {llm.drafter_id}（第一次要下載約 190 MB）…", f"Loading the MTP drafter {llm.drafter_id} (the first time downloads about 190 MB)…")):
                 llm.load_drafter()
         return llm
 
@@ -596,7 +664,8 @@ llm.py: def load_drafter(self):
             if self.drafter is not None or self.drafter_id is None:
                 return
             start = time.perf_counter()
-            self.drafter = AutoModelForCausalLM.from_pretrained(_download(self.drafter_id), dtype=self.dtype, device_map=self.device).eval()
+            folder = _download(self.drafter_id)
+            self.drafter = AutoModelForCausalLM.from_pretrained(folder, dtype=self.dtype, device_map=self.device).eval()
             self.draft_tokens = self.drafter.generation_config.num_assistant_tokens  # guesses per forward pass
             self.warmup(mtp=True)
             cfg = self.drafter.config.get_text_config()
@@ -607,6 +676,7 @@ llm.py: def load_drafter(self):
                 "hidden_size": cfg.hidden_size,
                 "draft_tokens": self.draft_tokens,
                 "load_seconds": round(time.perf_counter() - start, 1),
+                "folder": describe_folder(folder, self.family.drafter_file_notes),
             }
 
 llm.py: def _draft(
