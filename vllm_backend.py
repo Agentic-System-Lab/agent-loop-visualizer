@@ -8,14 +8,18 @@ The prompt stays exact. Everything of the checkpoint but its weights (the config
 template) is downloaded into models/ at the revision families.REVISIONS pins, the prompt is rendered and
 tokenized here as LocalLLM does it, and the server gets the token ids, so it reads exactly what the Context tab
 shows. Each token comes back as its id with its log probability and those of the most likely tokens at its
-position, from which come p, logprob and the top 5 candidates (backend.TOKEN_DETAILS). vLLM's log probabilities
-are the model's own distribution unless the server was started with another --logprobs-mode.
+position. What those numbers are depends on the server's --logprobs-mode, which no route tells, so the backend
+works it out at load (logprobs_mode). By default (raw_logprobs) they are the model's own distribution, from which
+come p, logprob and the top 5 candidates (backend.TOKEN_DETAILS). With processed_logprobs they are the distribution
+the token was drawn from, after temperature, top-k and top-p, which gives the sampling probability but not the
+model's own probabilities; with either logits mode they are not probabilities at all. The rank means the same in
+every mode, since temperature keeps the order and top-k and top-p keep the most likely tokens.
 
-A plain `vllm serve` has /v1/completions: text only, a token's rank only when it is one of the top 5, and nothing
-of what the sampler did. Started with --enable-scale-out it also has /inference/v1/generate, which takes the same
-token ids and gives more: every token's rank; with --return-sampling-mask, the tokens top-k and top-p left at each
-position (so how many candidates were left, which of the top 5 were cut and, when every one left has its
-probability in the response, the sampling probability); and images, sound and video. Those go in as they are
+A plain `vllm serve` has /v1/completions: text only, and a token's rank only when it is one of the top 5. Started
+with --enable-scale-out it also has /inference/v1/generate, which takes the same token ids and gives more: every
+token's rank; with --return-sampling-mask, the tokens top-k and top-p left at each position, so how many candidates
+were left (vLLM allows it only with processed_logprobs, and then refuses temperature 0 and top-k 0); and images,
+sound and video. Those go in as they are
 (content_parts) next to the placeholders the chat template wrote, the server expands each placeholder into the
 tokens its file takes, and encode() asks it for that expansion first (a one-token request), so the Context tab
 shows the prompt as the server reads it. At load, the backend asks the server which of the checkpoint's media it
@@ -58,9 +62,9 @@ WEIGHTS = ["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"]
 TIMEOUT = httpx.Timeout(10.0, read=600.0)
 # vLLM's token-in, token-out route, there when the server was started with --enable-scale-out.
 GENERATE = "/inference/v1/generate"
-# Log probabilities asked for with sampling masks on: vLLM's default --max-logprobs. With top-k at 20 or less, or a
-# nucleus that small, every token left has its probability in the response, and so the sampling probability is known.
-MASKED_LOGPROBS = 20
+# vLLM's floor for a log probability: what it sends for -inf, which in a processed --logprobs-mode is a token top-k or
+# top-p cut, and for a token it has no log probability for.
+UNREPORTED = -9999.0
 AUDIO_RATE = 16000  # a clip is sent at the rate of the feature extractor, when the processor has none of its own
 
 
@@ -209,6 +213,18 @@ def probe_part(kind: str, audio_rate: int = AUDIO_RATE) -> dict:
     return {"type": "video_url", "url": _data_url("video/mp4", buffer.getvalue())}
 
 
+def logprobs_mode(listed: list[float]) -> str:
+    """Which --logprobs-mode a server runs, from the values it listed for the 5 most likely tokens of a one-token
+    request at temperature 1 with top-k 2. In a processed mode, the 3 that top-k cut come back as UNREPORTED. The
+    rest are log probabilities if they add up as probabilities do: to 1 over the 2 left, and to at most 1 over the 5;
+    the logits of a real model's most likely tokens are far above that."""
+    left = [v for v in listed if v > UNREPORTED]
+    total = sum(math.exp(min(v, 1.0)) for v in left)  # a logit above 1 is too much already, and could overflow
+    if len(left) < len(listed):
+        return "processed_logprobs" if abs(total - 1) < 1e-3 else "processed_logits"
+    return "raw_logprobs" if total <= 1 + 1e-3 else "raw_logits"
+
+
 def drafted_tokens(accepted: list[int], drafted: list[int], n_tokens: int) -> dict | None:
     """Which of a step's tokens were guesses the model kept (kept_at) and which replace a guess it turned down
     (turned_down_at), from vLLM's per-step counts (--per-request-spec-decode-metrics detailed). The first token comes
@@ -269,7 +285,9 @@ class VLLMBackend:
         self.drafter = None
         # What the server does beyond /v1/completions, and so which of the checkpoint's media the model reads here.
         readable = checkpoint_modalities(config, self.processor)
-        self.generate_api, self.masks, refused = self._probe(readable)
+        hi = self.encode(self.render([{"role": "user", "content": "Hi"}], None, False), []).ids
+        self.logprobs_mode = self._logprobs_mode(hi)
+        self.generate_api, self.masks, refused = self._probe(hi, readable)
         self.modalities = tuple(kind for kind in readable if kind not in refused)
         self.info = {
             "model_id": model_id,
@@ -291,7 +309,8 @@ class VLLMBackend:
             "drafter": None,
             "folder": describe_folder(files, self.family.file_notes),
             "server": {"engine": "vLLM", "version": self._version(), "url": self.url, "served_as": self.served_as,
-                       "generate_api": self.generate_api, "sampling_mask": self.masks, "refused": refused},
+                       "logprobs_mode": self.logprobs_mode, "generate_api": self.generate_api, "sampling_mask": self.masks,
+                       "refused": refused},
         }
 
     def _version(self) -> str | None:
@@ -307,11 +326,19 @@ class VLLMBackend:
             return dict(self.family.sampling)
         return {k: getattr(config, k) for k in ("temperature", "top_p", "top_k")}
 
-    def _probe(self, kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
-        """Ask the server, with one-token requests, whether it has /inference/v1/generate (--enable-scale-out), whether
-        it sends sampling masks (--return-sampling-mask), and which of `kinds` (the checkpoint's media) it takes. A kind
-        it does not take comes back with why, in both of the page's languages."""
-        hi = self.encode(self.render([{"role": "user", "content": "Hi"}], None, False), []).ids
+    def _logprobs_mode(self, ids: list[int]) -> str:
+        """The server's --logprobs-mode (see logprobs_mode), from a one-token request to /v1/completions, which every
+        vLLM server has: temperature 1, top-k 2 and the 5 most likely tokens."""
+        body = {"model": self.served_as, "prompt": ids, "max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "top_k": 2,
+                "min_p": 0.0, "logprobs": TOP_N, "return_tokens_as_token_ids": True, "stream": False}
+        top = (_post(self.client, "/v1/completions", body)["choices"][0].get("logprobs") or {}).get("top_logprobs") or [{}]
+        return logprobs_mode(list((top[0] or {}).values()))
+
+    def _probe(self, hi: list[int], kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
+        """Ask the server, with one-token requests that start from `hi` (a short prompt's ids), whether it has
+        /inference/v1/generate (--enable-scale-out), whether it sends sampling masks (--return-sampling-mask), and which
+        of `kinds` (the checkpoint's media) it takes. A kind it does not take comes back with why, in both of the page's
+        languages."""
         try:
             out = self._generate_once(hi, [], top_k=2)
         except ServerError as e:
@@ -396,10 +423,8 @@ class VLLMBackend:
         start = time.perf_counter()
         decode_start = None
 
-        # /inference/v1/generate when the server has it, except where its sampling mask would list the whole vocabulary
-        # (greedy, or top-k off) and tell nothing: then /v1/completions, unless media need the other.
-        bounded = sampling.temperature > 0 and sampling.top_k > 0
-        if self.generate_api and (prompt.media or not self.masks or bounded):
+        # /inference/v1/generate when the server has it: it says more about each token, and takes media.
+        if self.generate_api:
             tokens = self._stream_generate(prompt, sampling, end)
         else:
             tokens = self._stream(self._request(prompt, sampling), sampling, end)
@@ -528,17 +553,11 @@ class VLLMBackend:
             return {}
         logprob = token_logprobs[n]
         listed = top_logprobs[n] if n < len(top_logprobs) and top_logprobs[n] else {}
-        # The chosen token is listed too, even when it is not among the 5; equally likely tokens go lowest id first, as in LocalLLM.
-        top = sorted(((int(k.removeprefix("token_id:")), v) for k, v in listed.items() if k.startswith("token_id:")),
-                     key=lambda c: (-c[1], c[0]))[:TOP_N]
-        details = {
-            "p": math.exp(logprob),
-            "logprob": logprob,
-            "top": [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in top],
-        }
-        if any(i == token_id for i, _ in top):
-            details["rank"] = 1 + sum(v > logprob for _, v in top)
-        return self._greedy(details, token_id, s)
+        # The chosen token is listed too, even when it is not among the 5.
+        listed = {int(k.removeprefix("token_id:")): v for k, v in listed.items() if k.startswith("token_id:")}
+        top = sorted(listed.items(), key=lambda c: (-c[1], c[0]))[:TOP_N]
+        rank = 1 + sum(v > logprob for _, v in top) if any(i == token_id for i, _ in top) else None
+        return self._token_details(token_id, logprob, listed, rank, None, s)
 
     def _stream_generate(self, prompt: Encoded, s: Sampling, end: dict) -> Iterator[tuple[int, dict]]:
         """Each token /inference/v1/generate sends for the step, with what it says about the token, and `end` as in
@@ -549,9 +568,7 @@ class VLLMBackend:
             "token_ids": list(prompt.ids),
             "sampling_params": {
                 **self._sampling_params(prompt, s),
-                # The chosen token comes first in the list, so one more than the top 5; with masks, as many as are
-                # needed to know the probability of every token top-k and top-p leave.
-                "logprobs": MASKED_LOGPROBS if self.masks else TOP_N + 1,
+                "logprobs": TOP_N + 1,  # the chosen token comes first in the list, so one more than the top 5
                 "detokenize": False,
             },
             "stream": True,
@@ -576,28 +593,35 @@ class VLLMBackend:
 
     def _generate_details(self, token_id: int, entry: dict | None, mask: list[int] | None, s: Sampling) -> dict:
         """What /inference/v1/generate said about a token: its log probability and rank, the most likely tokens with
-        theirs (the chosen one first), and, with sampling masks, the tokens top-k and top-p left. From the mask come how
-        many candidates were left and which of the top 5 were cut; when every token left has its probability in the
-        list, the probability the token was drawn with is known too: their probabilities at the temperature, renormalized."""
-        if entry is None or (entry["logprob"] <= -9999.0 and not entry.get("top_logprobs")):  # vLLM's mark for "not reported"
+        theirs (the chosen one first), and, from a server started with --return-sampling-mask, the tokens top-k and
+        top-p left."""
+        if entry is None or (entry["logprob"] <= UNREPORTED and not entry.get("top_logprobs")):  # vLLM's mark for "not reported"
             return {}
-        logprob = entry["logprob"]
         listed = {e["token_id"]: e["logprob"] for e in entry.get("top_logprobs") or []}
-        rank = entry.get("rank")
-        ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
-        if rank is not None and rank > TOP_N:  # listed only because it was chosen
-            ranked = [c for c in ranked if c[0] != token_id]
-        top = [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in ranked[:TOP_N]]
-        details = {"p": math.exp(logprob), "logprob": logprob, "top": top, **({"rank": rank} if rank else {})}
-        if s.temperature > 0 and mask is not None:
-            left = set(mask)
-            details["kept"] = len(left)
-            for c in top:
-                c["kept"] = c["id"] in left
-            if token_id in left and left <= listed.keys():
-                scaled = {i: listed[i] / s.temperature for i in left}
-                peak = max(scaled.values())
-                details["p_sampled"] = math.exp(scaled[token_id] - peak) / sum(math.exp(v - peak) for v in scaled.values())
+        return self._token_details(token_id, entry["logprob"], listed, entry.get("rank"), mask, s)
+
+    def _token_details(self, token_id: int, logprob: float, listed: dict[int, float], rank: int | None,
+                       mask: list[int] | None, s: Sampling) -> dict:
+        """The details of a token event, from what the server said about the token: its log probability, those of the
+        tokens listed with it, its rank and its sampling mask when it sent them. What the numbers may be shown as
+        depends on the server's --logprobs-mode. Only the model's own log probabilities are p, logprob and the top 5.
+        Processed ones are the distribution the token was drawn from, so the token's is its sampling probability, and
+        the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
+        details = {"rank": rank} if rank else {}
+        if self.logprobs_mode == "raw_logprobs":
+            # Equally likely tokens go lowest id first, as in LocalLLM.
+            ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
+            if rank is not None and rank > TOP_N:  # listed only because it was chosen
+                ranked = [c for c in ranked if c[0] != token_id]
+            top = [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in ranked[:TOP_N]]
+            details.update(p=math.exp(logprob), logprob=logprob, top=top)
+        elif self.logprobs_mode == "processed_logprobs":
+            details["p_sampled"] = math.exp(logprob)
+        if mask is not None:
+            details["kept"] = len(set(mask))
+        elif self.logprobs_mode.startswith("processed") and any(v <= UNREPORTED for v in listed.values()):
+            # Some of the most likely tokens were cut, and those left are more likely still, so all of them are listed.
+            details["kept"] = sum(v > UNREPORTED for v in listed.values())
         return self._greedy(details, token_id, s)
 
     def _greedy(self, details: dict, token_id: int, s: Sampling) -> dict:
@@ -605,6 +629,6 @@ class VLLMBackend:
         probability 1, and the rest of the top 5 cut. That follows from the settings, not from the server."""
         if s.temperature > 0 or not details:
             return details
-        for c in details["top"]:
+        for c in details.get("top", []):
             c["kept"] = c["id"] == token_id
         return {**details, "kept": 1, "p_sampled": 1.0}

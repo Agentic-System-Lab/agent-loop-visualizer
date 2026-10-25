@@ -993,15 +993,24 @@ def model_html(info: dict, lang: str) -> str:
     name, arch = esc(family.name), esc(info["architecture"])
     if server:
         engine, url = esc(server["engine"]), esc(server["url"])
-        if server.get("sampling_mask"):
-            cut = pick(lang, "伺服器也送回 top-k、top-p 留下了哪些 token，所以看得到剩下幾個候選、哪些被剃掉。",
-                       "The server also sends which tokens top-k and top-p left, so how many candidates were left and which were cut show too. ")
+        mode = server.get("logprobs_mode", "raw_logprobs")
+        if mode == "raw_logprobs":
+            back = pick(lang, "每個 token 回來時帶著它的機率和前 5 名候選；取樣時剃掉了哪些候選，留在伺服器上。",
+                        "Each token comes back with its probability and the top 5 candidates; which candidates the sampling cut stays on the server. ")
+        elif mode == "processed_logprobs":
+            back = pick(lang, "伺服器用 `--logprobs-mode processed_logprobs` 啟動：每個 token 帶回來的是它被抽出來時的機率"
+                              "（套過 temperature、top-k、top-p 之後），不是模型原本的機率，所以看不到模型給的機率和前 5 名。",
+                        "The server was started with `--logprobs-mode processed_logprobs`: each token comes back with its probability in the distribution "
+                        "it was drawn from (after temperature, top-k and top-p), not the model's own, so the model probability and the top 5 do not show. ")
+            if server.get("sampling_mask"):
+                back += pick(lang, "它也送回 sampling mask，所以看得到剩下幾個候選；這時它不接受 temperature 0 和 top-k 0，側欄就從 0.05 和 1 開始。",
+                             "It also sends sampling masks, so how many candidates were left shows too; it then refuses temperature 0 and top-k 0, "
+                             "so the sidebar starts at 0.05 and 1. ")
         else:
-            cut = pick(lang, "取樣時剃掉了哪些候選，留在伺服器上。", "Which candidates the sampling cut stays on the server. ")
-        where = pick(lang, f"{name} 家族，由 {url} 的 {engine} 伺服器跑（{arch}）：prompt 在這裡 render 成 token id 送過去，"
-                           "每個 token 回來時帶著它的機率和前 5 名候選。",
-                     f"The {name} family, run by the {engine} server at {url} ({arch}): the prompt is rendered into token ids here and sent "
-                     "there, and each token comes back with its probability and the top 5 candidates. ") + cut
+            back = pick(lang, f"伺服器用 `--logprobs-mode {mode}` 啟動，回來的是 logits 而不是機率，所以都不會當成機率顯示。",
+                        f"The server was started with `--logprobs-mode {mode}`, so what comes back is logits, not probabilities, and none of them shows as one. ")
+        where = pick(lang, f"{name} 家族，由 {url} 的 {engine} 伺服器跑（{arch}）：prompt 在這裡 render 成 token id 送過去。",
+                     f"The {name} family, run by the {engine} server at {url} ({arch}): the prompt is rendered into token ids here and sent there. ") + prose_html(back)
     else:
         where = pick(lang, f"{name} 家族，在你的電腦上用 transformers 跑（{arch}）。", f"The {name} family, running on your computer with transformers ({arch}). ")
     return (

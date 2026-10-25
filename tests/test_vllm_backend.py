@@ -3,7 +3,8 @@
 finish reason, a last chunk with the usage and the speculative decoding counts) and, on a server started with
 --enable-scale-out, /inference/v1/generate (entrypoints/scale_out/token_in_token_out: the same with each token's
 rank, the chosen token first in its list, sampling masks with --return-sampling-mask, and media sent next to the
-placeholders, which the server expands and, asked to, sends back).
+placeholders, which the server expands and, asked to, sends back), in each --logprobs-mode, and refusing what vLLM
+refuses once it sends sampling masks.
 
 Most tests use a tokenizer in the fakes' simplified chat format, so they need neither the Hub nor the
 weights. The tests with the real tokenizer and chat template run when a model's files are in models/
@@ -34,12 +35,13 @@ from html_check import assert_balanced
 from i18n import LANGS, pick
 from llm import MODELS_DIR
 from test_render import render_everything
-from vllm_backend import GENERATE, ServerError, VLLMBackend
+from vllm_backend import GENERATE, UNREPORTED, ServerError, VLLMBackend
 
 URL = "http://vllm.test:8000"
 ANSWER = "答案是 42。<turn|>"
 EXAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
 KIND_OF_PART = {"image_url": "image", "audio_url": "audio", "video_url": "video"}
+LOGIT = 20.0  # how far a fake logit is above the log probability it gives
 
 
 class Tokenizer:
@@ -97,23 +99,27 @@ class Server:
     `scale_out`, /inference/v1/generate, which otherwise answers 403 as vLLM's does. Each streamed answer is the next
     of `outputs`: its tokens until one of the request's stop_token_ids or max_tokens, `per_chunk` to a chunk. The
     chosen token has probability `p` (a dict maps a token's index to another) and the others listed are other tokens;
-    a chosen token below 0.01 is outside the top 5. With `masks` (--return-sampling-mask), a token's mask is the chosen
-    token and the others listed at 0.02 or more. The server takes the media in `takes`, expanding each placeholder into
-    `expand` tokens as FakeLLM.encode does, and refuses other kinds. `spec` is the speculative decoding counts the last
-    chunk carries."""
+    a chosen token below 0.01 is outside the top 5. Top-k and top-p leave the chosen token and the others listed at 0.02
+    or more, at most top-k of them. What the server lists for each token depends on `logprobs_mode` (values). With
+    `masks` (--return-sampling-mask, which vLLM allows only with processed_logprobs), a token's mask is the tokens
+    left, and the server refuses temperature 0 and top-k 0 on every route, as vLLM's engine does. The server takes the
+    media in `takes`, expanding each placeholder into `expand` tokens as FakeLLM.encode does, and refuses other kinds.
+    `spec` is the speculative decoding counts the last chunk carries."""
 
     tokenizers: dict = {}  # family key -> the tokenizer the hub fixture hands the backend, which this server shares
 
     def __init__(self, outputs: list[str], root="google/gemma-4-E2B-it", served_as=None, max_model_len=4096, per_chunk=2,
-                 scale_out=False, masks=False, takes=media.MEDIA):
+                 scale_out=False, masks=False, takes=media.MEDIA, logprobs_mode=None):
         self.outputs, self.root, self.served_as, self.max_model_len, self.per_chunk = list(outputs), root, served_as or root, max_model_len, per_chunk
         self.scale_out, self.masks, self.takes, self.expand = scale_out, masks, takes, MEDIA_TOKENS
+        self.mode = logprobs_mode or ("processed_logprobs" if masks else "raw_logprobs")
+        assert self.mode == "processed_logprobs" or not masks, "vLLM does not start with sampling masks in another --logprobs-mode"
         self._tokenizer = None
-        self.requests: list[dict] = []  # the /v1/completions bodies
+        self.requests: list[dict] = []  # the streamed /v1/completions bodies
+        self.probes: list[dict] = []  # the one-token /v1/completions bodies that are not streamed
         self.generates: list[dict] = []  # the /inference/v1/generate bodies, one-token ones (probes, expansions) included
         self.headers: list[httpx.Headers] = []
         self.p: dict[int, float] = {}
-        self.unlisted = False  # put a token in each mask that is not among the listed log probabilities
         self.spec = None
         self.finish = None  # a finish reason to end with instead of vLLM's own
         self.fail = None  # (status, body) to answer the next streamed request with
@@ -146,7 +152,12 @@ class Server:
         body = json.loads(request.content)
         if request.url.path == GENERATE:
             return self.generate(body)
+        if not body.get("stream"):
+            self.probes.append(body)
+            return self.refused(body) or httpx.Response(200, json=self.completion(body))
         self.requests.append(body)
+        if refused := self.refused(body):
+            return refused
         if self.fail:
             status, error = self.fail
             return httpx.Response(status, json=error)
@@ -159,6 +170,8 @@ class Server:
         if not self.scale_out:
             message = "Scale-out endpoints are disabled. Restart vllm serve with --enable-scale-out to enable them."
             return httpx.Response(403, json={"error": {"message": message, "type": "PermissionDeniedError", "param": None, "code": 403}})
+        if refused := self.refused(body["sampling_params"]):
+            return refused
         if self.fail and body.get("stream"):
             status, error = self.fail
             return httpx.Response(status, json=error)
@@ -169,7 +182,7 @@ class Server:
         if not body.get("stream"):
             choice = {"index": 0, "token_ids": [prompt[-1]], "finish_reason": "length", "stop_reason": None}
             if self.masks:
-                choice["sampling_mask"] = [[prompt[-1]]]
+                choice["sampling_mask"] = [self.kept(prompt[-1], 0.9, body["sampling_params"]["top_k"])]
             reply = {"request_id": "generate-tokens-1", "choices": [choice]}
             if body.get("return_token_ids"):
                 reply["prompt_token_ids"] = prompt
@@ -198,26 +211,57 @@ class Server:
         probs = [0.05, 0.02, 0.01, 0.005] if p >= 0.01 else [0.3, 0.2, 0.1, 0.05, 0.02]
         return sorted([(token_id, p), *zip(others, probs)], key=lambda c: (-c[1], c[0]))
 
-    def entry(self, token_id: int, p: float, n: int) -> dict:
-        """A token's logprobs as /inference/v1/generate sends them: its own and rank, then the chosen token first and
-        the most likely after it, `n` in all."""
-        ranks = {i: r for r, (i, _) in enumerate(self.ranked(token_id, p), 1)}
-        listed = [(token_id, p)] + [c for c in self.ranked(token_id, p) if c[0] != token_id]
-        return {"token_id": token_id, "logprob": math.log(p), "rank": ranks[token_id],
-                "top_logprobs": [{"token_id": i, "logprob": math.log(q), "rank": ranks[i]} for i, q in listed[: max(n, 1)]]}
-
-    def mask(self, token_id: int, p: float) -> list[int]:
+    def kept(self, token_id: int, p: float, top_k: int) -> list[int]:
+        """The tokens top-k and top-p leave: the chosen one and the others at 0.02 or more, at most top-k of them."""
         left = [i for i, q in self.ranked(token_id, p) if q >= 0.02 or i == token_id]
-        return left + ([self.tokenizer.id("▁unlisted")] if self.unlisted else [])
+        return left[:top_k] if top_k > 0 else left
+
+    def values(self, token_id: int, p: float, params: dict) -> dict[int, float]:
+        """What the server lists for the chosen token and the others, most likely first, in its --logprobs-mode: the
+        model's log probabilities (raw_logprobs) or logits (raw_logits); or, processed, the logits at the temperature
+        over the tokens left, renormalized into log probabilities (processed_logprobs) or not (processed_logits), with
+        the tokens cut at -inf, which vLLM sends as UNREPORTED."""
+        ranked = self.ranked(token_id, p)
+        if self.mode.startswith("raw"):
+            return {i: math.log(q) + (LOGIT if self.mode == "raw_logits" else 0.0) for i, q in ranked}
+        left = self.kept(token_id, p, params.get("top_k") or 0)
+        t = params.get("temperature") or 1.0  # greedy leaves the logits as they are
+        scaled = {i: (math.log(q) + LOGIT) / t for i, q in ranked if i in left}
+        if self.mode == "processed_logprobs":
+            peak = max(scaled.values())
+            norm = peak + math.log(sum(math.exp(v - peak) for v in scaled.values()))
+            scaled = {i: v - norm for i, v in scaled.items()}
+        return {i: scaled.get(i, UNREPORTED) for i, _ in ranked}
+
+    def refused(self, params: dict) -> httpx.Response | None:
+        """What vLLM's engine answers, on every route, a request it cannot send a sampling mask for (InputProcessor)."""
+        if not self.masks:
+            return None
+        if params.get("temperature", 1.0) <= 0:
+            message = "sampling distribution replay requires temperature > 0"
+        elif (params.get("top_k") or 0) <= 0:
+            message = "sampling distribution replay requires top_k > 0 to bound sampling mask size, reduce transfer overhead, and avoid potential OOMs"
+        else:
+            return None
+        return httpx.Response(400, json={"error": {"message": message, "type": "BadRequestError", "param": None, "code": 400}})
+
+    def entry(self, token_id: int, p: float, params: dict) -> dict:
+        """A token's logprobs as /inference/v1/generate sends them: its own and rank, then the chosen token first and
+        the most likely after it, as many as the request's logprobs."""
+        values = self.values(token_id, p, params)
+        ranks = {i: r for r, i in enumerate(values, 1)}
+        listed = [token_id] + [i for i in values if i != token_id]
+        return {"token_id": token_id, "logprob": values[token_id], "rank": ranks[token_id],
+                "top_logprobs": [{"token_id": i, "logprob": values[i], "rank": ranks[i]} for i in listed[: max(params.get("logprobs") or 0, 1)]]}
 
     def generate_lines(self, body: dict, prompt: list[int]) -> list[str]:
         params = body["sampling_params"]
         lines = []
         for n, (chunk_ids, probs, finish, stop_reason) in enumerate(self.chunks(params["stop_token_ids"], params["max_tokens"])):
             choice = {"index": 0, "token_ids": chunk_ids, "finish_reason": finish, "stop_reason": stop_reason,
-                      "logprobs": {"content": [self.entry(i, p, params.get("logprobs") or 0) for i, p in zip(chunk_ids, probs)]}}
+                      "logprobs": {"content": [self.entry(i, p, params) for i, p in zip(chunk_ids, probs)]}}
             if self.masks:
-                choice["sampling_mask"] = [self.mask(i, p) for i, p in zip(chunk_ids, probs)]
+                choice["sampling_mask"] = [self.kept(i, p, params["top_k"]) for i, p in zip(chunk_ids, probs)]
             chunk = {"request_id": "generate-tokens-1", "output_mode": "tokens", "choices": [choice]}
             if n == 0 and body.get("return_token_ids"):
                 chunk.update(prompt_token_ids=prompt, mm_placeholders={})
@@ -226,8 +270,18 @@ class Server:
 
     # ---------- /v1/completions ----------
 
-    def top(self, token_id: int, p: float) -> dict[str, float]:
-        return {f"token_id:{i}": math.log(q) for i, q in [(token_id, p)] + [c for c in self.ranked(token_id, p) if c[0] != token_id]}
+    def top(self, token_id: int, p: float, params: dict) -> dict[str, float]:
+        """The chosen token's and the most likely tokens' values, as many as the request's logprobs, keyed "token_id:<id>"."""
+        values = self.values(token_id, p, params)
+        return {f"token_id:{i}": values[i] for i in dict.fromkeys([token_id, *list(values)[: params.get("logprobs") or 0]])}
+
+    def completion(self, body: dict) -> dict:
+        """A one-token answer, not streamed: the prompt's last token again, as likely as a token usually is here."""
+        token_id = body["prompt"][-1]
+        choice = {"index": 0, "text": "", "finish_reason": "length", "stop_reason": None, "token_ids": [token_id],
+                  "logprobs": {"text_offset": [0], "token_logprobs": [self.values(token_id, 0.9, body)[token_id]],
+                               "tokens": [f"token_id:{token_id}"], "top_logprobs": [self.top(token_id, 0.9, body)]}}
+        return {"id": "cmpl-1", "object": "text_completion", "model": self.served_as, "choices": [choice]}
 
     def lines(self, body: dict) -> list[str]:
         lines = []
@@ -237,9 +291,9 @@ class Server:
                 "text": "",  # VLLMBackend decodes the ids itself
                 "logprobs": {
                     "text_offset": [0] * len(chunk_ids),
-                    "token_logprobs": [math.log(p) for p in probs],
+                    "token_logprobs": [self.values(i, p, body)[i] for i, p in zip(chunk_ids, probs)],
                     "tokens": [f"token_id:{i}" for i in chunk_ids],
-                    "top_logprobs": [self.top(i, p) for i, p in zip(chunk_ids, probs)],
+                    "top_logprobs": [self.top(i, p, body) for i, p in zip(chunk_ids, probs)],
                 },
                 "finish_reason": finish,
                 "stop_reason": stop_reason,
@@ -579,9 +633,22 @@ def test_the_model_card_says_what_a_server_with_scale_out_and_masks_shows_and_wh
     info = connect(Server([], scale_out=True, masks=True, takes=("image", "video"))).info
     card = render.model_html(info, lang)
     assert_balanced(card)
-    assert pick(lang, "看得到剩下幾個候選、哪些被剃掉", "how many candidates were left and which were cut show too") in card
+    assert pick(lang, "不是模型原本的機率，所以看不到模型給的機率和前 5 名", "so the model probability and the top 5 do not show") in card
+    assert pick(lang, "看得到剩下幾個候選；這時它不接受 temperature 0 和 top-k 0", "how many candidates were left shows too; it then refuses temperature 0 and top-k 0") in card
     assert card.count("<li><b>") == 1 and pick(lang, "<b>聲音</b>", "<b>audio</b>") in card and "At most 0 audio(s)" in card
     assert pick(lang, "圖片 · 影片", "image · video") in card  # what the model reads here
+
+
+@pytest.mark.parametrize("lang", LANGS)
+@pytest.mark.parametrize(("mode", "says"), [
+    ("processed_logprobs", ("看不到模型給的機率和前 5 名", "the model probability and the top 5 do not show")),
+    ("raw_logits", ("回來的是 logits 而不是機率", "what comes back is logits, not probabilities")),
+])
+def test_the_model_card_says_what_the_numbers_are_in_each_logprobs_mode(hub, lang, mode, says):
+    card = render.model_html(connect(Server([], logprobs_mode=mode)).info, lang)
+    assert_balanced(card)
+    assert pick(lang, *says) in card and f'<span class="tk">--logprobs-mode {mode}</span>' in card
+    assert pick(lang, "sampling mask", "sampling masks") not in card and pick(lang, "前 5 名候選；", "and the top 5 candidates;") not in card
 
 
 # ---------- a whole turn ----------
@@ -659,44 +726,77 @@ def test_inference_generate_gives_every_tokens_rank_and_the_top_five_by_rank(hub
 
 
 @pytest.mark.parametrize("temperature", [1.0, 0.5])
-def test_sampling_masks_give_the_candidates_left_the_cut_ones_and_the_sampling_probability(hub, temperature):
+def test_sampling_masks_give_the_candidates_left_and_the_sampling_probability_but_not_the_models_own(hub, temperature):
     server = Server([ANSWER], scale_out=True, masks=True)
     llm = connect(server)
-    assert llm.masks and llm.info["server"]["sampling_mask"]
+    assert llm.masks and llm.info["server"]["sampling_mask"] and llm.logprobs_mode == "processed_logprobs"
     _, tokens, _ = generate(llm, sampling=Sampling(temperature=temperature, top_k=64, top_p=0.95))
     tok = tokens[0]
-    assert server.generates[-1]["sampling_params"]["logprobs"] == 20  # enough to know every token left
-    assert tok["kept"] == 3 and [c["kept"] for c in tok["top"]] == [True, True, True, False, False]
+    assert server.generates[-1]["sampling_params"]["logprobs"] == 6 and server.requests == []
+    # vLLM sends the distribution the token was drawn from: the model's at the temperature, over the tokens left.
     weights = [q ** (1 / temperature) for q in (0.9, 0.05, 0.02)]
-    assert tok["p_sampled"] == pytest.approx(weights[0] / sum(weights))
-    assert set(tok) - {"type"} == {*TOKEN_FIELDS, *TOKEN_DETAILS} - {"draft"}  # everything LocalLLM sends
+    assert tok["p_sampled"] == pytest.approx(weights[0] / sum(weights)) and tok["kept"] == 3 and tok["rank"] == 1
+    assert not {"p", "logprob", "top"} & set(tok)  # the model's own probabilities stay on the server
     html = render.tip_html(tok, GEMMA4, lang="en")
-    assert "candidates left</span><b>3</b>" in html and html.count('class="c cut"') == 2 and "gray = cut" in html
+    assert "candidates left</span><b>3</b>" in html and "sampling probability" in html
+    assert "model probability" not in html and "top 5" not in html
 
 
-def test_when_a_token_left_has_no_probability_listed_the_sampling_probability_is_left_out(hub):
-    server = Server([ANSWER], scale_out=True, masks=True)
-    server.unlisted = True
-    _, tokens, _ = generate(connect(server))
-    assert tokens[0]["kept"] == 4 and "p_sampled" not in tokens[0]
+@pytest.mark.parametrize("scale_out", [False, True])
+def test_a_server_with_masks_refuses_greedy_and_no_top_k_as_vllm_does(hub, scale_out):
+    server = Server([ANSWER] * 2, scale_out=True, masks=True)
+    llm = connect(server)
+    if not scale_out:  # what /v1/completions would answer too: the check is vLLM's engine's, not the route's
+        llm.generate_api = False
+    with pytest.raises(ServerError, match="requires temperature > 0") as refused:
+        generate(llm, sampling=Sampling(temperature=0))
+    assert refused.value.status == 400
+    with pytest.raises(ServerError, match="requires top_k > 0"):
+        generate(llm, sampling=Sampling(top_k=0))
+
+
+def test_a_server_with_processed_logprobs_but_no_masks_shows_how_many_were_left_when_some_of_the_top_were_cut(hub):
+    server = Server([ANSWER], logprobs_mode="processed_logprobs")
+    server.p = {1: 0.001}  # every token listed is left
+    llm = connect(server)
+    assert llm.logprobs_mode == "processed_logprobs" and not llm.masks
+    _, tokens, _ = generate(llm, sampling=Sampling(temperature=1.0, top_k=64, top_p=0.95))
+    assert tokens[0]["kept"] == 3 and tokens[0]["p_sampled"] == pytest.approx(0.9 / 0.97) and tokens[0]["rank"] == 1
+    assert "kept" not in tokens[1] and "rank" not in tokens[1]  # outside the top 5, where /v1/completions gives no rank
+    assert not {"p", "logprob", "top"} & set(tokens[0])
+    _, tokens, _ = generate(connect(Server([ANSWER], logprobs_mode="processed_logprobs")), sampling=Sampling(temperature=0))
+    assert tokens[0]["kept"] == 1 and tokens[0]["p_sampled"] == 1.0  # greedy, which such a server takes
+
+
+@pytest.mark.parametrize("mode", ["raw_logits", "processed_logits"])
+@pytest.mark.parametrize("scale_out", [False, True])
+def test_logits_are_no_probabilities_and_only_the_rank_shows(hub, mode, scale_out):
+    llm = connect(Server([ANSWER], scale_out=scale_out, logprobs_mode=mode))
+    assert llm.logprobs_mode == mode
+    _, tokens, _ = generate(llm)
+    assert tokens[0]["rank"] == 1 and not {"p", "logprob", "top", "p_sampled"} & set(tokens[0])
+
+
+@pytest.mark.parametrize("mode", ["raw_logprobs", "processed_logprobs", "raw_logits", "processed_logits"])
+def test_the_servers_logprobs_mode_is_worked_out_at_load_with_one_token(hub, mode):
+    server = Server([], logprobs_mode=mode)
+    llm = connect(server)
+    assert llm.logprobs_mode == llm.info["server"]["logprobs_mode"] == mode
+    probe = server.probes[0]
+    assert len(server.probes) == 1 and (probe["max_tokens"], probe["temperature"], probe["top_k"], probe["logprobs"]) == (1, 1.0, 2, 5)
+
+
+def test_logits_too_large_to_be_probabilities_do_not_overflow():
+    assert vllm_backend.logprobs_mode([800.0, 790.0, 700.0, 650.0, 600.0]) == "raw_logits"
+    assert vllm_backend.logprobs_mode([800.0, 790.0, UNREPORTED, UNREPORTED, UNREPORTED]) == "processed_logits"
 
 
 @pytest.mark.parametrize("scale_out", [False, True])
 def test_greedy_leaves_one_candidate_drawn_for_sure(hub, scale_out):
-    server = Server([ANSWER], scale_out=scale_out, masks=scale_out)
+    server = Server([ANSWER], scale_out=scale_out)
     _, tokens, _ = generate(connect(server), sampling=Sampling(temperature=0))
     tok = tokens[0]
     assert tok["kept"] == 1 and tok["p_sampled"] == 1.0 and [c["kept"] for c in tok["top"]] == [True, False, False, False, False]
-
-
-def test_with_masks_greedy_and_no_top_k_go_to_completions_where_no_mask_lists_the_vocabulary(hub):
-    server = Server([ANSWER] * 3, scale_out=True, masks=True)
-    llm = connect(server)
-    probes = len(server.generates)
-    generate(llm, sampling=Sampling(temperature=0))
-    generate(llm, sampling=Sampling(top_k=0))
-    generate(llm, sampling=Sampling(top_k=64))
-    assert len(server.requests) == 2 and len(server.generates) == probes + 1
 
 
 # ---------- images, sound and video ----------
@@ -728,7 +828,7 @@ def test_qwens_checkpoint_has_no_sound_to_ask_about(hub):
 
 
 def test_media_go_to_the_server_as_files_and_the_context_is_the_prompt_it_expanded(hub):
-    server = Server([ANSWER], scale_out=True, masks=True)
+    server = Server([ANSWER], scale_out=True)
     llm = connect(server)
     messages, prompt = ask_with(llm, "receipt.png", "speech.flac", "ball.mp4")
     before = len(server.generates)
@@ -741,7 +841,7 @@ def test_media_go_to_the_server_as_files_and_the_context_is_the_prompt_it_expand
     assert encoded.text == FakeLLM(family=GEMMA4).encode(prompt, media.parts(messages)).text
     assert encoded.media_tokens == {"image": MEDIA_TOKENS, "audio": MEDIA_TOKENS, "video": MEDIA_TOKENS}
     assert encoded.n_tokens == len(hub["tokenizer"](encoded.text).input_ids)
-    events = list(llm.generate(encoded, Sampling(top_k=0), lambda: False))  # media go to /inference/v1/generate even without top-k
+    events = list(llm.generate(encoded, Sampling(), lambda: False))
     body = server.generates[-1]
     assert body["stream"] and body["content_parts"] == expansion["content_parts"] and body["token_ids"] == expansion["token_ids"] and body["return_token_ids"]
     assert events[0]["n_tokens"] == encoded.n_tokens and events[-1]["finish"] == "stop_token"
@@ -880,22 +980,33 @@ def served():
     return llm
 
 
+def greedy(llm: VLLMBackend, max_new_tokens: int) -> Sampling:
+    """Greedy decoding; or, from a server that sends sampling masks and so refuses temperature 0, top-k 1, which leaves
+    the most likely token all the same."""
+    if llm.masks:
+        return Sampling(temperature=1.0, top_k=1, max_new_tokens=max_new_tokens)
+    return Sampling(temperature=0, max_new_tokens=max_new_tokens)
+
+
 @real_server
-def test_real_server_greedy_tokens_carry_their_probability_and_candidates(served):
-    _, tokens, done = generate(served, "用一句話介紹台北。", Sampling(temperature=0, max_new_tokens=24))
+def test_real_server_greedy_tokens_carry_what_its_logprobs_mode_tells(served):
+    _, tokens, done = generate(served, "用一句話介紹台北。", greedy(served, 24))
     assert tokens and done["n_tokens"] == len(tokens) and "".join(t["text"] for t in tokens) == done["raw"]
-    assert all(t["rank"] == 1 and t["top"][0]["id"] == t["id"] and 0 < t["p"] <= 1 for t in tokens)  # greedy takes the top token
+    assert all(t["rank"] == 1 for t in tokens)  # greedy takes the top token
+    if served.logprobs_mode == "raw_logprobs":
+        assert all(t["top"][0]["id"] == t["id"] and 0 < t["p"] <= 1 for t in tokens)
+    elif served.logprobs_mode == "processed_logprobs":
+        assert all(t["kept"] == 1 and t["p_sampled"] == pytest.approx(1.0) and "p" not in t for t in tokens)
 
 
 @real_server
-def test_real_server_with_scale_out_gives_every_rank_and_with_masks_what_was_cut(served):
+def test_real_server_with_scale_out_gives_every_rank_and_with_masks_how_many_were_left(served):
     if not served.generate_api:
         pytest.skip("the server was started without --enable-scale-out")
     _, tokens, _ = generate(served, "用一句話介紹台北。", Sampling(temperature=1.0, top_k=20, top_p=0.95, max_new_tokens=24))
     assert all(t.get("rank", 0) >= 1 for t in tokens)
-    if served.masks:  # --return-sampling-mask
-        assert all(1 <= t["kept"] <= 20 and all("kept" in c for c in t["top"]) for t in tokens)
-        assert all(0 < t["p_sampled"] <= 1 for t in tokens)  # top-k 20 keeps every token left in the 20 log probabilities
+    if served.masks:  # --return-sampling-mask, with --logprobs-mode processed_logprobs
+        assert all(1 <= t["kept"] <= 20 and 0 < t["p_sampled"] <= 1 and not {"p", "top"} & set(t) for t in tokens)
 
 
 @real_server
@@ -907,13 +1018,13 @@ def test_real_server_reads_each_kind_of_media_it_takes(served, name):
     messages, prompt = ask_with(served, name)
     encoded = served.encode(prompt, media.parts(messages))
     assert encoded.media_tokens.get(kind, 0) > 0 and encoded.n_tokens > len(served.tokenizer(prompt, add_special_tokens=False).input_ids)
-    events = list(served.generate(encoded, Sampling(temperature=0, max_new_tokens=16), lambda: False))
+    events = list(served.generate(encoded, greedy(served, 16), lambda: False))
     assert events[-1]["n_tokens"] > 0
 
 
 @real_server
 def test_real_server_with_detailed_spec_counts_marks_guesses_that_add_up(served):
-    _, tokens, done = generate(served, "Write a Python function that adds two numbers.", Sampling(temperature=0, max_new_tokens=64))
+    _, tokens, done = generate(served, "Write a Python function that adds two numbers.", greedy(served, 64))
     if not (done["mtp"] or {}).get("kept_at") and not (done["mtp"] or {}).get("turned_down_at"):
         pytest.skip("the server does not decode speculatively with --per-request-spec-decode-metrics detailed, or its counts did not add up")
     marked = done["mtp"]["kept_at"] + done["mtp"]["turned_down_at"]
@@ -923,7 +1034,7 @@ def test_real_server_with_detailed_spec_counts_marks_guesses_that_add_up(served)
 @real_server
 def test_real_server_runs_the_calculator_and_answers(served):
     events = []
-    Run(served, [], "What is 1234 * 5678? Use the calculator.", RunSettings(sampling=Sampling(temperature=0, max_new_tokens=256)), events.append).run()
+    Run(served, [], "What is 1234 * 5678? Use the calculator.", RunSettings(sampling=greedy(served, 256)), events.append).run()
     calls = [e for e in events if e["type"] == "tool_call"]
     assert calls and calls[0]["name"] == "calculator" and not calls[0]["errors"]
     assert events[-1]["stop_reason"] == "no_tool_call" and "7006652" in events[-1]["final"].replace(",", "")

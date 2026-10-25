@@ -335,9 +335,22 @@ def sidebar(llm: Backend, menu: dict[str, str], live: bool, busy: bool):
                           "The harness holds the call until you confirm it, instead of a line in the prompt asking the model to check first."))
 
         st.markdown(tr("##### 解碼與上限", "##### Decoding and limits"))
-        st.slider("temperature", 0.0, 2.0, step=0.05, key="temperature", help=tr("0 = greedy，永遠選機率最高的 token。", "0 = greedy: always the most likely token."))
-        st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
-        st.slider("top-k", 0, 128, key="top_k", help=tr("0 = 不限。", "0 = no limit."))
+        if (info.get("server") or {}).get("sampling_mask"):
+            # vLLM refuses greedy decoding and an unlimited top-k once it sends sampling masks, so the sliders stop short
+            # of them, and a setting from before moves to the nearest one it takes.
+            st.session_state.temperature = max(st.session_state.temperature, 0.05)
+            st.session_state.top_k = st.session_state.top_k or 128
+            st.slider("temperature", 0.05, 2.0, step=0.05, key="temperature",
+                      help=tr("這台 vLLM 伺服器會送回 sampling mask（`--return-sampling-mask`），這時它不接受 greedy（temperature 0），所以最低是 0.05。",
+                              "This vLLM server sends sampling masks (`--return-sampling-mask`), and then it refuses greedy decoding (temperature 0), so the lowest is 0.05."))
+            st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
+            st.slider("top-k", 1, 128, key="top_k",
+                      help=tr("這台 vLLM 伺服器會送回 sampling mask，要靠 top-k 限制它的大小，所以不能設 0（不限）。",
+                              "This vLLM server sends sampling masks, and needs top-k to bound them, so 0 (no limit) is not allowed."))
+        else:
+            st.slider("temperature", 0.0, 2.0, step=0.05, key="temperature", help=tr("0 = greedy，永遠選機率最高的 token。", "0 = greedy: always the most likely token."))
+            st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
+            st.slider("top-k", 0, 128, key="top_k", help=tr("0 = 不限。", "0 = no limit."))
         st.toggle(tr("MTP 推測解碼", "MTP speculative decoding"), key="mtp", disabled=busy or not llm.drafter_id, help=mtp_help(llm))
         st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps",
                   help=tr("harness 的迴圈最多跑幾圈（step），跑滿就停。", "How many times (steps) the harness may go around the loop before it stops."))

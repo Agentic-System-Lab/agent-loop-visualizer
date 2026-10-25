@@ -851,56 +851,48 @@ vllm_backend.py: def _details(
             return {}
         logprob = token_logprobs[n]
         listed = top_logprobs[n] if n < len(top_logprobs) and top_logprobs[n] else {}
-        # The chosen token is listed too, even when it is not among the 5; equally likely tokens go lowest id first, as in LocalLLM.
-        top = sorted(((int(k.removeprefix("token_id:")), v) for k, v in listed.items() if k.startswith("token_id:")),
-                     key=lambda c: (-c[1], c[0]))[:TOP_N]
-        details = {
-            "p": math.exp(logprob),
-            "logprob": logprob,
-            "top": [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in top],
-        }
-        if any(i == token_id for i, _ in top):
-            details["rank"] = 1 + sum(v > logprob for _, v in top)
+        # The chosen token is listed too, even when it is not among the 5.
+        listed = {int(k.removeprefix("token_id:")): v for k, v in listed.items() if k.startswith("token_id:")}
+        top = sorted(listed.items(), key=lambda c: (-c[1], c[0]))[:TOP_N]
+        rank = 1 + sum(v > logprob for _, v in top) if any(i == token_id for i, _ in top) else None
+        return self._token_details(token_id, logprob, listed, rank, None, s)
+
+[[vllm_backend.py|def logprobs_mode(]]
+    def logprobs_mode(listed: list[float]) -> str:
+
+vllm_backend.py: def _token_details(
+    def _token_details(self, token_id: int, logprob: float, listed: dict[int, float], rank: int | None,
+                       mask: list[int] | None, s: Sampling) -> dict:
+        """The details of a token event, from what the server said about the token: its log probability, those of the
+        tokens listed with it, its rank and its sampling mask when it sent them. What the numbers may be shown as
+        depends on the server's --logprobs-mode. Only the model's own log probabilities are p, logprob and the top 5.
+        Processed ones are the distribution the token was drawn from, so the token's is its sampling probability, and
+        the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
+        details = {"rank": rank} if rank else {}
+        if self.logprobs_mode == "raw_logprobs":
+            # Equally likely tokens go lowest id first, as in LocalLLM.
+            ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
+            if rank is not None and rank > TOP_N:  # listed only because it was chosen
+                ranked = [c for c in ranked if c[0] != token_id]
+            top = [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in ranked[:TOP_N]]
+            details.update(p=math.exp(logprob), logprob=logprob, top=top)
+        elif self.logprobs_mode == "processed_logprobs":
+            details["p_sampled"] = math.exp(logprob)
+        if mask is not None:
+            details["kept"] = len(set(mask))
+        elif self.logprobs_mode.startswith("processed") and any(v <= UNREPORTED for v in listed.values()):
+            # Some of the most likely tokens were cut, and those left are more likely still, so all of them are listed.
+            details["kept"] = sum(v > UNREPORTED for v in listed.values())
         return self._greedy(details, token_id, s)
 
 [[vllm_backend.py|def _probe(]]
-    def _probe(self, kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
+    def _probe(self, hi: list[int], kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
 
 [[vllm_backend.py|def _greedy(]]
     def _greedy(self, details: dict, token_id: int, s: Sampling) -> dict:
 
-[[vllm_backend.py|bounded = sampling.temperature > 0 and sampling.top_k > 0]]
-    bounded = sampling.temperature > 0 and sampling.top_k > 0
-
 [[vllm_backend.py|def content_part(]]
     def content_part(part: dict, audio_rate: int) -> dict:
-
-vllm_backend.py: def _generate_details(
-    def _generate_details(self, token_id: int, entry: dict | None, mask: list[int] | None, s: Sampling) -> dict:
-        """What /inference/v1/generate said about a token: its log probability and rank, the most likely tokens with
-        theirs (the chosen one first), and, with sampling masks, the tokens top-k and top-p left. From the mask come how
-        many candidates were left and which of the top 5 were cut; when every token left has its probability in the
-        list, the probability the token was drawn with is known too: their probabilities at the temperature, renormalized."""
-        if entry is None or (entry["logprob"] <= -9999.0 and not entry.get("top_logprobs")):  # vLLM's mark for "not reported"
-            return {}
-        logprob = entry["logprob"]
-        listed = {e["token_id"]: e["logprob"] for e in entry.get("top_logprobs") or []}
-        rank = entry.get("rank")
-        ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
-        if rank is not None and rank > TOP_N:  # listed only because it was chosen
-            ranked = [c for c in ranked if c[0] != token_id]
-        top = [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in ranked[:TOP_N]]
-        details = {"p": math.exp(logprob), "logprob": logprob, "top": top, **({"rank": rank} if rank else {})}
-        if s.temperature > 0 and mask is not None:
-            left = set(mask)
-            details["kept"] = len(left)
-            for c in top:
-                c["kept"] = c["id"] in left
-            if token_id in left and left <= listed.keys():
-                scaled = {i: listed[i] / s.temperature for i in left}
-                peak = max(scaled.values())
-                details["p_sampled"] = math.exp(scaled[token_id] - peak) / sum(math.exp(v - peak) for v in scaled.values())
-        return self._greedy(details, token_id, s)
 
 vllm_backend.py: def encode(self, prompt
     def encode(self, prompt: str, parts: list[dict]) -> Encoded:

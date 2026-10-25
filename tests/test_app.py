@@ -423,7 +423,8 @@ def test_reset_turns_mtp_off(at):
 def vllm(monkeypatch, models, outputs):
     """The page with VLLM_URL set. The server serves Qwen3.5 under the name "qwen", and a fake model with what a
     VLLMBackend has (the server in its info, nothing about weights loaded here) stands in for the backend; the server
-    takes images but refused video. `made` holds each one the page makes; set `down` and the server cannot be reached."""
+    takes images but refused video, and sends sampling masks. `made` holds each one the page makes; set `down` and the
+    server cannot be reached, or `defaults` for the decoding the checkpoint recommends."""
     state = {"made": [], "down": False}
 
     class ServedLLM(FakeLLM):
@@ -435,7 +436,9 @@ def vllm(monkeypatch, models, outputs):
             refused = {"video": {"zh": "伺服器不收：At most 0 video(s) may be provided in one prompt.",
                                  "en": "the server refused it: At most 0 video(s) may be provided in one prompt."}}
             self.info = {k: v for k, v in self.info.items() if k not in unknown} | {"modalities": ["image"], "drafter_id": None, "server": {
-                "engine": "vLLM", "version": "0.32.0", "url": url, "served_as": "qwen", "generate_api": True, "sampling_mask": True, "refused": refused}}
+                "engine": "vLLM", "version": "0.32.0", "url": url, "served_as": "qwen", "logprobs_mode": "processed_logprobs", "generate_api": True,
+                "sampling_mask": True, "refused": refused}}
+            self.info["defaults"] = state.get("defaults", self.info["defaults"])
             state["made"].append(self)
 
     def served_models(url, transport=None):
@@ -475,7 +478,21 @@ def test_with_vllm_the_model_reads_what_the_server_takes_and_the_page_says_what_
     tab(at).set_value("model").run()
     html = page_html(at)
     assert "這個 checkpoint 讀得懂、但這台伺服器不收的媒體" in html and "<b>影片</b>：伺服器不收：At most 0 video(s)" in html
-    assert "看得到剩下幾個候選、哪些被剃掉" in html
+    assert "看得到剩下幾個候選；這時它不接受 temperature 0 和 top-k 0" in html
+
+
+def test_a_vllm_server_that_sends_sampling_masks_gets_no_greedy_or_unlimited_top_k_from_the_sidebar(vllm, browser, new_tab, outputs):
+    vllm["defaults"] = {"temperature": 0.0, "top_p": 1.0, "top_k": 0}  # a checkpoint that recommends greedy decoding
+    browser["locale"] = "en-US"
+    at = new_tab()
+    temperature, top_k = (next(s for s in at.slider if s.label == label) for label in ("temperature", "top-k"))
+    assert (temperature.min, top_k.min) == (0.05, 1)
+    assert "--return-sampling-mask" in temperature.help and "greedy" in temperature.help and "0 (no limit) is not allowed" in top_k.help
+    assert (at.session_state["temperature"], at.session_state["top_k"]) == (0.05, 128)  # the nearest settings the server takes
+    outputs.append("Hello.<|im_end|>")
+    ask(at, "Hi")
+    sampling = vllm["made"][0].samplings[-1]
+    assert (sampling.temperature, sampling.top_k) == (0.05, 128)
 
 
 def test_with_vllm_the_model_tab_says_the_server_runs_it(vllm, at):

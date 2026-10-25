@@ -165,13 +165,14 @@ image 先用 wheel 加 hash 裝好 pip 26.2.2，再用它裝其他套件：更�
 ```bash
 # 跑 vLLM 的地方（vLLM 0.32 以上，Linux 加 GPU）。--revision 是 REVISIONS 裡的 commit，伺服器和網頁讀的就是同一份
 # tokenizer 和 chat template。其他參數讓網頁看得到更多（見下面）。
-vllm serve Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 \
-  --enable-scale-out --return-sampling-mask
+vllm serve Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --enable-scale-out
 # 或是 Gemma 4 E2B 加上它的 MTP 草稿模型，回報哪些 token 是猜中的：
-vllm serve google/gemma-4-E2B-it --revision 3e22461f65e89153144f8adb70e3b8c2cc9845a7 \
-  --enable-scale-out --return-sampling-mask \
+vllm serve google/gemma-4-E2B-it --revision 3e22461f65e89153144f8adb70e3b8c2cc9845a7 --enable-scale-out \
   --speculative-config '{"method": "mtp", "model": "google/gemma-4-E2B-it-assistant", "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df", "num_speculative_tokens": 6}' \
   --per-request-spec-decode-metrics detailed
+# 或是開 sampling mask：看得到剩下幾個候選，但換掉模型自己的機率（見下面）：
+vllm serve Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --enable-scale-out \
+  --return-sampling-mask --logprobs-mode processed_logprobs
 
 # 跑網頁的地方：
 VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
@@ -179,18 +180,19 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 
 側欄的模型選單會列出伺服器提供的模型。伺服器用了 `--api-key` 的話，把同一把 key 放在 `VLLM_API_KEY` 給網頁（`vllm serve` 也是從這個變數讀）。伺服器的 KV cache 放不下模型完整的脈絡長度時，用 `--max-model-len` 調低；網頁的脈絡上限會跟著伺服器。
 
-`vllm_backend.py` 是 `llm.py` 之外的第二個 `Backend`（`backend.py`）；harness、工具和網頁都不用改。prompt 一樣精確：網頁把模型的設定檔、tokenizer 和 chat template 下載到 `models/`（不下載權重），自己 render、自己切 token，再把 token id 送給伺服器，所以伺服器讀到的就是脈絡分頁上的那一串。每個 token 回來時帶著它的 id、log 機率，以及那個位置最可能的幾個 token 的 log 機率，由此得到浮窗裡「模型給的機率」（vLLM 預設的 `--logprobs-mode raw_logprobs` 就是模型自己的分布，和 `llm.py` 一樣）和前 5 名候選。網頁還能看到多少，看伺服器加了哪些參數；載入時，網頁用只生成一個 token 的請求問伺服器加了哪些：
+`vllm_backend.py` 是 `llm.py` 之外的第二個 `Backend`（`backend.py`）；harness、工具和網頁都不用改。prompt 一樣精確：網頁把模型的設定檔、tokenizer 和 chat template 下載到 `models/`（不下載權重），自己 render、自己切 token，再把 token id 送給伺服器，所以伺服器讀到的就是脈絡分頁上的那一串。每個 token 回來時帶著它的 id、log 機率，以及那個位置最可能的幾個 token 的 log 機率。vLLM 預設的 `--logprobs-mode raw_logprobs` 下，這些就是模型自己的分布，和 `llm.py` 一樣，由此得到浮窗裡「模型給的機率」和前 5 名候選。網頁還能看到多少，看伺服器加了哪些參數；載入時，網頁用只生成一個 token 的請求問伺服器加了哪些：
 
 | 伺服器參數 | 每一步送到哪裡 | 畫面多了什麼 |
 |---|---|---|
 | 都沒有 | `/v1/completions` | 機率、前 5 名，token 在前 5 名裡時才有排名；只讀文字 |
 | `--enable-scale-out` | `/inference/v1/generate` | 每個 token 的排名，以及伺服器收的圖片、聲音和影片 |
-| 再加 `--return-sampling-mask` | 同上 | 剩下的候選、被 top-k / top-p 剃掉的候選（灰色），以及留下的每個 token 的機率都在網頁要的 20 個裡時（top-k 20 以下，或 nucleus 夠小）取樣時的機率 |
+| 再加 `--return-sampling-mask --logprobs-mode processed_logprobs` | 同上 | 剩下的候選和取樣時的機率，但換掉模型給的機率、熱度和前 5 名：vLLM 只在 processed log 機率下送 sampling mask，這時也不接受 temperature 0 和 top-k 0，所以側欄從 0.05 和 1 開始 |
 | `--per-request-spec-decode-metrics summary` / `detailed` | 兩條都行 | 每一步 MTP 的統計；`detailed` 的話，step 結束時猜中的 token 也有底線 |
 
 畫面不畫的，就不會自己編（`backend.TOKEN_DETAILS`）。細節：
 
-- **greedy 解碼**（temperature 0）不用伺服器說也知道只剩一個候選、抽中的機率是 1，所以不管哪台伺服器，浮窗都會顯示。開了 sampling mask 時，greedy 或 top-k 不限的那一步改走 `/v1/completions`，因為它的 mask 會列出整個詞彙表，卻什麼也沒說。
+- **`--logprobs-mode`** 決定這些數字是什麼，但沒有哪條路會說伺服器用的是哪一種，所以載入時網頁要一個 token，temperature 1、top-k 2、要最可能的 5 個：processed 模式下，被 top-k 剃掉的 3 個會回 -9999；log 機率加起來最多是 1，logits 不會。用 `processed_logprobs` 時（`--return-sampling-mask` 一定要它；沒有它，或沒有 vLLM 的 Model Runner V2，伺服器就不啟動，而 V2 在能用的情況下是預設），token 的 log 機率是它在抽樣分布裡的機率，已經套過 temperature、top-k、top-p，所以浮窗把它當成取樣時的機率，加上排名，不顯示模型給的機率、熱度和前 5 名。剩下幾個候選來自 sampling mask；沒有 mask 時，只有在 top-k / top-p 剃掉了列出來的幾個最可能的 token 時才看得到。用 `raw_logits` 或 `processed_logits` 時，這些數字不是機率，畫面不會把它們當成機率顯示。前 5 名裡哪些被 top-k / top-p 剃掉（`llm.py` 的浮窗裡的灰色），哪一種模式都看不到：模型自己的機率和取樣器做了什麼，不會一起回來。模型分頁會寫伺服器用的是哪一種。
+- **greedy 解碼**（temperature 0）不用伺服器說也知道只剩一個候選、抽中的機率是 1，所以只要伺服器接受 greedy，浮窗都會顯示。開了 sampling mask 的伺服器不接受：vLLM 在每條路上都拒絕 temperature 0 和 top-k 0，所以側欄的滑桿最低到 0.05 和 1，模型建議值比這還低時就調到這裡。
 - **圖片、聲音和影片**跟著 chat template 寫的佔位 token 一起送過去，放在伺服器的 `content_parts`：圖片照 EXIF 轉正存成 PNG；聲音在這裡解碼成 WAV；影片送原檔，由伺服器挑畫格。伺服器把每個佔位 token 展開成那個檔案的 token。為了讓脈絡分頁顯示伺服器讀到的 prompt，網頁先用一個只生成一個 token 的請求問它怎麼展開；生成時伺服器若展開得不一樣，這一步就算錯誤。載入時網頁送一張很小的圖、一段聲音和一段影片給伺服器，看它收哪幾種；它不收的種類（沒加 `--enable-scale-out` 時就是全部）不能附上，輸入框上方會說明，模型分頁列出原因。
 - **MTP** 由伺服器決定（`--speculative-config`），所以側欄的開關關著、不能按。伺服器加上 `--per-request-spec-decode-metrics` 的話，每一步會顯示收下幾個猜測、主模型解碼 forward 幾次。設成 `detailed` 還會說每一次驗證收下幾個猜測，網頁由此標出猜中的 token：第一個 token 來自 prefill，之後每次驗證是收下的猜測，再加一個主模型自己的 token。vLLM 不記沒有猜測的那幾步，所以只有統計剛好對得上每個 token 時才標，而且要等這一步結束；被退回的猜測原本是什麼，伺服器不說。
 - **prefill** 是等到第一個 token 的時間，包含網路。vLLM 會留著和上一個 prompt 相同開頭的 KV cache（prefix caching），所以從第 2 步開始只讀新加的部分；`llm.py` 則是每一步都讀完整個 prompt。有媒體時，前面那個問展開方式的請求已經讀過 prompt 的大部分了。
@@ -260,9 +262,9 @@ VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k 
 | `test_llm.py` | `LocalLLM` 有 `Backend` 的每個方法和屬性，它的 token 帶著每個欄位和細節；自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；`encode()` 照順序把每種媒體和家族的設定交給 processor、短影片給它全部畫格；圖片和影片在 prefill 前先跑視覺編碼器，上一個 prompt 的位置偏移不會留下來；greedy 遇到兩個 token 打平時和 `generate()` 一樣拿 id 小的；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布；模型照固定的 revision 下載到 `models/`（`AGENT_LOOP_MODELS` 可以換位置，`HF_HUB_CACHE` 不行），模型資料夾的檔案、大小（經過快取的連結）和說明提到的欄位 |
 | `test_agent.py` | 假模型是一個 `Backend`，它的 token 帶的欄位和 `LocalLLM` 的一樣；harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止；附件變成問題裡的 part 和給 `run_python` 的說明、每一輪的媒體都交給 processor、展開後的脈絡仍然只把工具結果標成新加入、`run_python` 拿到這段對話的資料夾、沒有 `run_python` 的一輪；模型讀到圖在哪裡，圖本身只給頁面 |
 | `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；一串同樣的特殊 token 畫成一個標籤加個數、截斷的片段不會切開 token、媒體佔了幾個 token、好幾行的程式碼和輸出照行寫出來、這一輪沒提供的工具、一次執行和每一步的圖；模型資料夾卡片：檔案的順序、大小和說明、家族有說明但 checkpoint 沒有的檔案、草稿模型的資料夾、跳脫；backend 沒回報機率、或只回報 log 機率時，token 照它帶的內容畫，不多畫；英文畫面上沒有留下中文 |
-| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案；設了 `VLLM_URL` 時，選單列出伺服器提供的模型、側欄和模型分頁寫出伺服器、MTP 由伺服器決定、模型讀伺服器收的媒體，頁面說明它不收哪些和原因，載入時或之後連不上伺服器，都用頁面的語言說明 |
+| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案；設了 `VLLM_URL` 時，選單列出伺服器提供的模型、側欄和模型分頁寫出伺服器、MTP 由伺服器決定、開了 sampling mask 的伺服器不會從側欄收到 greedy 或不限的 top-k、模型讀伺服器收的媒體，頁面說明它不收哪些和原因，載入時或之後連不上伺服器，都用頁面的語言說明 |
 | `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（已經下載到 `models/` 才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、token 浮窗顯示的是它代表的文字、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字），用真的 processor、問題附上圖片和影片時也一樣；每個模型（和草稿模型）資料夾裡的每個檔案都有說明，說明提到的欄位在檔案裡都找得到 |
-| `test_vllm_backend.py` | vLLM backend 對上一個假伺服器，它說的是 vLLM 0.32 的串流格式：`/v1/completions` 收到 render 好的 prompt 的 token id、側欄的每個設定（其他取樣設定都設成不起作用）、停止 token，以及放得進伺服器脈絡的 `max_tokens`；每個 token 的機率和前 5 名，排名只在前 5 名裡才有；加了 `--enable-scale-out` 時走 `/inference/v1/generate`，每個 token 都有排名，雖然選中的 token 排在清單第一個，前 5 名仍照排名；有 sampling mask 時有剩下的候選、被剃掉的候選和取樣時的機率（留下的 token 有一個沒列出機率就不算），greedy 和 top-k 不限的那一步改走 `/v1/completions`；greedy 是只剩一個、一定抽中的候選；伺服器收哪幾種媒體、每個檔案跟著佔位 token 送過去、脈絡分頁顯示伺服器的展開、生成時展開得不一樣就是錯誤、不收的種類成為一般檔案；MTP 每一步的統計，對得上時才標出猜中的 token；停止 token、token 上限、按停止就關掉串流；連不上伺服器、它沒有提供的模型、它的拒絕和錯誤，兩種語言都有；模型卡片上的規格、伺服器、sampling mask 和它不收的媒體；一整輪呼叫工具再回答、一輪附上圖片的問題，每個時刻都畫得出來；用真的 tokenizer 和 chat template（在 `models/` 裡時），伺服器拿到的就是脈絡分頁上的 prompt；設了 `VLLM_TEST_URL` 時問真的伺服器，伺服器加了哪些參數就測哪些 |
+| `test_vllm_backend.py` | vLLM backend 對上一個假伺服器，它說的是 vLLM 0.32 的串流格式：`/v1/completions` 收到 render 好的 prompt 的 token id、側欄的每個設定（其他取樣設定都設成不起作用）、停止 token，以及放得進伺服器脈絡的 `max_tokens`；每個 token 的機率和前 5 名，排名只在前 5 名裡才有；加了 `--enable-scale-out` 時走 `/inference/v1/generate`，每個 token 都有排名，雖然選中的 token 排在清單第一個，前 5 名仍照排名；有 sampling mask 時（vLLM 只在 processed log 機率下送），有剩下的候選和取樣時的機率，沒有模型自己的機率，temperature 0 和 top-k 0 在每條路上都照 vLLM 的做法被拒絕；載入時用一個 token 判斷伺服器的 `--logprobs-mode`，沒有 mask 的 processed log 機率在前幾名有被剃掉時看得到剩下幾個，logits 只有排名；greedy 是只剩一個、一定抽中的候選；伺服器收哪幾種媒體、每個檔案跟著佔位 token 送過去、脈絡分頁顯示伺服器的展開、生成時展開得不一樣就是錯誤、不收的種類成為一般檔案；MTP 每一步的統計，對得上時才標出猜中的 token；停止 token、token 上限、按停止就關掉串流；連不上伺服器、它沒有提供的模型、它的拒絕和錯誤，兩種語言都有；模型卡片上的規格、伺服器、每種 logprobs 模式下數字代表什麼、sampling mask 和它不收的媒體；一整輪呼叫工具再回答、一輪附上圖片的問題，每個時刻都畫得出來；用真的 tokenizer 和 chat template（在 `models/` 裡時），伺服器拿到的就是脈絡分頁上的 prompt；設了 `VLLM_TEST_URL` 時問真的伺服器，伺服器加了哪些參數就測哪些 |
 | `test_media.py` | 網頁收的每一種格式都有範例檔、被當成正確的種類（聲音對 Qwen 是一般檔案）、解碼得出來；存檔的名字不重複也不含奇怪字元；問題的 part 和寫出文字檔欄位名稱的說明；照片轉正、聲音改成模型的取樣率、影片畫格平均取、畫格率跟著調整；每種聲音和影片播放時的類型，以及 MKV 影片改顯示的畫格 |
 | `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到、事件表指向真的送出事件的那一行、HTML 標籤成對；每段引用的程式和 `tests/guide_excerpts.txt` 一致，改到那段程式才會變，只是換了行號不會；中英文每一段指向同樣的程式和段落，英文版沒有留下中文；產生的靜態頁有亮色和暗色兩套配色與迴圈圖、寫出對應的 commit，根目錄的頁面會送到正確的語言 |
 | `test_real_model.py` | 預設跳過。每個模型：載入的模型是一個 `Backend`；greedy 解碼和 `model.generate()` 一致，純文字、附上圖片、影片和（Gemma）錄音都一樣，之後再問純文字也一樣；真的模型能呼叫計算機並回答；每一種圖片格式都讀得出收據的總計、每一種聲音格式都寫得出錄音的內容（Gemma；Qwen 收到的是一般檔案）、每一種影片格式都看得出球往哪邊滾、每一種資料格式都能用 `run_python` 打開，也寫得出在沙箱裡跑得動的程式（有 Docker 時）；Gemma 開 MTP 時 greedy 輸出和不開一模一樣（附上圖片也是），而且草稿真的有被收下 |
@@ -290,7 +292,7 @@ VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k 
 - 對話裡的聲音和影片用瀏覽器自己的播放器播放；Safari 播不了 MKV 影片，所以 MKV 改成顯示模型讀到的其中 4 張畫格。
 - 每個附件最大 50 MB。附件留在 `~/.cache/agent-loop-visualizer/uploads/`，直到按「新對話」或換模型；直接關掉分頁的話，資料夾會留著。
 - Wikipedia 工具需要網路。
-- 在 vLLM 伺服器上（`VLLM_URL`）greedy 的輸出可能和 `generate()` 不同，畫面看得到多少要看伺服器加了哪些參數（見「在 vLLM 伺服器上跑模型」）：沒加 `--enable-scale-out` 時模型只讀文字，沒加 `--return-sampling-mask` 時 token 浮窗沒有取樣時的機率和剩下的候選。MTP 猜中的 token 要等這一步結束、而且伺服器的統計對得上每個 token 才有底線，被退回的猜測原本是什麼也看不到。有媒體時，每一步都先問伺服器怎麼展開，多一個讀 prompt 的請求。網頁看不到伺服器載入的是哪個 revision，所以啟動時要照那一節加上 `--revision`。
+- 在 vLLM 伺服器上（`VLLM_URL`）greedy 的輸出可能和 `generate()` 不同，畫面看得到多少要看伺服器加了哪些參數（見「在 vLLM 伺服器上跑模型」）：沒加 `--enable-scale-out` 時模型只讀文字，token 浮窗要嘛有模型自己的機率和前 5 名（預設），要嘛在 `--logprobs-mode processed_logprobs` 下（`--return-sampling-mask` 一定要它）有取樣時的機率和剩下幾個候選，兩者不會同時有；前 5 名哪些被剃掉永遠看不到；開了 sampling mask 的伺服器不接受 greedy 和不限的 top-k。MTP 猜中的 token 要等這一步結束、而且伺服器的統計對得上每個 token 才有底線，被退回的猜測原本是什麼也看不到。有媒體時，每一步都先問伺服器怎麼展開，多一個讀 prompt 的請求。網頁看不到伺服器載入的是哪個 revision，所以啟動時要照那一節加上 `--revision`。
 - `vllm_backend.py` 照 vLLM 0.32 原始碼裡的協定寫，測試用的是說這些協定的假伺服器、真的 tokenizer 和真的網頁；`/inference/v1/generate`、它的 sampling mask 和每一步的統計在 vLLM 裡標示為實驗性功能，之後可能會改。對真伺服器的測試（`VLLM_TEST_URL`）還沒在 GPU 上跑過。
 - `MODEL_ID` 環境變數決定一開始選哪個模型，也可以指定選單裡沒有的 checkpoint，只要它屬於已經支援的家族（Gemma 4 或 Qwen3.5）；其他家族要先照「支援更多模型」加一個 family。
 

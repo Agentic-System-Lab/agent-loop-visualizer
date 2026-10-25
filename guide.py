@@ -1032,6 +1032,17 @@ SECTIONS = [
                "and the 5 most likely tokens at its position with theirs, keyed `token_id:<id>`, so the rank is known only when the token is among those 5. "
                "By default vLLM sends the model's own distribution (`--logprobs-mode raw_logprobs`), which means the same as `LocalLLM`'s `p`."},
         Code("vllm_backend.py", "def _details("),
+        {"zh": "可是伺服器也可能用別的模式啟動，而沒有哪條路會說是哪一種，所以載入時 backend 先問一個 token：temperature 1、top-k 2、"
+               "要最可能的 5 個（[[vllm_backend.py|def logprobs_mode(]]）。processed 模式下，被 top-k 剃掉的 3 個會回 -9999；"
+               "log 機率加起來最多是 1，logits 不會。`processed_logprobs` 是 token 被抽出來的那個分布，套過 temperature、top-k、top-p，"
+               "所以選中的 token 的就是取樣時的機率，送成 `p_sampled`，不送 `p` 和前 5 名；列出來的有幾個被剃掉時，也知道剩下幾個。logits 不是機率，就不當成機率送。"
+               "排名每種模式都一樣：temperature 不改順序，top-k、top-p 留下的是最可能的那幾個。",
+         "en": "Yet a server may run another mode, and no route says which, so at load the backend asks for one token at temperature 1 with top-k 2 and the 5 "
+               "most likely tokens ([[vllm_backend.py|def logprobs_mode(]]). In a processed mode, the 3 that top-k cut come back as -9999; log probabilities "
+               "add up to at most 1, and logits do not. `processed_logprobs` is the distribution the token was drawn from, after temperature, top-k and top-p, "
+               "so the chosen token's is its sampling probability, sent as `p_sampled`, and no `p` or top 5 is sent; when some of those listed were cut, how many "
+               "were left is known too. Logits are no probabilities, and none is sent as one. The rank is the same in every mode: temperature keeps the order, and top-k and top-p keep the most likely tokens."},
+        Code("vllm_backend.py", "def _token_details("),
         {"zh": "伺服器加上 `--enable-scale-out` 時，還有一條 `/inference/v1/generate`：一樣送 token id 進去、token id 出來，但說得更多。"
                "載入時 backend 用幾個只生成一個 token 的請求問伺服器能做什麼：有沒有這條路、有沒有送 sampling mask、"
                "checkpoint 讀得懂的媒體它收不收；不收的寫下原因（[[vllm_backend.py|def _probe(]]）。這條路帶來的：",
@@ -1042,16 +1053,15 @@ SECTIONS = [
         (
             {"zh": "**每個 token 的排名**，就算不在前 5 名也有。它的清單把選中的 token 放第一個，所以多要一個，再照排名排出前 5 名。",
              "en": "**Every token's rank**, outside the top 5 as well. Its list puts the chosen token first, so the backend asks for one more and sorts the top 5 by rank."},
-            {"zh": "**`--return-sampling-mask`**：每個位置 top-k、top-p 留下了哪些 token。由此知道剩下幾個候選、前 5 名哪些被剃掉；"
-                   "留下的每個 token 的機率都在要回來的 20 個 log 機率裡時（top-k 20 以下，或 nucleus 夠小），取樣時的機率也算得出來："
-                   "它們在這個 temperature 下的機率，重新正規化。greedy 不用問伺服器：只剩一個候選，抽中的機率是 1（[[vllm_backend.py|def _greedy(]]）。"
-                   "greedy 或 top-k 不限時，mask 會列出整個詞彙表卻什麼也沒說，那一步改走 `/v1/completions`"
-                   "（[[vllm_backend.py|bounded = sampling.temperature > 0 and sampling.top_k > 0]]）。",
-             "en": "**`--return-sampling-mask`**: the tokens top-k and top-p left at each position. From it come how many candidates were left and which of the top 5 "
-                   "were cut; and when every token left has its probability among the 20 log probabilities asked for (top-k 20 or less, or a small nucleus), the "
-                   "sampling probability too: their probabilities at the temperature, renormalized. Greedy decoding needs no server for that: one candidate left, "
-                   "drawn with probability 1 ([[vllm_backend.py|def _greedy(]]). In greedy decoding or with top-k off a mask would list the whole vocabulary and "
-                   "tell nothing, so such a step goes to `/v1/completions` ([[vllm_backend.py|bounded = sampling.temperature > 0 and sampling.top_k > 0]])."},
+            {"zh": "**`--return-sampling-mask`**：每個位置 top-k、top-p 留下了哪些 token，由此知道剩下幾個候選。vLLM 只在 `--logprobs-mode processed_logprobs` "
+                   "下開它，所以有 mask 的伺服器送回的是抽樣分布：看得到取樣時的機率和剩下幾個候選，看不到模型給的機率、前 5 名，也看不到哪幾個被剃掉。"
+                   "這時它也不接受 temperature 0 和 top-k 0（mask 的大小要靠 top-k 限制），所以側欄的滑桿從 0.05 和 1 開始。"
+                   "greedy 不用問伺服器：只剩一個候選，抽中的機率是 1（[[vllm_backend.py|def _greedy(]]）。",
+             "en": "**`--return-sampling-mask`**: the tokens top-k and top-p left at each position, from which comes how many candidates were left. vLLM allows it "
+                   "only with `--logprobs-mode processed_logprobs`, so a server with masks sends the sampling distribution: the sampling probability and the "
+                   "candidates left show, and the model probability, the top 5 and which of them were cut do not. Such a server also refuses temperature 0 and "
+                   "top-k 0 (top-k bounds the mask), so the sidebar's sliders start at 0.05 and 1. Greedy decoding needs no server: one candidate left, drawn "
+                   "with probability 1 ([[vllm_backend.py|def _greedy(]])."},
             {"zh": "**圖片、聲音和影片**：跟著 chat template 寫的佔位 token 一起送過去（圖片轉正存成 PNG、聲音解碼成 WAV、影片送原檔，"
                    "[[vllm_backend.py|def content_part(]]），伺服器把每個佔位 token 展開成那個檔案的 token。`encode()` 先用一個只生成一個 token 的請求"
                    "問伺服器怎麼展開，所以脈絡分頁上是伺服器讀到的 prompt（{{media}}）；生成時伺服器若展開得不一樣，就當成錯誤。",
@@ -1060,7 +1070,6 @@ SECTIONS = [
                    "how first, with a request that generates one token, so the Context tab shows the prompt as the server reads it ({{media}}); a different "
                    "expansion at generation time is an error."},
         ),
-        Code("vllm_backend.py", "def _generate_details("),
         Code("vllm_backend.py", "def encode(self, prompt"),
         {"zh": "推測解碼是伺服器啟動時決定的（`--speculative-config`），側欄的 MTP 開關不能按。伺服器加上 `--per-request-spec-decode-metrics` 時，"
                "最後一段回應帶著這一步的統計，變成 step 卡片上的「草稿收下幾個、forward 幾次」。設成 `detailed` 還有每一次驗證收下幾個猜測："

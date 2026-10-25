@@ -17,7 +17,7 @@ uv run pytest                                              # ~40 s; loads no wei
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen, ~4 min; -k Qwen for one
 docker build -t agent-loop-sandbox sandbox                 # optional: run_python's sandbox; its tests skip without it; bump SANDBOX_VERSION with the Dockerfile
 uv run streamlit run streamlit_app.py                      # http://localhost:8501; MODEL_ID=Qwen/Qwen3.5-0.8B starts on Qwen
-VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py   # the model on a vLLM server: vllm serve <model> --revision <its REVISIONS commit> [--enable-scale-out --return-sampling-mask]
+VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py   # the model on a vLLM server: vllm serve <model> --revision <its REVISIONS commit> [--enable-scale-out [--return-sampling-mask --logprobs-mode processed_logprobs]]
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # vllm_backend.py against that real server
 uv run python guide.py _site                               # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
@@ -67,7 +67,8 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_
   forward passes run: greedy with MTP equals greedy without, and sampling with MTP keeps each token's
   distribution. `tests/test_llm.py` and `tests/test_real_model.py` check this; don't loosen them.
   This is about llm.py: vLLM runs its own kernels, so VLLMBackend promises only that the server reads
-  exactly the prompt's token ids and that nothing it shows was made up where the server sent nothing.
+  exactly the prompt's token ids and that nothing it shows was made up where the server sent nothing, nor shown as
+  something else: a processed --logprobs-mode is the sampling distribution, never the model's p.
 - **Escape everything the model writes** before it reaches `st.html`. tests/test_render.py checks it,
   and also that every prefix of a run's events renders, because the page redraws mid-run.
 - **guide.py finds code by text, not line number.** `Code("agent.py", "def run(self):")` and inline
@@ -126,7 +127,8 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_
   weights and runs only with `RUN_MODEL_TESTS=1`. After changing parsing, prompts, stop tokens or the
   decoding loop, run them if the models are available, and say whether they ran or were skipped.
 - tests/test_vllm_backend.py fakes the vLLM server with `httpx.MockTransport`, in the stream formats of vLLM
-  0.32's /v1/completions and /inference/v1/generate (with and without --enable-scale-out, sampling masks, media);
+  0.32's /v1/completions and /inference/v1/generate (with and without --enable-scale-out, sampling masks, media, in each
+  --logprobs-mode, refusing what vLLM refuses);
   when the models' tokenizers are in models/ it also runs them through the real chat templates, and with
   `VLLM_TEST_URL` it asks a real server. Read vLLM's source before changing what is sent or read.
 - Wikipedia is faked over HTTP; the default suite never touches the network. Tests that need Docker
