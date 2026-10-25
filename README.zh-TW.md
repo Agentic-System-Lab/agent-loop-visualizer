@@ -8,14 +8,14 @@
 
 這個專案是學習用的：用更直覺、更視覺化的方式，讓你看懂 agent 迴圈在底層怎麼運作。Agent 的聊天框背後跑著一個迴圈：一步接著一步，模型提出動作、harness 去執行，直到停止。一般的聊天 app 只讓你看到問題和答案；這個網頁在每一步發生的當下把它畫出來，細到模型寫下的每一個 token，整個機制攤開在你眼前。畫面上的每個部分都對應 [Agent Atlas 技術與實戰交流](https://cyyeh.github.io/agent-atlas-learning/) unit 01 導讀的一節，本專案就是它的專案之一；[可以試試看的實驗](#可以試試看的實驗)則把這些概念變成可以自己動手試的實驗。
 
-- 模型：側欄可以選 [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) 或 [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)，在本機用 Hugging Face `transformers` 推論
-- MTP 推測解碼：Gemma 4 E2B 可以在側欄打開（預設關閉），用 [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant) 當草稿模型，一次 forward 產生好幾個 token
+- 模型：側欄可以選 [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) 或 [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)，在本機用 Hugging Face `transformers` 推論，也可以用 [vLLM](https://docs.vllm.ai/) 跑：在側欄的「用什麼跑模型」選 vLLM (Docker)，網頁會替你在 Docker 裡啟動一台 vLLM 伺服器，有 NVIDIA GPU 就用 GPU，否則用 CPU；或是設定 `VLLM_URL`，連到你自己的伺服器，在這台電腦上或有 GPU 的 Linux 機器上都行（見[在 vLLM 伺服器上跑模型](#在-vllm-伺服器上跑模型)）
+- MTP 推測解碼：一次 forward 產生好幾個 token。用 `transformers` 時，Gemma 4 E2B 可以在側欄打開（預設關閉），用 [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant) 當草稿模型；在有 GPU 的 vLLM 上兩個模型都會推測解碼，Gemma 4 E2B 用同一個草稿模型，Qwen3.5 用它自己 checkpoint 裡的 MTP 層，由網頁在 Docker 裡啟動的 vLLM 預設就打開
 - 檔案：用輸入框左邊的 ＋ 附上圖片和影片（兩個模型都行）、聲音（Gemma 4 E2B，也可以直接用麥克風錄音），或是在輸入框上方選一個範例檔案（收據、錄音、影片、銷售資料），自己問它問題；每個檔案在脈絡裡變成一串 token，畫面上看得到
 - 寫程式（選用）：在側欄打開「讓模型寫程式」，模型多一個 `run_python` 工具，它寫的 Python 在 Docker 沙箱裡執行，讀得到你附上的資料檔（CSV、TSV、JSON、純文字、Markdown、Excel），也能用 matplotlib 畫圖，圖會出現在聊天區。只有這個功能需要 Docker
 - 語言：網頁和運作說明都有繁體中文和英文版，預設跟著瀏覽器的語言，右上角可以切換；選過的語言會記住，下次打開直接用它
 - 授權：[Apache License 2.0](LICENSE)
 
-左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到。不同模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
+左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，或是跑在一台會把每個 token 的 log 機率傳回來的 vLLM 伺服器上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到（用 vLLM 時，看得到多少要看伺服器開了哪些參數）。不同模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
 
 [運作說明](https://cyyeh.github.io/agent-loop-visualizer/zh/)把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段。它放在 GitHub Pages 上，app 上方的「運作說明」會在新分頁打開它，語言和網頁當下的語言一樣。
 
