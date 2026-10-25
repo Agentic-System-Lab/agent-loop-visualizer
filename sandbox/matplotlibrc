@@ -1,0 +1,6 @@
+# matplotlib's settings in run_python's sandbox. plt.show() hands each figure to run_python (agent_loop_figures.py)
+# instead of opening a window. A character DejaVu Sans lacks, as in a label in Chinese, is taken from WenQuanYi
+# Micro Hei, the font the image installs for it, instead of coming out as an empty box; matplotlib falls back only
+# between the families listed here, not within sans-serif.
+backend: module://agent_loop_figures
+font.family: sans-serif, WenQuanYi Micro Hei

@@ -5,10 +5,13 @@ before the next rerun, the way the page's half-second refresh would. The browser
 is a Chinese one unless a test says otherwise, so the page is in Chinese.
 """
 
+import base64
+import io
 import os
 import re
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import streamlit as st
@@ -656,6 +659,42 @@ def test_media_examples_follow_what_the_model_reads(at):
     assert "影片裡的紅球是從左邊滾到右邊，還是從右邊滾到左邊？" in labels and "把這段錄音的內容寫下來，再翻成繁體中文。" not in labels  # Qwen3.5 does not
 
 
+def sample_picker(at):
+    return next(b for b in at.button_group if b.key == "samples")
+
+
+def test_a_sample_file_goes_with_a_question_of_ones_own(at, models, outputs):
+    outputs.append("收據上有三個品項。<turn|>")
+    sample_picker(at).set_value(["receipt.png"]).run()
+    assert at.chat_input[0].placeholder == "問一個關於 receipt.png 的問題…"
+    ask(at, "收據上有幾個品項？")
+    [run] = at.session_state["runs"]
+    [receipt] = run.attachments
+    assert (run.text, receipt.name, receipt.kind) == ("收據上有幾個品項？", "receipt.png", "image")
+    assert Path(receipt.path).read_bytes() == (APP.parent / "assets/examples/receipt.png").read_bytes()
+    assert [p["name"] for p in models[0].encodes[0]] == ["receipt.png"]
+    assert sample_picker(at).value == [] and at.chat_input[0].placeholder != "問一個關於 receipt.png 的問題…"  # it went with that question only
+
+
+def test_the_sample_files_follow_what_the_model_can_use(at, sandbox):
+    assert sample_picker(at).options == ["ball.mp4", "receipt.png", "speech.flac"]
+    toggle(at, "讓模型寫程式").set_value(True).run()
+    assert sample_picker(at).options == ["ball.mp4", "receipt.png", "sales.csv", "speech.flac"]  # once run_python can read it
+    next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    assert sample_picker(at).options == ["ball.mp4", "receipt.png", "sales.csv"]  # Qwen3.5 does not hear
+
+
+def test_a_sample_data_file_is_for_run_python(at, outputs, models, sandbox):
+    toggle(at, "讓模型寫程式").set_value(True).run()
+    sample_picker(at).set_value(["sales.csv"]).run()
+    ask(at, "顯示 sales.csv 的前十行。")
+    [run] = at.session_state["runs"]
+    assert [(a.name, a.kind) for a in run.attachments] == [("sales.csv", "file")]
+    assert at.session_state["history"][0]["content"][-1]["text"] == (
+        "顯示 sales.csv 的前十行。\n\nAttached for run_python, which reads them:\n"
+        "/data/sales.csv (942 B), whose first line is: month,region,units,revenue")
+
+
 def test_writing_code_looks_for_docker_only_once_switched_on(at, sandbox):
     assert sandbox["looked"] == 0
     assert not any("寫 Python" in label for label in example_labels(at))
@@ -724,6 +763,23 @@ def test_the_csv_example_runs_python_on_the_attached_file(at, outputs, models, m
     html = page_html(at)
     assert '<span class="fn">run_python</span>({&quot;code&quot;: &quot;…&quot;})' in html and "df.groupby(&quot;month&quot;)" in html  # the code, written out
     assert "&quot;stdout&quot;: |\n    2025-12 244320\n    2131200" in html
+
+
+def test_a_chart_is_shown_in_the_chat_and_in_the_step_that_drew_it(at, outputs, monkeypatch):
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), "white").save(buffer, format="PNG")
+    stdout = f"\n{tools.FIGURES_MARK}\n{base64.b64encode(buffer.getvalue()).decode()}\n"
+    monkeypatch.setattr(tools.subprocess, "run", lambda cmd, **kwargs: SimpleNamespace(returncode=0, stdout=stdout, stderr=""))
+    outputs += [tool_call("run_python", code="import matplotlib.pyplot as plt\nplt.plot([1, 2])\nplt.show()"), "畫好了。<turn|>"]
+    toggle(at, "讓模型寫程式").set_value(True).run()
+    ask(at, "畫一條線。")
+    [chat, step] = at.image  # the chat is drawn before the loop's tab
+    assert chat.captions == step.captions == ["figure-1.png"]
+    folder = Path(at.session_state["runs"][0].run.files)
+    assert (folder / "figure-1.png").read_bytes() == buffer.getvalue()
+    assert '&quot;figures&quot;: [\n    &quot;/data/figure-1.png&quot;' in page_html(at)  # what the model read, in the step card
 
 
 def test_a_new_chat_removes_the_conversations_files(at, outputs):

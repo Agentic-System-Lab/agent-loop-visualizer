@@ -25,3 +25,10 @@ dev = [
 testpaths = ["tests"]
 pythonpath = [".", "tests"]
 markers = ["model: loads the real model weights; set RUN_MODEL_TESTS=1 to run"]
+
+# The fixed versions after eMudhra's emSign CA certificates were compromised and removed from the CA bundles
+# (https://discuss.python.org/t/109576): older ones still trust them. uv refuses to run below required-version,
+# and the constraints keep a lock from ever taking an older certifi, pip or sigstore.
+[tool.uv]
+required-version = ">=0.13.4"
+constraint-dependencies = ["certifi>=2026.10.19", "pip>=26.2.2", "sigstore>=4.5.1"]

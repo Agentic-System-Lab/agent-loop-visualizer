@@ -2,6 +2,7 @@
 a run is live, so every function here must work on any prefix of a run's events."""
 
 import base64
+import dataclasses
 import json
 import re
 import threading
@@ -20,7 +21,7 @@ from html_check import assert_balanced
 from i18n import LANGS
 from llm import Sampling
 from media import Attachment
-from tools import TOOLS
+from tools import TOOLS, ToolResult
 
 ANSWER = "現在是下午三點。<turn|>"
 
@@ -194,6 +195,21 @@ def test_build_folds_a_tool_run_into_steps():
     assert one["t0"] <= one["t1"] <= two["t0"]
     assert data["end"]["stop_reason"] == "no_tool_call"
     assert data["last"] == "run_end" and data["t"] == events[-1]["t"]
+
+
+def test_images_are_the_charts_of_each_step_in_order(monkeypatch):
+    charts = iter([["/u/figure-1.png", "/u/figure-2.png"], ["/u/figure-3.png"]])
+
+    def run_python(code, files=None):
+        images = next(charts)
+        return ToolResult({"figures": [f"/data/{Path(p).name}" for p in images]}, images)
+
+    monkeypatch.setitem(TOOLS, "run_python", dataclasses.replace(TOOLS["run_python"], fn=run_python))
+    outputs = [tool_call("run_python", code="a"), tool_call("calculator", expression="1+1"), tool_call("run_python", code="b"), "好了。<turn|>"]
+    _, events, _ = record_run(outputs)
+    data = render.build(events)
+    assert render.images(data["steps"]) == ["/u/figure-1.png", "/u/figure-2.png", "/u/figure-3.png"]
+    assert [render.images([s]) for s in data["steps"]] == [["/u/figure-1.png", "/u/figure-2.png"], [], ["/u/figure-3.png"], []]
 
 
 def test_build_tracks_approval():

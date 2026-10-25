@@ -13,7 +13,7 @@ from agent import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, Run, RunSettings, common_
 from fakes import MEDIA_TOKENS, FakeLLM, record_run, tool_call
 from llm import Sampling
 from media import Attachment
-from tools import TOOLS, ToolError
+from tools import TOOLS, ToolError, ToolResult
 
 ANSWER = "現在是下午三點。<turn|>"
 
@@ -262,6 +262,23 @@ def test_run_python_gets_the_conversations_folder(monkeypatch, tmp_path):
 def test_other_tools_do_not_get_the_folder(monkeypatch, tmp_path):
     _, events, _ = record_run([tool_call("calculator", expression="6*7"), ANSWER], files=tmp_path)
     assert of_type(events, "tool_result")[0]["ok"] is True
+
+
+def test_the_model_reads_where_the_charts_are_and_the_page_gets_the_images(monkeypatch, tmp_path):
+    def run_python(code, files=None):
+        return ToolResult({"figures": ["/data/figure-1.png"]}, [str(files / "figure-1.png")])
+
+    monkeypatch.setitem(TOOLS, "run_python", dataclasses.replace(TOOLS["run_python"], fn=run_python))
+    run, events, _ = record_run([tool_call("run_python", code="plt.show()"), ANSWER], files=tmp_path)
+    [result] = of_type(events, "tool_result")
+    assert json.loads(result["result"]) == {"figures": ["/data/figure-1.png"]}
+    assert result["images"] == [str(tmp_path / "figure-1.png")]
+    assert str(tmp_path) not in json.dumps(run.messages, ensure_ascii=False)  # never a path on this machine
+
+
+def test_a_tool_without_images_sends_none(monkeypatch):
+    _, events, _ = record_run([tool_call("calculator", expression="6*7"), ANSWER])
+    assert of_type(events, "tool_result")[0]["images"] == []
 
 
 # ---------- the harness checks the call before running it ----------

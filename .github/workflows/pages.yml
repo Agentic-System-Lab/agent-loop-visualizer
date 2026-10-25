@@ -27,6 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version-file: pyproject.toml  # its required-version: no uv older than the fix for the revoked emSign certificates
       # The page needs only pygments, not torch and the rest of the app, and its tests only pytest
       # besides. They fail when an edit moved or removed a line the page points at, or changed code it
       # quotes since its text was last reread (tests/guide_excerpts.txt); the page already up then stays.

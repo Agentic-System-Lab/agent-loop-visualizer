@@ -25,7 +25,7 @@ from typing import Callable
 import media
 from i18n import pick
 from llm import LocalLLM, Sampling
-from tools import TOOLS, ToolError
+from tools import TOOLS, ToolError, ToolResult
 
 MAX_RESULT_CHARS = 2000
 MAX_FORMAT_ERRORS = 3
@@ -249,12 +249,14 @@ class Run:
             result, ok = {"error": f"{type(e).__name__}: {e}"}, False
         return self._observe(step, cid, call["name"], result, ok=ok, ms=(time.perf_counter() - start) * 1000)
 
-    def _observe(self, step: int, cid: str, name: str, result: dict, ok: bool, ms: float) -> str:
+    def _observe(self, step: int, cid: str, name: str, result: dict | ToolResult, ok: bool, ms: float) -> str:
+        # The model reads a ToolResult's data; its images (run_python's charts) are only for the page to show.
+        result, images = (result.data, result.images) if isinstance(result, ToolResult) else (result, [])
         text = json.dumps(result, ensure_ascii=False)
         truncated = len(text) > MAX_RESULT_CHARS
         if truncated:
             text = text[:MAX_RESULT_CHARS] + "…(truncated)"
-        self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1))
+        self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1), images=images)
         return text
 
     def _wait_for_decision(self, cid: str) -> bool:

@@ -16,7 +16,8 @@ switch at the top right, kept in a cookie, or else in the browser's language.
 
 A question can come with files (media.py): images, sound and video the model reads, and, when the sidebar
 lets the model write code, data files for run_python. Only then does the page look for Docker, which
-run_python's sandbox needs, and say how to install it when it is missing.
+run_python's sandbox needs, and say how to install it when it is missing. The charts run_python draws are
+shown in the chat and in the step that drew them.
 """
 
 import json
@@ -41,7 +42,7 @@ from tools import TOOLS
 DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(families.MODELS)))
 MODELS = {**families.MODELS, DEFAULT_MODEL: families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
 ASSETS = Path(__file__).parent / "assets"
-SAMPLES = ASSETS / "examples"  # the files some examples attach
+SAMPLES = ASSETS / "examples"  # the files some examples attach, and the sample files offered above the input box
 # Each conversation's files go in a folder of their own under here. It is under the home folder because that is
 # the one every Docker setup (Docker Desktop, OrbStack, Colima) shares with its containers.
 UPLOADS = Path(os.environ.get("AGENT_LOOP_UPLOADS", Path.home() / ".cache" / "agent-loop-visualizer" / "uploads"))
@@ -92,6 +93,7 @@ EXAMPLES = {
     ],
 }
 EXAMPLE_ICONS = {"image": ":material/image:", "audio": ":material/graphic_eq:", "video": ":material/movie:", "file": ":material/table_chart:", "python": ":material/code:"}
+SAMPLE_FILES = sorted(p.name for p in SAMPLES.iterdir() if p.is_file() and not p.name.startswith("."))
 
 
 def tr(zh: str, en: str) -> str:
@@ -366,14 +368,35 @@ def chat_panel(llm: LocalLLM, live_run: LiveRun | None, other: LiveRun | None):
                       "No new question can be sent until it ends."))
         st.button(tr("停止那個 agent", "Stop that agent"), icon=":material/stop_circle:", on_click=other.run.stop, width="stretch")
     types = media.accepted(llm.modalities, python=code_ready())  # a data file is no use to the model without run_python
+    samples = [name for name in SAMPLE_FILES if Path(name).suffix.lstrip(".") in types]
+    picked = [name for name in st.session_state.get("samples") or [] if name in samples]
+    sample_row = st.container() if samples else None  # filled after the input box, so that sending a question can clear the samples picked for it
+    if picked:
+        names = ", ".join(picked)
+        placeholder = tr(f"問一個關於 {names} 的問題…", f"Ask a question about {names}…")
+    else:
+        placeholder = tr("問一個問題，也可以附上檔案…", "Ask a question; you can attach files…") if types else tr("問一個問題…", "Ask a question…")
     sent = st.chat_input(
-        tr("問一個問題，也可以附上檔案…", "Ask a question; you can attach files…") if types else tr("問一個問題…", "Ask a question…"),
-        key="chat_input", disabled=busy, accept_file="multiple" if types else False, file_type=types or None,
+        placeholder, key="chat_input", disabled=busy, accept_file="multiple" if types else False, file_type=types or None,
         accept_audio="audio" in llm.modalities, max_upload_size=MAX_UPLOAD_MB,
     )
     text, uploads = (sent, []) if isinstance(sent, str) or sent is None else (sent.text, uploaded(sent))
-    if (text or uploads) and start_run(llm, text or "", uploads):
+    if (text or uploads) and start_run(llm, text or "", uploads + [(name, (SAMPLES / name).read_bytes()) for name in picked]):
+        st.session_state.samples = []
         st.rerun()
+    if sample_row:
+        sample_picker(sample_row, samples, llm, busy)
+
+
+def sample_picker(row, samples: list[str], llm: LocalLLM, busy: bool):
+    """The sample files from assets/examples that this model can use, to ask a question of one's own about: a file
+    picked here goes with the next question typed in the input box, as one attached with the + would."""
+    def label(name: str) -> str:
+        return f"{EXAMPLE_ICONS[media.kind_of(name, llm.modalities)]} {name}"
+
+    with row:
+        st.pills(tr("範例檔案", "Sample files"), samples, selection_mode="multi", format_func=label, key="samples", disabled=busy,
+                 help=tr("選了的檔案會附在你接下來輸入的問題，和用 ＋ 附上的一樣。", "A file picked here goes with the next question you type, as if attached with the +."))
 
 
 def uploaded(sent) -> list[tuple[str, bytes]]:
@@ -429,6 +452,8 @@ def assistant_message(i: int, run: LiveRun):
     trace = render.trace_html(data, lang)
     if trace:
         st.html(trace)
+    for path in render.images(data["steps"]):  # the charts run_python drew, as soon as they are back
+        st.image(path, caption=Path(path).name)
 
     for call in render.pending_approvals(data):
         with st.container(border=True):
@@ -499,6 +524,8 @@ def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_
             with st.container(border=True):
                 live_step = run.live and step is steps[-1]
                 st.html(render.step_html(step, data, lang, live=live_step))
+                for path in render.images([step]):
+                    st.image(path, width=320, caption=Path(path).name)
                 if step["context"]:
                     st.button(tr("看這一步的完整脈絡 →", "See this step's full context →"), key=f"ctx-{index}-{step['n']}", type="tertiary",
                               on_click=show_context, args=(index, step["n"]))

@@ -10,10 +10,14 @@ languages (i18n.py), and the model reads it in the language its run started in.
 run_python is the one tool whose environment is not this process: it runs the model's code in a Docker
 container built from sandbox/Dockerfile, with the conversation's files read-only at /data. It is offered
 only when the sidebar lets the model write code, and Docker is needed for it alone: the page then asks
-sandbox_problem() what is missing, tells the user, and leaves the tool out until it is there.
+sandbox_problem() what is missing, tells the user, and leaves the tool out until it is there. The charts
+the code draws with matplotlib come back with what it printed (sandbox/agent_loop_figures.py); they are
+saved in the conversation's folder, and run_python returns them as a ToolResult, whose images the page
+shows the user while the model reads only where they are.
 """
 
 import ast
+import base64
 import math
 import operator
 import os
@@ -33,9 +37,13 @@ from i18n import pick
 
 WIKI_HEADERS = {"User-Agent": f"agent-loop-visualizer/0.1 (https://github.com/cyyeh/agent-atlas-learning) httpx/{httpx.__version__}"}
 SANDBOX_IMAGE = "agent-loop-sandbox"  # docker build -t agent-loop-sandbox sandbox
+SANDBOX_VERSION = "2"  # the agent-loop-sandbox.version label in sandbox/Dockerfile; an older image is rebuilt
 DOCKER_INSTALL = "https://docs.docker.com/get-started/get-docker/"
 SANDBOX_TIMEOUT = 30  # seconds a piece of code may run
 MAX_OUTPUT_CHARS = 1500  # of what the code prints, and of a traceback; the harness cuts the whole result at 2000
+FIGURES_MARK = "<<agent-loop-figures>>"  # the line after which the sandbox writes the charts, one base64 PNG per line
+MAX_FIGURES = 4  # sandbox/agent_loop_figures.py stops at as many
+PNG = b"\x89PNG\r\n\x1a\n"
 TYPE_CHECKS = {
     "string": lambda v: isinstance(v, str),
     "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
@@ -53,6 +61,14 @@ class ToolError(Exception):
     def __init__(self, zh: str, en: str | None = None):
         super().__init__(zh)
         self.text = {"zh": zh, "en": en or zh}
+
+
+@dataclass
+class ToolResult:
+    """What a tool returns when it also has something for the user to see: `data` is what the model reads, and
+    `images` are files on this machine the page shows (run_python's charts), whose paths the model never reads."""
+    data: dict
+    images: list[str]
 
 
 @dataclass
@@ -226,12 +242,13 @@ def sandbox_user() -> str:
 def sandbox_command(name: str, files: Path | None) -> list[str]:
     """docker run for one piece of code, read from stdin. The container has no network, a read-only file system
     except a small /tmp, a cap on memory, CPU and processes, no Linux capabilities, the host's own user (never root),
-    and the conversation's files read-only at /data; --rm deletes it afterwards."""
+    and the conversation's files read-only at /data; --rm deletes it afterwards. Its charts come out on stdout,
+    after FIGURES_MARK."""
     cmd = [
         "docker", "run", "--rm", "-i", "--name", name, "--network", "none",
         "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--pids-limit", "64",
         "--read-only", "--tmpfs", "/tmp:rw,size=64m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-        "--user", sandbox_user(), "-e", "HOME=/tmp", "-w", "/tmp",
+        "--user", sandbox_user(), "-e", "HOME=/tmp", "-e", f"AGENT_LOOP_FIGURES={FIGURES_MARK}", "-w", "/tmp",
     ]
     if files is not None:
         cmd += ["-v", f"{Path(files).resolve()}:/data:ro"]
@@ -239,11 +256,12 @@ def sandbox_command(name: str, files: Path | None) -> list[str]:
 
 
 def sandbox_problem() -> dict[str, str] | None:
-    """Why run_python cannot run right now, in both languages (Markdown), or None when Docker and the sandbox image
-    are there."""
+    """Why run_python cannot run right now, in both languages (Markdown), or None when Docker and an up-to-date
+    sandbox image are there."""
     build = f"`docker build -t {SANDBOX_IMAGE} sandbox`"
+    label = '{{ index .Config.Labels "agent-loop-sandbox.version" }}'
     try:
-        found = subprocess.run(["docker", "image", "inspect", SANDBOX_IMAGE], capture_output=True, text=True, timeout=10)
+        found = subprocess.run(["docker", "image", "inspect", "--format", label, SANDBOX_IMAGE], capture_output=True, text=True, timeout=10)
     except FileNotFoundError:
         return {
             "zh": f"寫程式要用 Docker 當沙箱，但這台電腦還沒有安裝。請先[安裝 Docker]({DOCKER_INSTALL})，再到專案資料夾執行 {build}。",
@@ -252,15 +270,42 @@ def sandbox_problem() -> dict[str, str] | None:
         }
     except subprocess.TimeoutExpired:
         return {"zh": "Docker 沒有回應，確認它已經啟動。", "en": "Docker does not respond; make sure it is running."}
-    if found.returncode == 0:
+    if found.returncode == 0 and found.stdout.strip() == SANDBOX_VERSION:
         return None
+    if found.returncode == 0:  # built from an older sandbox/Dockerfile: no matplotlib, and a pip that trusts revoked certificates
+        return {"zh": f"沙箱的 image 是舊版的：在專案資料夾再執行一次 {build}。", "en": f"The sandbox image is out of date: run {build} in the project folder again."}
     if "no such image" in found.stderr.lower() or "not found" in found.stderr.lower():
         return {"zh": f"還沒有建好沙箱的 image：在專案資料夾執行 {build}（只要一次）。", "en": f"The sandbox image is not built yet: run {build} in the project folder (once)."}
     return {"zh": "Docker 已經安裝，但沒有在執行。啟動 Docker 之後再試一次。", "en": "Docker is installed but not running. Start Docker and try again."}
 
 
-def run_python(code: str, files: Path | None = None) -> dict:
+def save_figures(charts: str, folder: Path | None) -> list[Path]:
+    """The PNGs the sandbox wrote after FIGURES_MARK, saved in the conversation's folder as figure-1.png, figure-2.png…
+    under names no file there has yet, so the model's next code finds them in /data too."""
+    pngs = []
+    for line in charts.split()[:MAX_FIGURES]:
+        try:
+            png = base64.b64decode(line, validate=True)
+        except ValueError:
+            continue
+        if png.startswith(PNG):
+            pngs.append(png)
+    if folder is None or not pngs:
+        return []
+    paths, n = [], 0
+    for png in pngs:
+        n += 1
+        while (path := Path(folder) / f"figure-{n}.png").exists():
+            n += 1
+        path.write_bytes(png)
+        paths.append(path)
+    return paths
+
+
+def run_python(code: str, files: Path | None = None) -> dict | ToolResult:
     name = f"agent-loop-{uuid.uuid4().hex[:12]}"
+    if files is not None:  # made by Docker otherwise, as root on Linux, where the charts could not be saved
+        Path(files).mkdir(parents=True, exist_ok=True)
     try:
         done = subprocess.run(sandbox_command(name, files), input=code, capture_output=True, text=True, timeout=SANDBOX_TIMEOUT)
     except FileNotFoundError as e:
@@ -268,7 +313,8 @@ def run_python(code: str, files: Path | None = None) -> dict:
     except subprocess.TimeoutExpired as e:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30)  # the container outlives a killed client
         raise ToolError(f"程式執行超過 {SANDBOX_TIMEOUT} 秒，已經停止", f"The code ran for more than {SANDBOX_TIMEOUT} s and was stopped") from e
-    out, err = done.stdout[:MAX_OUTPUT_CHARS], done.stderr[-MAX_OUTPUT_CHARS:]
+    stdout, _, charts = done.stdout.partition(f"\n{FIGURES_MARK}\n")
+    out, err = stdout[:MAX_OUTPUT_CHARS], done.stderr[-MAX_OUTPUT_CHARS:]
     if done.returncode == 125:  # docker run itself failed: no image, Docker not running
         raise ToolError(f"Docker 無法啟動沙箱：{err.strip()}", f"Docker could not start the sandbox: {err.strip()}")
     if done.returncode == 137:  # killed by the kernel, nearly always for going over --memory
@@ -276,9 +322,13 @@ def run_python(code: str, files: Path | None = None) -> dict:
     if done.returncode != 0:
         printed = "\n".join(text.strip("\n") for text in (out, err) if text.strip())
         raise ToolError(f"程式以結束代碼 {done.returncode} 結束：\n{printed}", f"The code exited with code {done.returncode}:\n{printed}")
-    if not out.strip():
+    figures = save_figures(charts, files)
+    if not out.strip() and not figures:
         raise ToolError("程式沒有印出任何東西；用 print() 印出想看的結果", "The code printed nothing; print() what you want to see")
-    return {"stdout": out + ("…(truncated)" if len(done.stdout) > MAX_OUTPUT_CHARS else "")}
+    result = {"stdout": out + ("…(truncated)" if len(stdout) > MAX_OUTPUT_CHARS else "")} if out.strip() else {}
+    if not figures:
+        return result
+    return ToolResult({**result, "figures": [f"/data/{path.name}" for path in figures]}, [str(path) for path in figures])
 
 
 LANG = {"type": "string", "enum": ["en", "zh"], "default": "en", "description": "Wikipedia language edition"}
@@ -341,8 +391,9 @@ TOOLS = {
             name="run_python",
             description=(
                 "Run Python 3.12 code in a sandbox and return what it prints. Use it for calculations, data analysis "
-                "and the files the user attached, which are under /data (read-only). numpy and pandas are installed; "
-                f"there is no network, and the code may run for {SANDBOX_TIMEOUT} seconds. print() the results you need."
+                "and the files the user attached, which are under /data (read-only). numpy, pandas and matplotlib are installed; "
+                "plt.show() shows a chart to the user. "
+                f"There is no network, and the code may run for {SANDBOX_TIMEOUT} seconds. print() the results you need."
             ),
             parameters={
                 "type": "object",

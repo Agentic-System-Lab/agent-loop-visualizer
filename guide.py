@@ -463,11 +463,11 @@ SECTIONS = [
                "([[llm.py|def load_drafter(self):]])."},
         Code("streamlit_app.py", "@st.cache_resource(max_entries=1", end="def current_llm() -> LocalLLM:"),
         {"zh": "輸入框（[[streamlit_app.py|sent = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。輸入框可以附上檔案，模型讀得懂聲音時還能錄音；"
-               "有些範例也會附上 `assets/examples/` 裡的範例檔。`start_run()` 先用不等待的方式拿一把全域的鎖"
+               "有些範例也會附上 `assets/examples/` 裡的範例檔，輸入框上方也列出這些檔案，選了的會附在你自己打的問題裡。`start_run()` 先用不等待的方式拿一把全域的鎖"
                "（[[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]）："
                "模型只有一份，所以不管開幾個分頁，同一時間只能有一個 agent 在跑，拿不到鎖就跳出提示。拿到鎖之後，才把檔案存進這段對話的資料夾（{{media}}）。",
          "en": "The input box ([[streamlit_app.py|sent = st.chat_input(]]) and the example buttons both call `start_run()`. Files can be attached "
-               "in the input box, and a model that hears can be sent a recording; some examples attach a sample file from `assets/examples/`. "
+               "in the input box, and a model that hears can be sent a recording; some examples attach a sample file from `assets/examples/`, and the same files are listed above the input box, to go with a question you type yourself. "
                "`start_run()` first tries to take a global lock without waiting ([[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]): "
                "there is one copy of the model, so however many tabs are open, only one agent can run at a time, and without the lock the tab shows a notice. "
                "Only with the lock does it save the files in the conversation's folder ({{media}})."},
@@ -939,39 +939,51 @@ SECTIONS = [
                    "和 ReAct 論文在 HotpotQA 上用的 search / read 是同一組動作。",
              "en": "`search_wikipedia` / `read_wikipedia`: call the Wikipedia API with httpx ([[tools.py|def search_wikipedia(]]), the same pair "
                    "of actions, search and read, that the ReAct paper used on HotpotQA."},
-            {"zh": "`run_python`：在 Docker 容器裡跑模型寫的程式，把印出來的東西傳回去（[[tools.py|def run_python(]]）。",
-             "en": "`run_python`: runs the code the model writes in a Docker container and returns what it prints ([[tools.py|def run_python(]])."},
+            {"zh": "`run_python`：在 Docker 容器裡跑模型寫的程式，把印出來的東西和畫出來的圖傳回來（[[tools.py|def run_python(]]）。",
+             "en": "`run_python`: runs the code the model writes in a Docker container and returns what it prints and the charts it draws ([[tools.py|def run_python(]])."},
         ),
         Code("tools.py", "def _eval(node):",
              caption={"zh": "遞迴走過語法樹，遇到白名單以外的節點就丟 `ToolError`。",
                       "en": "Walks the syntax tree recursively and raises `ToolError` at any node outside the allowlist."}),
         {"zh": "`calculator` 只算得了一行算式；`run_python` 則讓模型寫完整的程式，所以環境要關得更緊。每次呼叫都從 `sandbox/Dockerfile` 建的 image"
-               "（Python 3.12 加上 numpy、pandas，以及讀 Excel 的 openpyxl、印表格的 tabulate）開一個新容器：沒有網路，檔案系統唯讀、只有 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，"
+               "（Python 3.12 加上 numpy、pandas，讀 Excel 的 openpyxl、印表格的 tabulate，還有畫圖的 matplotlib 和一套中文字型）開一個新容器：沒有網路，檔案系統唯讀、只有 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，"
                "拿掉所有 Linux capability，用你自己的使用者執行、絕不用 root（[[tools.py|def sandbox_user(]]：在 Linux 上，掛進容器的資料夾保留原本的權限，換成別的使用者可能進不去）；"
                "這段對話的資料夾唯讀掛在 `/data`。程式從 stdin 送進去，跑完容器就刪掉。",
          "en": "`calculator` can only work out one expression; `run_python` lets the model write whole programs, so its environment is shut "
-               "tighter. Every call starts a new container from the image `sandbox/Dockerfile` builds (Python 3.12 with numpy and pandas, plus openpyxl to read Excel and tabulate to print tables): no "
+               "tighter. Every call starts a new container from the image `sandbox/Dockerfile` builds (Python 3.12 with numpy and pandas, openpyxl to read Excel, tabulate to print tables, and matplotlib to draw charts, with a font for Chinese labels): no "
                "network, a read-only file system where only `/tmp` can be written, 512 MB of memory, one CPU, at most 64 processes, no Linux "
                "capabilities, and your own user, never root ([[tools.py|def sandbox_user(]]: on Linux a folder mounted in the container keeps its "
                "permissions, which might not let another user in); the conversation's folder is mounted read-only at `/data`. The code goes in on stdin, "
                "and the container is deleted when it is done."},
         Code("tools.py", "def sandbox_command("),
-        {"zh": "跑超過 30 秒就把容器停掉；結束代碼不是 0（例如丟出例外）、記憶體用太多或什麼都沒印，都當成 `ToolError`，模型下一步讀到 traceback 或提醒，可以改了再跑。"
+        {"zh": "容器寫不進任何頁面讀得到的地方，所以圖跟著印出來的東西從 stdout 出來：image 裡 matplotlib 的 backend（`sandbox/agent_loop_figures.py`）"
+               "在 `plt.show()` 或程式結束時把每張圖轉成 PNG，程式結束前接在印出來的東西後面：先一行 `run_python` 用 `AGENT_LOOP_FIGURES` 傳進去的記號，再每行一張 base64 的 PNG。"
+               "`run_python` 把它們從模型要讀的輸出切掉，存進這段對話的資料夾，叫 `figure-1.png`、`figure-2.png`…（[[tools.py|def save_figures(]]），"
+               "回傳一個 `ToolResult`：模型讀到的是 `{\"stdout\": …, \"figures\": [\"/data/figure-1.png\"]}`，圖本身只給頁面，畫在聊天區和這一步的卡片上。",
+         "en": "The container cannot write anywhere the page can read, so the charts come out on stdout with what the code prints: matplotlib's "
+               "backend in the image (`sandbox/agent_loop_figures.py`) turns each figure into a PNG at `plt.show()` or when the program ends, and as it "
+               "exits writes them after the printed text: a line with the marker `run_python` passes in `AGENT_LOOP_FIGURES`, then one base64 PNG per line. "
+               "`run_python` cuts them off what the model reads, saves them in the conversation's folder as `figure-1.png`, `figure-2.png`… "
+               "([[tools.py|def save_figures(]]) and returns a `ToolResult`: the model reads `{\"stdout\": …, \"figures\": [\"/data/figure-1.png\"]}`, "
+               "and the images themselves are for the page alone, drawn in the chat and on this step's card."},
+        {"zh": "跑超過 30 秒就把容器停掉；結束代碼不是 0（例如丟出例外）、記憶體用太多或什麼都沒印也沒畫，都當成 `ToolError`，模型下一步讀到 traceback 或提醒，可以改了再跑。"
                "Docker 不是必要的：只有側欄打開「讓模型寫程式」時才會提供 `run_python`，頁面也是那時候才去找 Docker（[[tools.py|def sandbox_problem(]]），"
-               "沒裝、沒啟動或還沒建 image，就在側欄說明怎麼做，這一輪也不把 `run_python` 給模型。",
-         "en": "Code that runs past 30 seconds has its container stopped; a nonzero exit code (an exception, say), too much memory or no output at all is a "
+               "沒裝、沒啟動、還沒建 image，或 image 比 `sandbox/Dockerfile` 舊（看它的 `agent-loop-sandbox.version` label），就在側欄說明怎麼做，這一輪也不把 `run_python` 給模型。",
+         "en": "Code that runs past 30 seconds has its container stopped; a nonzero exit code (an exception, say), too much memory or neither output nor a chart is a "
                "`ToolError`, so the model reads the traceback or a reminder in the next step and can fix the code and run it again. Docker is "
                "not required: `run_python` is offered only when Let the model write code is on in the sidebar, and only then does the page look "
-               "for Docker ([[tools.py|def sandbox_problem(]]); if it is not installed, not running or the image is not built, the sidebar says "
+               "for Docker ([[tools.py|def sandbox_problem(]]); if it is not installed, not running, or the image is not built or is older than "
+               "`sandbox/Dockerfile` (going by its `agent-loop-sandbox.version` label), the sidebar says "
                "what to do, and the turn goes on without `run_python`."},
     )),
     Section("observe", "context",
             {"zh": "觀察接回脈絡，進下一圈", "en": "The observation goes back into the context for the next step"},
             {"zh": "工具結果變成一則 `tool` 訊息；下一圈 render 時，它就出現在模型的工具呼叫後面。",
              "en": "The tool result becomes a `tool` message; when the next step renders, it appears after the model's tool call."}, (
-        {"zh": "工具結果（或錯誤）在 `_observe()` 裡轉成 JSON 字串，超過 `MAX_RESULT_CHARS`（2000 字元）就截斷並加上 `…(truncated)`，"
+        {"zh": "工具結果（或錯誤）在 `_observe()` 裡轉成 JSON 字串（帶著圖的 `ToolResult` 先拆開：模型只讀它的資料，圖只放進事件給頁面），超過 `MAX_RESULT_CHARS`（2000 字元）就截斷並加上 `…(truncated)`，"
                "免得一個長網頁塞爆脈絡；送出 `tool_result` 事件，再把字串回傳。",
-         "en": "In `_observe()` the tool result (or error) becomes a JSON string, cut at `MAX_RESULT_CHARS` (2000 characters) with "
+         "en": "In `_observe()` the tool result (or error) becomes a JSON string (a `ToolResult` with charts is split first: the model reads only "
+               "its data, and the images go only into the event, for the page), cut at `MAX_RESULT_CHARS` (2000 characters) with "
                "`…(truncated)` added, so one long web page cannot flood the context; the `tool_result` event goes out, and the string is returned."},
         Code("agent.py", "def _observe("),
         {"zh": "回傳的字串變成一則 `role: tool` 的訊息 append 到 `self.messages`。同時更新連續格式錯誤的次數：這次是解析錯誤就加一，正常就歸零。",
@@ -1070,8 +1082,8 @@ EVENTS = [
      {"zh": "工具名稱、環境", "en": "the tool name, the environment"},
      {"zh": "迴圈圖亮起「環境」", "en": "Environment lights up in the loop diagram"}),
     ("tool_result", "agent.py", 'self.emit("tool_result"',
-     {"zh": "結果字串、成功與否、是否截斷、耗時", "en": "the result string, whether it succeeded, whether it was cut, the time it took"},
-     {"zh": "環境段的結果、聊天區的工具標籤", "en": "the result in the Environment section, the tool chip in the chat"}),
+     {"zh": "結果字串、成功與否、是否截斷、耗時、給你看的圖", "en": "the result string, whether it succeeded, whether it was cut, the time it took, the images for you"},
+     {"zh": "環境段的結果、聊天區的工具標籤；圖畫在兩邊", "en": "the result in the Environment section, the tool chip in the chat; the charts in both"}),
     ("error", "agent.py", 'self.emit("error"',
      {"zh": "例外的類型和訊息", "en": "the exception's type and message"},
      {"zh": "聊天區和停止卡片的錯誤訊息", "en": "the error message in the chat and on the stop card"}),

@@ -934,7 +934,7 @@ agent.py: self.emit("tool_start" … return self._observe(step, cid, call["name"
     def search_wikipedia(query: str, lang: str = "en") -> dict:
 
 [[tools.py|def run_python(]]
-    def run_python(code: str, files: Path | None = None) -> dict:
+    def run_python(code: str, files: Path | None = None) -> dict | ToolResult:
 
 tools.py: def _eval(node):
     def _eval(node):
@@ -969,16 +969,20 @@ tools.py: def sandbox_command(
     def sandbox_command(name: str, files: Path | None) -> list[str]:
         """docker run for one piece of code, read from stdin. The container has no network, a read-only file system
         except a small /tmp, a cap on memory, CPU and processes, no Linux capabilities, the host's own user (never root),
-        and the conversation's files read-only at /data; --rm deletes it afterwards."""
+        and the conversation's files read-only at /data; --rm deletes it afterwards. Its charts come out on stdout,
+        after FIGURES_MARK."""
         cmd = [
             "docker", "run", "--rm", "-i", "--name", name, "--network", "none",
             "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--pids-limit", "64",
             "--read-only", "--tmpfs", "/tmp:rw,size=64m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--user", sandbox_user(), "-e", "HOME=/tmp", "-w", "/tmp",
+            "--user", sandbox_user(), "-e", "HOME=/tmp", "-e", f"AGENT_LOOP_FIGURES={FIGURES_MARK}", "-w", "/tmp",
         ]
         if files is not None:
             cmd += ["-v", f"{Path(files).resolve()}:/data:ro"]
         return cmd + [SANDBOX_IMAGE, "python", "-I", "-"]
+
+[[tools.py|def save_figures(]]
+    def save_figures(charts: str, folder: Path | None) -> list[Path]:
 
 [[tools.py|def sandbox_problem(]]
     def sandbox_problem() -> dict[str, str] | None:
@@ -986,12 +990,14 @@ tools.py: def sandbox_command(
 == observe ==
 
 agent.py: def _observe(
-    def _observe(self, step: int, cid: str, name: str, result: dict, ok: bool, ms: float) -> str:
+    def _observe(self, step: int, cid: str, name: str, result: dict | ToolResult, ok: bool, ms: float) -> str:
+        # The model reads a ToolResult's data; its images (run_python's charts) are only for the page to show.
+        result, images = (result.data, result.images) if isinstance(result, ToolResult) else (result, [])
         text = json.dumps(result, ensure_ascii=False)
         truncated = len(text) > MAX_RESULT_CHARS
         if truncated:
             text = text[:MAX_RESULT_CHARS] + "…(truncated)"
-        self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1))
+        self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1), images=images)
         return text
 
 agent.py: for cid, call in zip(ids, calls): … if format_errors >= MAX_FORMAT_ERRORS:
@@ -1150,7 +1156,7 @@ agent.py: def stop(self): … def decide(self, call_id
     self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
 
 [[agent.py|self.emit("tool_result"]]
-    self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1))
+    self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1), images=images)
 
 [[agent.py|self.emit("error"]]
     self.emit("error", message=f"{type(e).__name__}: {e}")

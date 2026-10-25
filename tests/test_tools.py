@@ -1,8 +1,11 @@
+import base64
+import io
 import json
 import math
 import re
 import subprocess
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -10,9 +13,10 @@ import pytest
 
 import samples
 import tools
-from tools import TOOLS, ToolError, calculator, get_current_time, read_wikipedia, run_python, search_wikipedia
+from tools import TOOLS, ToolError, ToolResult, calculator, get_current_time, read_wikipedia, run_python, search_wikipedia
 
 CJK = re.compile(r"[\u4e00-\u9fff\uff00-\uffef]")
+SANDBOX = Path(__file__).resolve().parent.parent / "sandbox"
 
 
 # ---------- schema and validation ----------
@@ -309,6 +313,7 @@ def test_run_python_runs_the_code_in_a_locked_down_container(monkeypatch, tmp_pa
     for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges", f"--user {tools.sandbox_user()}", "--memory 512m"):
         assert flag in flags
     assert f"-v {tmp_path.resolve()}:/data:ro" in flags  # the conversation's files, read-only
+    assert f"-e AGENT_LOOP_FIGURES={tools.FIGURES_MARK}" in flags  # where the charts start in what it prints
     assert kwargs["input"] == "print(6 * 7)" and kwargs["timeout"] == tools.SANDBOX_TIMEOUT
 
 
@@ -359,8 +364,68 @@ def test_run_python_keeps_the_start_of_long_output(monkeypatch):
     assert out == "x" * tools.MAX_OUTPUT_CHARS + "…(truncated)"
 
 
+def png(width=1) -> str:
+    """A tiny real PNG, base64, as the sandbox writes each chart after FIGURES_MARK."""
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, 1)).save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+def test_run_python_hands_the_charts_to_the_page_and_tells_the_model_where_they_are(monkeypatch, tmp_path):
+    monkeypatch.setattr(tools.subprocess, "run", FakeDocker(stdout=f"2025-12 244320\n\n{tools.FIGURES_MARK}\n{png(1)}\n{png(2)}\n"))
+    result = run_python("…", tmp_path)
+    assert result == ToolResult({"stdout": "2025-12 244320\n", "figures": ["/data/figure-1.png", "/data/figure-2.png"]},
+                                [str(tmp_path / "figure-1.png"), str(tmp_path / "figure-2.png")])
+    assert (tmp_path / "figure-2.png").read_bytes() == base64.b64decode(png(2))
+
+
+def test_a_chart_alone_is_an_answer(monkeypatch, tmp_path):
+    monkeypatch.setattr(tools.subprocess, "run", FakeDocker(stdout=f"\n{tools.FIGURES_MARK}\n{png()}\n"))
+    assert run_python("plt.show()", tmp_path).data == {"figures": ["/data/figure-1.png"]}  # not "printed nothing"
+
+
+def test_charts_never_overwrite_a_file_and_only_pngs_are_kept(monkeypatch, tmp_path):
+    (tmp_path / "figure-1.png").write_bytes(b"the user's own")
+    lines = ["not-base64!", base64.b64encode(b"GIF89a...").decode(), *(png(n) for n in range(1, 6))]
+    monkeypatch.setattr(tools.subprocess, "run", FakeDocker(stdout=f"ok\n\n{tools.FIGURES_MARK}\n" + "\n".join(lines) + "\n"))
+    result = run_python("…", tmp_path)
+    assert result.data["figures"] == ["/data/figure-2.png", "/data/figure-3.png"]  # of the first MAX_FIGURES lines, two are PNGs
+    assert (tmp_path / "figure-1.png").read_bytes() == b"the user's own"
+
+
+def test_failing_code_drops_its_charts(monkeypatch, tmp_path):
+    monkeypatch.setattr(tools.subprocess, "run", FakeDocker(returncode=1, stdout=f"half\n\n{tools.FIGURES_MARK}\n{png()}\n", stderr="KeyError: 'Month'\n"))
+    with pytest.raises(ToolError) as e:
+        run_python("…", tmp_path)
+    assert e.value.text["en"] == "The code exited with code 1:\nhalf\nKeyError: 'Month'"  # no base64 for the model to read
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_without_a_folder_the_charts_have_nowhere_to_go(monkeypatch):
+    monkeypatch.setattr(tools.subprocess, "run", FakeDocker(stdout=f"ok\n\n{tools.FIGURES_MARK}\n{png()}\n"))
+    assert run_python("…") == {"stdout": "ok\n"}
+
+
+def test_the_sandbox_image_agrees_with_tools():
+    dockerfile = (SANDBOX / "Dockerfile").read_text()
+    assert f'LABEL agent-loop-sandbox.version="{tools.SANDBOX_VERSION}"' in dockerfile
+    assert f"MAX_FIGURES = {tools.MAX_FIGURES}" in (SANDBOX / "agent_loop_figures.py").read_text()
+    assert "backend: module://agent_loop_figures" in (SANDBOX / "matplotlibrc").read_text()
+
+
+def test_the_sandbox_image_installs_a_pip_without_the_revoked_certificates_by_hash():
+    """pip below 26.2.2 also trusts its own copy of certifi, which still has eMudhra's compromised emSign certificates."""
+    [line] = [l for l in (SANDBOX / "Dockerfile").read_text().splitlines() if '"pip @ ' in l]
+    version = re.search(r"/pip-([\d.]+)-py3-none-any\.whl#sha256=[0-9a-f]{64}\"", line).group(1)
+    assert tuple(map(int, version.split("."))) >= (26, 2, 2)
+
+
 @pytest.mark.parametrize("docker, words", [
-    (FakeDocker(raises=None, returncode=0), None),
+    (FakeDocker(returncode=0, stdout=f"{tools.SANDBOX_VERSION}\n"), None),
+    (FakeDocker(returncode=0, stdout="\n"), ("舊版", "out of date")),  # built before the image had a version
+    (FakeDocker(returncode=0, stdout="1\n"), ("舊版", "out of date")),
     (FakeDocker(returncode=1, stderr="Error: No such image: agent-loop-sandbox"), ("docker build -t agent-loop-sandbox sandbox",) * 2),
     (FakeDocker(returncode=1, stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock."), ("沒有在執行", "not running")),
 ])
@@ -422,3 +487,32 @@ def test_there_is_a_reader_for_every_data_format():
 def test_the_real_sandbox_reads_every_data_format(tmp_path, ext):
     samples.make(tmp_path, ext)
     assert run_python(READERS[ext], tmp_path)["stdout"].strip() == str(samples.YEAR_REVENUE)
+
+
+@pytest.mark.skipif(tools.sandbox_problem() is not None, reason="needs Docker and the agent-loop-sandbox image")
+def test_the_real_sandbox_sends_back_its_charts_with_chinese_labels(tmp_path):
+    code = """
+import warnings
+warnings.simplefilter("error")  # a character missing from every font is a warning, and so an error here
+import matplotlib.pyplot as plt
+plt.bar(["一月", "二月"], [3, -5])
+plt.title("每月營收")
+plt.show()
+plt.plot([1, 2, 3])  # left open: sent when the program ends
+print("done")
+"""
+    result = run_python(code, tmp_path)
+    assert result.data == {"stdout": "done\n", "figures": ["/data/figure-1.png", "/data/figure-2.png"]}
+    from PIL import Image
+
+    for path in result.images:
+        with Image.open(path) as chart:
+            assert chart.format == "PNG" and chart.width > 300
+
+
+@pytest.mark.skipif(tools.sandbox_problem() is not None, reason="needs Docker and the agent-loop-sandbox image")
+def test_the_real_sandbox_has_a_pip_that_no_longer_trusts_the_revoked_certificates():
+    code = "import pip; from pip._vendor import certifi; print(pip.__version__, certifi.__version__)"
+    pip, certifi = run_python(code)["stdout"].split()
+    assert tuple(map(int, pip.split("."))) >= (26, 2, 2)
+    assert tuple(map(int, certifi.split("."))) >= (2026, 10, 19)

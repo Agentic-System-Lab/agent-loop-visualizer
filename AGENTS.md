@@ -12,10 +12,10 @@ page shows, the architecture, the tests and the known limits; read the parts you
 ## Commands
 
 ```bash
-uv sync                                                    # Python 3.12, pinned by uv.lock
+uv sync                                                    # Python 3.12, pinned by uv.lock; uv >= 0.13.4 (required-version in pyproject.toml)
 uv run pytest                                              # ~40 s; loads no weights, touches no network
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen, ~4 min; -k Qwen for one
-docker build -t agent-loop-sandbox sandbox                 # optional: run_python's sandbox; its tests skip without it
+docker build -t agent-loop-sandbox sandbox                 # optional: run_python's sandbox; its tests skip without it; bump SANDBOX_VERSION with the Dockerfile
 uv run streamlit run streamlit_app.py                      # http://localhost:8501; MODEL_ID=Qwen/Qwen3.5-0.8B starts on Qwen
 uv run python guide.py _site                               # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
@@ -33,11 +33,11 @@ llm.py             LocalLLM: the hand-written decoding loop (KV cache, temperatu
 families/          everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
 tools.py           tools: the schema the model reads plus the Python function the harness runs; run_python's docker run
 media.py           attachments: saved per conversation, written into the user message, decoded for the processor (PyAV)
-sandbox/           the Dockerfile of run_python's sandbox image, agent-loop-sandbox
+sandbox/           run_python's sandbox image, agent-loop-sandbox: the Dockerfile, and the matplotlib backend (agent_loop_figures.py) and matplotlibrc that send charts back on stdout
 render.py          pure functions from the event list to HTML: loop diagram, step cards, token heat and popovers, context
 guide.py           the 運作說明 page: content in both languages, code references by text, static HTML for GitHub Pages
 i18n.py            the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
-assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach)
+assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach, also offered above the input box)
 tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
 ```
 

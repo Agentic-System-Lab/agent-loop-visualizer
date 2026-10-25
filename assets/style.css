@@ -48,6 +48,23 @@
 [class*="st-key-example-"] button { justify-content: flex-start; text-align: left; }
 [class*="st-key-example-"] button p { text-align: left; }
 
+/* The fullscreen button of an image in the chat (an attachment, a chart) or in a step card (a chart). Streamlit
+   shows it above the image only on hover, where the box's top edge cuts it off and its grey hardly shows; here it
+   stays in the image's top right corner, on a dark chip that shows on any picture. Opened full screen, the close
+   button is left where Streamlit puts it. */
+:is(.st-key-chat_box, .st-key-timeline) [data-testid="stElementToolbar"]:has(~ [data-testid="stImage"]):has(button[aria-label^="Fullscreen"]) {
+  top: 6px !important;
+  right: 6px;
+  padding: 0;
+  opacity: 1 !important;
+}
+:is(.st-key-chat_box, .st-key-timeline) [data-testid="stElementToolbar"]:has(~ [data-testid="stImage"]):has(button[aria-label^="Fullscreen"]) [data-testid="stElementToolbarButtonContainer"] {
+  background: rgb(0 0 0 / 0.55);
+  color: #fff;
+  box-shadow: none;
+}
+:is(.st-key-chat_box, .st-key-timeline) [data-testid="stElementToolbar"]:has(~ [data-testid="stImage"]) button { color: inherit; }
+
 .trace { display: flex; flex-wrap: wrap; gap: 6px; }
 .trace-chip {
   display: inline-flex;

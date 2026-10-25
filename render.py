@@ -269,6 +269,11 @@ def build(events: list[dict]) -> dict:
     return data
 
 
+def images(steps: list[dict]) -> list[str]:
+    """The files the tools in these steps made for the user to see, such as run_python's charts, in order."""
+    return [path for s in steps for c in s["calls"].values() if c["result"] for path in c["result"].get("images", [])]
+
+
 def all_calls(data: dict) -> list[dict]:
     return [{**c, "step": s["n"]} for s in data["steps"] for c in s["calls"].values()]
 
