@@ -3,6 +3,12 @@ showEmailPrompt = false
 # Local only: the app runs a model on this machine, so do not serve it to the network.
 address = "localhost"
 
+[runner]
+# No full garbage collection after every script run. It holds the GIL for 100-250 ms in this process, and a run ends as
+# a question starts and on every redraw while one is live: the agent's thread then cannot read the vLLM stream, whose
+# tokens arrive all at once, at thousands of tok/s. release_model() collects when a model goes.
+postScriptGC = false
+
 [browser]
 gatherUsageStats = false
 

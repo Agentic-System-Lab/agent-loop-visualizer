@@ -132,7 +132,9 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
 - The app listens on localhost only (`.streamlit/config.toml`) because it runs a model on the user's
   machine. Keep it that way. With `VLLM_URL` the prompts go to that server; the page itself stays local. The vLLM
   server in Docker publishes its port on 127.0.0.1 only (docker-compose/compose.yaml) and reads models/ read-only and
-  offline, so it loads the commit in `REVISIONS`.
+  offline, so it loads the commit in `REVISIONS`. The same file keeps `runner.postScriptGC` off: a full garbage
+  collection after every script run held the GIL long enough for the agent's thread to read a vLLM step's tokens all
+  at once, at thousands of tok/s (tests/test_app.py checks it).
 - **What a model reads comes from the checkpoint and the backend.** `LocalLLM.modalities` is worked out from the config
   and the processor, not the family; `VLLMBackend.modalities` is that minus what the server refused when it was probed at
   load (all of it without `--enable-scale-out`), and the page says which it refused and why. A file of a kind the model does not read is a plain file for

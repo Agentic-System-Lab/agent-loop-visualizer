@@ -10,6 +10,7 @@ import gc
 import io
 import re
 import time
+import tomllib
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
@@ -720,6 +721,14 @@ def test_after_vllm_failed_transformers_can_be_picked_again(docker_vllm, at, mod
     assert at.error and engine(at).value == "vllm"  # the switch is still there
     pick_engine(at, "local")
     assert not at.error and at.chat_input and models[-1].model_id == "google/gemma-4-E2B-it"
+
+
+def test_streamlit_does_not_collect_garbage_after_every_script_run():
+    # A full collection holds the GIL for 100-250 ms in this process (torch, transformers, the tokenizers, every run's
+    # tokens), and a script run ends as a question starts and on every redraw of a live run: the agent's thread could
+    # not read the vLLM stream meanwhile, and its tokens came in all at once, at thousands of tok/s.
+    config = tomllib.loads((APP.parent / ".streamlit" / "config.toml").read_text())
+    assert config["runner"]["postScriptGC"] is False
 
 
 def test_with_vllm_url_the_server_is_given_and_there_is_nothing_to_switch(vllm, at):
