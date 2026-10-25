@@ -127,7 +127,8 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; HF_HUB
   reads (system prompts, tool schemas). What a person sees is in both Traditional Chinese with Taiwan
   usage and English: UI strings, stop reasons, tool errors, the READMEs, the 運作說明 page. In Chinese,
   use the terms the page already uses: 脈絡 for context, 模型, harness, 環境 for environment, 停止,
-  工具, 特殊 token, 推測解碼; keep token, prefill, KV cache, top-k and the like in English. In English,
+  工具, 特殊 token, 推測解碼, 滑動視窗 for sliding window, 隱藏層維度 for hidden size, 注意力頭 for
+  attention head; keep token, prefill, KV cache, top-k and the like in English. In English,
   use the page's terms too: context, model, harness, environment, stop, tool, special token, drafter,
   speculative decoding, observation, turn (one question) and step (one time around the loop), and the
   UI's own labels (Use tools, Thinking mode, Ask me before running a tool, Max steps, How it works).

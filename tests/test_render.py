@@ -553,7 +553,7 @@ def test_model_card_names_the_drafter():
     waiting = render.model_html({**INFO, "drafter_id": DRAFTER["model_id"]}, lang="zh")
     assert "huggingface.co/fake/gemma-test-assistant" in waiting and "打開側欄的「MTP 推測解碼」就會載入" in waiting
     loaded = render.model_html({**INFO, "drafter_id": DRAFTER["model_id"], "drafter": DRAFTER}, lang="zh")
-    assert "77.7M 參數 · 4 層" in loaded and "每次猜 6 個 token" in loaded
+    assert "77.7M 參數 · 4 層 · 隱藏層維度 256" in loaded and "每次猜 6 個 token" in loaded
     assert_balanced(waiting)
     assert_balanced(loaded)
 
@@ -687,6 +687,15 @@ def test_model_card():
     assert "8 Q / 1 KV" in html and "131,072 tokens" in html
     assert html.count('<li><span class="sp">') == 3
     assert_balanced(html)
+
+
+def test_model_card_names_its_specs_in_the_page_language():
+    zh, en = render.model_html(INFO, lang="zh"), render.model_html(INFO, lang="en")
+    for label in ("隱藏層維度", "注意力頭數", "滑動視窗"):
+        assert f"<dt>{label}</dt>" in zh
+    assert "hidden size" not in zh and "attention heads" not in zh and "sliding window" not in zh
+    for label in ("hidden size", "attention heads", "sliding window"):
+        assert f"<dt>{label}</dt>" in en
 
 
 def test_model_card_groups_unknown_parts():
@@ -823,7 +832,7 @@ def test_qwen_thinking_tokens_are_italic_thoughts():
 def test_qwen_model_card():
     html = render.model_html(QWEN_INFO, lang="zh")
     assert "Qwen3.5 家族" in html and "Gated DeltaNet" in html
-    assert "sliding window" not in html  # Qwen3.5 has none
+    assert "滑動視窗" not in html  # Qwen3.5 has none
     assert "線性 attention 18 · full attention 6" in html and "視覺編碼器 0.10B" in html
     assert html.count('<li><span class="sp">') == 2
     assert_balanced(html)

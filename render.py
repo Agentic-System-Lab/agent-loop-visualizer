@@ -35,7 +35,7 @@ STOP_REASONS = {
     },
 }
 LAYER_TYPES = {
-    "zh": {"sliding_attention": "sliding window", "full_attention": "full attention", "linear_attention": "線性 attention"},
+    "zh": {"sliding_attention": "滑動視窗", "full_attention": "full attention", "linear_attention": "線性 attention"},
     "en": {"sliding_attention": "sliding window", "full_attention": "full attention", "linear_attention": "linear attention"},
 }
 MODALITIES = {
@@ -913,10 +913,10 @@ def model_html(info: dict, lang: str) -> str:
         (pick(lang, "精度", "precision"), info["dtype"]),
         (pick(lang, "總參數", "parameters"), fmt_params(total)),
         (pick(lang, "層數", "layers"), info["layers"]),
-        ("hidden size", f"{info['hidden_size']:,}"),
-        ("attention heads", f"{info['attention_heads']} Q / {info['kv_heads']} KV"),
+        (pick(lang, "隱藏層維度", "hidden size"), f"{info['hidden_size']:,}"),
+        (pick(lang, "注意力頭數", "attention heads"), f"{info['attention_heads']} Q / {info['kv_heads']} KV"),
         (pick(lang, "層的種類", "layer types"), " · ".join(f"{LAYER_TYPES[lang].get(k, k)} {n}" for k, n in info["layer_types"].items())),
-        ("sliding window", f"{info['sliding_window']:,} tokens" if info["sliding_window"] else ""),
+        (pick(lang, "滑動視窗", "sliding window"), f"{info['sliding_window']:,} tokens" if info["sliding_window"] else ""),
         (pick(lang, "脈絡上限", "context limit"), f"{info['context_length']:,} tokens"),
         (pick(lang, "詞彙量", "vocabulary"), f"{info['vocab_size']:,}"),
         (pick(lang, "讀得懂", "reads"), " · ".join(MODALITIES[lang][k] for k in ("text", *info.get("modalities", ())))),
@@ -954,7 +954,7 @@ def drafter_html(info: dict, lang: str) -> str:
     return '<p class="card-sub stops-label">' + pick(
         lang,
         f'MTP 草稿模型：{link} · {params} 參數 · {d["layers"]} 層 · '
-        f'hidden size {d["hidden_size"]} · 每次猜 {d["draft_tokens"]} 個 token · 載入 {d["load_seconds"]} s。'
+        f'隱藏層維度 {d["hidden_size"]} · 每次猜 {d["draft_tokens"]} 個 token · 載入 {d["load_seconds"]} s。'
         "它沒有自己的 KV cache：Gemma 4 後段的層本來就共用前面兩層算好的 key / value，草稿模型也讀同一份，"
         "再加上主模型最後一層的 hidden state，所以猜一個 token 只花主模型一次 forward 的一小部分時間。",
         f'MTP drafter: {link} · {params} parameters · {d["layers"]} layers · '

@@ -289,7 +289,7 @@ FILES = {
     "config.json": FileNote({
         "zh": "一個檔案分三部分：`text_config` 是語言模型，`vision_config` 和 `audio_config` 是圖片和聲音的編碼器；"
               "`image_token_id`、`audio_token_id`、`video_token_id` 是佔位 token，編碼器的輸出會放進它們的位置。"
-              "`text_config` 的 `layer_types` 混用 sliding window 層（只看最後 `sliding_window` 個 token）和 full attention 層；"
+              "`text_config` 的 `layer_types` 混用滑動視窗層（只看最後 `sliding_window` 個 token）和 full attention 層；"
               "最後 `num_kv_shared_layers` 層不自己算 key / value，直接用前面的層算好的，MTP 草稿模型讀的也是這一份；"
               "`hidden_size_per_layer_input` 是 Per-Layer Embeddings 每個向量的長度。",
         "en": "Three parts in one file: `text_config` is the language model, `vision_config` and `audio_config` are the image and sound encoders, "

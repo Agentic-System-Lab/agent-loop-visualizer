@@ -508,8 +508,8 @@ SECTIONS = [
         {"zh": "**Gemma 4 E2B**（`google/gemma-4-E2B-it`，9 個檔案，約 10.3 GB）：",
          "en": "**Gemma 4 E2B** (`google/gemma-4-E2B-it`, 9 files, about 10.3 GB):"},
         (
-            {"zh": "`config.json`（5 kB）：`Gemma4ForConditionalGeneration`，分三部分。`text_config` 是 35 層的語言模型：28 層 sliding window（只看最後 512 個 token）、"
-                   "7 層 full attention，hidden size 1536，8 個 attention head 共用 1 組 key / value；最後 20 層（`num_kv_shared_layers`）不自己算 key / value，"
+            {"zh": "`config.json`（5 kB）：`Gemma4ForConditionalGeneration`，分三部分。`text_config` 是 35 層的語言模型：28 層滑動視窗（只看最後 512 個 token）、"
+                   "7 層 full attention，隱藏層維度 1536，8 個注意力頭共用 1 組 key / value；最後 20 層（`num_kv_shared_layers`）不自己算 key / value，"
                    "用前面的層算好的。`vision_config` 是 16 層的視覺編碼器，一張圖最多變成 280 個 token；`audio_config` 是 12 層的音訊編碼器。脈絡上限 131,072 個 token。",
              "en": "`config.json` (5 kB): `Gemma4ForConditionalGeneration`, in three parts. `text_config` is the 35-layer language model: 28 sliding window "
                    "layers, which see only the last 512 tokens, and 7 full attention layers, hidden size 1536, 8 attention heads sharing 1 set of keys and "
@@ -544,7 +544,7 @@ SECTIONS = [
          "en": "**Qwen3.5 0.8B** (`Qwen/Qwen3.5-0.8B`, 13 files, about 1.8 GB):"},
         (
             {"zh": "`config.json`（2.9 kB）：`Qwen3_5ForConditionalGeneration`。`text_config` 是 24 層的語言模型，18 層 Gated DeltaNet（`linear_attention`）、"
-                   "6 層 full attention（每 4 層一層），hidden size 1024，8 個 head 配 2 組 key / value，脈絡上限 262,144；`vision_config` 是 12 層的視覺編碼器，"
+                   "6 層 full attention（每 4 層一層），隱藏層維度 1024，8 個注意力頭配 2 組 key / value，脈絡上限 262,144；`vision_config` 是 12 層的視覺編碼器，"
                    "圖片和影片共用；沒有聲音的編碼器。`mtp_num_hidden_layers: 1` 說權重裡附了一層 MTP。",
              "en": "`config.json` (2.9 kB): `Qwen3_5ForConditionalGeneration`. `text_config` is the 24-layer language model, 18 Gated DeltaNet layers "
                    "(`linear_attention`) and 6 full attention layers (one in every 4), hidden size 1024, 8 heads with 2 sets of keys and values, a context "
@@ -580,7 +580,7 @@ SECTIONS = [
         {"zh": "**Gemma 4 E2B 的 MTP 草稿模型**（`google/gemma-4-E2B-it-assistant`，7 個檔案，約 190 MB）：",
          "en": "**Gemma 4 E2B's MTP drafter** (`google/gemma-4-E2B-it-assistant`, 7 files, about 190 MB):"},
         (
-            {"zh": "`config.json`：`Gemma4AssistantForCausalLM`，4 層（3 層 sliding window、1 層 full attention），hidden size 256，主模型是 1536（`backbone_hidden_size`）；"
+            {"zh": "`config.json`：`Gemma4AssistantForCausalLM`，4 層（3 層滑動視窗、1 層 full attention），隱藏層維度 256，主模型是 1536（`backbone_hidden_size`）；"
                    "4 層都讀主模型的 key / value（`num_kv_shared_layers: 4`）。輸出用分群：262,144 個 token 分成 2,048 群、每群 128 個，先替各群打分，"
                    "只對最高的 32 群、共 4,096 個 token 算 logits（{{mtp}}）。",
              "en": "`config.json`: `Gemma4AssistantForCausalLM`, 4 layers (3 sliding window, 1 full attention), hidden size 256 next to the model's 1536 "
@@ -886,9 +886,9 @@ SECTIONS = [
                "memory; computing a few more positions in the same pass is hardly any slower (measured with Gemma 4 E2B on an Apple M5: about "
                "56 ms for 1 position, about 70 ms for 7). So if something cheap guesses the next few tokens first, the model can check them "
                "all in one forward pass. That is speculative decoding; MTP (multi-token prediction) is the guesser Google trained for Gemma 4."},
-        {"zh": "猜的是草稿模型 `google/gemma-4-E2B-it-assistant`（[[families/__init__.py|DRAFTERS = {]]）：約 78M 參數、4 層、hidden size 256，"
+        {"zh": "猜的是草稿模型 `google/gemma-4-E2B-it-assistant`（[[families/__init__.py|DRAFTERS = {]]）：約 78M 參數、4 層、隱藏層維度 256，"
                "主模型是 5.1B。它沒有自己的 KV cache：Gemma 4 E2B 的 35 層裡，後 20 層本來就不自己算 key / value，而是共用前面兩層"
-               "（最後一個 sliding window 層和最後一個 full attention 層）算好的，草稿模型也讀這一份。第一次打開 MTP 時才載入，"
+               "（最後一個滑動視窗層和最後一個 full attention 層）算好的，草稿模型也讀這一份。第一次打開 MTP 時才載入，"
                "每次猜幾個 token 寫在它的 generation config（`num_assistant_tokens` = 6）。",
          "en": "The guesses come from the drafter `google/gemma-4-E2B-it-assistant` ([[families/__init__.py|DRAFTERS = {]]): about 78M "
                "parameters, 4 layers, hidden size 256, next to the model's 5.1B. It has no KV cache of its own: of Gemma 4 E2B's 35 layers, "
@@ -914,7 +914,7 @@ SECTIONS = [
                "first guess it turns down is replaced by the model's own pick at that position, and the guesses after it are dropped; when "
                "all 6 hold, the last position's distribution gives one more token. So one forward pass produces between 1 and 7 tokens."},
         Code("llm.py", "def _drafted("),
-        {"zh": "作廢的猜測已經寫進了 KV cache，要用 `past.crop()` 拿掉；sliding window 層平常會馬上丟掉太舊的 key / value，"
+        {"zh": "作廢的猜測已經寫進了 KV cache，要用 `past.crop()` 拿掉；滑動視窗層平常會馬上丟掉太舊的 key / value，"
                "`activate_past_recording()` 讓它先留著，等 `crop()` 之後再縮回去。給草稿模型的那份 key / value 也同樣切掉作廢的部分。",
          "en": "The dropped guesses are already in the KV cache, and `past.crop()` takes them out; sliding window layers normally drop keys and "
                "values that are too old right away, and `activate_past_recording()` keeps them until after the `crop()`. The keys and values "
