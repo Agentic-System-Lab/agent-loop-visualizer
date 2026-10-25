@@ -790,8 +790,9 @@ backend.py: class Backend(Protocol):
             - {"type": "token", ...} for each token, with TOKEN_FIELDS and the TOKEN_DETAILS the backend knows;
             - {"type": "done", "finish", "stop_piece", "n_tokens", "decode_ms", "tok_per_s", "mtp", "raw"}: `finish`
               is "stop_token", "max_new_tokens" or "user_stopped"; `stop_piece` is the stop token's piece; `mtp` is
-              {"drafted", "accepted", "forwards"} with MTP on, else None; and `raw` is the whole output, special
-              tokens included, which the family parses."""
+              {"drafted", "accepted", "forwards"} with MTP on (and "kept_at", "turned_down_at" from a backend that
+              learns the guesses only then), else None; and `raw` is the whole output, special tokens included, which
+              the family parses."""
 
 [[streamlit_app.py|llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)]]
     llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)
@@ -804,7 +805,10 @@ backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
     #   p_sampled   its probability in the distribution it was drawn from, after temperature, top-k and top-p
     #   kept        how many candidates top-k and top-p left
     #   top         the 5 most likely tokens, each with id, piece, p, and kept (whether top-k and top-p left it) when known
-    #   draft       with MTP, what the drafter guessed here and whether the model kept it; absent where it guessed nothing
+    #   draft       with MTP, what the drafter guessed here and whether the model kept it; absent where it guessed nothing.
+    #               A backend that learns only at the end of a step which tokens were guesses (vllm_backend.py) says so in
+    #               done's mtp instead (kept_at, turned_down_at), and render.py marks those tokens; it may not know what a
+    #               turned-down guess was (piece None).
     TOKEN_DETAILS = ("p", "logprob", "rank", "p_sampled", "kept", "top", "draft")
 
 [[render.py|def known(]]
@@ -813,8 +817,8 @@ backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
 [[render.py|def candidates_html(]]
     def candidates_html(tok: dict, family: families.Family, lang: str) -> str:
 
-[[vllm_backend.py|self.modalities = ()]]
-    self.modalities = ()  # text only: /v1/completions takes token ids and nothing else
+[[vllm_backend.py|self.modalities = tuple(kind for kind in readable if kind not in refused)]]
+    self.modalities = tuple(kind for kind in readable if kind not in refused)
 
 [[tests/fakes.py|class FakeLLM:]]
     class FakeLLM:
@@ -822,15 +826,12 @@ backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
 [[vllm_backend.py|def _checkpoint_files(]]
     def _checkpoint_files(model_id: str) -> str:
 
-vllm_backend.py: def _request(
-    def _request(self, ids: list[int], s: Sampling) -> dict:
-        """The /v1/completions request for one step. Each sidebar setting is sent, and every other sampling setting is
-        set to do nothing, so that a default the server took from the checkpoint (a repetition penalty, say) cannot
-        change the distribution the page shows. The text comes from decoding the ids here, so the server's is unused."""
+vllm_backend.py: def _sampling_params(
+    def _sampling_params(self, prompt: Encoded, s: Sampling) -> dict:
+        """Each sidebar setting, and every other sampling setting set to do nothing, so that a default the server took
+        from the checkpoint (a repetition penalty, say) cannot change the distribution the page shows."""
         return {
-            "model": self.served_as,
-            "prompt": ids,
-            "max_tokens": max(1, min(s.max_new_tokens, self.context_length - len(ids))),  # vLLM refuses a request that cannot fit
+            "max_tokens": max(1, min(s.max_new_tokens, self.context_length - prompt.n_tokens)),  # vLLM refuses a request that cannot fit
             "temperature": max(s.temperature, 0.0),  # 0 is greedy there as here
             "top_p": s.top_p,
             "top_k": s.top_k,  # 0 is no limit there as here
@@ -839,17 +840,12 @@ vllm_backend.py: def _request(
             "presence_penalty": 0.0,
             "frequency_penalty": 0.0,
             "stop_token_ids": sorted(self.eos_ids),
-            "logprobs": TOP_N,
-            "return_tokens_as_token_ids": True,
-            "return_token_ids": True,
-            "stream": True,
-            "stream_options": {"include_usage": True},  # the last chunk then carries the speculative decoding counts
         }
 
 vllm_backend.py: def _details(
-    def _details(self, token_id: int, logprobs: dict, n: int) -> dict:
-        """What the server said about the n-th token of a chunk: its log probability, and the 5 most likely tokens
-        with theirs, keyed "token_id:<id>". The token's rank is known only when it is one of those 5."""
+    def _details(self, token_id: int, logprobs: dict, n: int, s: Sampling) -> dict:
+        """What /v1/completions said about the n-th token of a chunk: its log probability, and those of the 5 most likely
+        tokens, keyed "token_id:<id>". The token's rank is known only when it is one of those 5."""
         token_logprobs, top_logprobs = logprobs.get("token_logprobs") or [], logprobs.get("top_logprobs") or []
         if n >= len(token_logprobs) or token_logprobs[n] is None:
             return {}
@@ -865,10 +861,87 @@ vllm_backend.py: def _details(
         }
         if any(i == token_id for i, _ in top):
             details["rank"] = 1 + sum(v > logprob for _, v in top)
-        return details
+        return self._greedy(details, token_id, s)
 
-[[vllm_backend.py|end["mtp"] = {]]
-    end["mtp"] = {"drafted": spec["num_draft_tokens"], "accepted": spec["num_accepted_draft_tokens"],
+[[vllm_backend.py|def _probe(]]
+    def _probe(self, kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
+
+[[vllm_backend.py|def _greedy(]]
+    def _greedy(self, details: dict, token_id: int, s: Sampling) -> dict:
+
+[[vllm_backend.py|bounded = sampling.temperature > 0 and sampling.top_k > 0]]
+    bounded = sampling.temperature > 0 and sampling.top_k > 0
+
+[[vllm_backend.py|def content_part(]]
+    def content_part(part: dict, audio_rate: int) -> dict:
+
+vllm_backend.py: def _generate_details(
+    def _generate_details(self, token_id: int, entry: dict | None, mask: list[int] | None, s: Sampling) -> dict:
+        """What /inference/v1/generate said about a token: its log probability and rank, the most likely tokens with
+        theirs (the chosen one first), and, with sampling masks, the tokens top-k and top-p left. From the mask come how
+        many candidates were left and which of the top 5 were cut; when every token left has its probability in the
+        list, the probability the token was drawn with is known too: their probabilities at the temperature, renormalized."""
+        if entry is None or (entry["logprob"] <= -9999.0 and not entry.get("top_logprobs")):  # vLLM's mark for "not reported"
+            return {}
+        logprob = entry["logprob"]
+        listed = {e["token_id"]: e["logprob"] for e in entry.get("top_logprobs") or []}
+        rank = entry.get("rank")
+        ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
+        if rank is not None and rank > TOP_N:  # listed only because it was chosen
+            ranked = [c for c in ranked if c[0] != token_id]
+        top = [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in ranked[:TOP_N]]
+        details = {"p": math.exp(logprob), "logprob": logprob, "top": top, **({"rank": rank} if rank else {})}
+        if s.temperature > 0 and mask is not None:
+            left = set(mask)
+            details["kept"] = len(left)
+            for c in top:
+                c["kept"] = c["id"] in left
+            if token_id in left and left <= listed.keys():
+                scaled = {i: listed[i] / s.temperature for i in left}
+                peak = max(scaled.values())
+                details["p_sampled"] = math.exp(scaled[token_id] - peak) / sum(math.exp(v - peak) for v in scaled.values())
+        return self._greedy(details, token_id, s)
+
+vllm_backend.py: def encode(self, prompt
+    def encode(self, prompt: str, parts: list[dict]) -> Encoded:
+        """The prompt's token ids, which are what the server reads. With media (`parts`, in the order of their
+        placeholders), the server expands each placeholder into the tokens its file takes, so it is asked how first, with
+        a one-token request; the text and the count are of the prompt as the server reads it, and the ids stay the ones
+        the chat template wrote, which generate() sends again with the files."""
+        ids = self.tokenizer(prompt, add_special_tokens=False).input_ids
+        if not parts:
+            return Encoded(prompt, ids, len(ids))
+        if unread := {p["type"] for p in parts} - set(self.modalities):  # media.save makes those plain files, so this is a bug
+            raise ValueError(f"The vLLM server takes no {', '.join(sorted(unread))} here, only {', '.join(self.modalities) or 'text'}.")
+        files = [content_part(p, self.audio_rate) for p in parts]
+        expanded = self._generate_once(ids, files, return_token_ids=True)["prompt_token_ids"]
+        counts = Counter(kind for token in expanded for kind, media_id in self.media_token_ids.items() if media_id is not None and token == media_id)
+        return Encoded(self.tokenizer.decode(expanded, skip_special_tokens=False), ids, len(expanded),
+                       {"content_parts": files, "prompt_token_ids": expanded}, dict(counts))
+
+[[render.py|def with_drafts(]]
+    def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:
+
+vllm_backend.py: def drafted_tokens(
+    def drafted_tokens(accepted: list[int], drafted: list[int], n_tokens: int) -> dict | None:
+        """Which of a step's tokens were guesses the model kept (kept_at) and which replace a guess it turned down
+        (turned_down_at), from vLLM's per-step counts (--per-request-spec-decode-metrics detailed). The first token comes
+        from the prefill; after it, each verify step gives the guesses it kept and then one token of the model's own,
+        which replaces the next guess when it kept fewer than were drafted. vLLM does not count a step without guesses,
+        so when the steps do not account for every token, nobody can tell which tokens were guessed: None."""
+        kept, turned_down, at = [], [], 1
+        for n_kept, n_drafted in zip(accepted, drafted):
+            kept += range(at, at + n_kept)
+            if n_kept < n_drafted:
+                turned_down.append(at + n_kept)
+            at += n_kept + 1
+        last = accepted[-1] + 1 if accepted else 1
+        if not at - last < n_tokens <= at:  # only a stop token or the token limit may cut the last step short
+            return None
+        return {"kept_at": [i for i in kept if i < n_tokens], "turned_down_at": [i for i in turned_down if i < n_tokens]}
+
+[[render.py|def refused_html(]]
+    def refused_html(server: dict | None, lang: str) -> str:
 
 == parse ==
 
@@ -1264,6 +1337,7 @@ render.py: def build(events: list[dict])
                     step[kind] = ev
                 elif kind == "model_end":
                     step["done"] = ev
+                    step["tokens"] = with_drafts(step["tokens"], ev.get("mtp") or {})
                 elif kind == "tool_call":
                     step["calls"][ev["call_id"]] = {**ev, "approval": None, "started": False, "result": None}
                 elif kind == "approval_request":

@@ -1,6 +1,9 @@
-"""VLLMBackend against a fake vLLM server that speaks the stream of vLLM 0.32's /v1/completions
-(entrypoints/openai/completion): token ids with their log probabilities, the top 5 keyed "token_id:<id>",
-the finish reason, and a last chunk with the usage and the speculative decoding counts.
+"""VLLMBackend against a fake vLLM server that speaks the streams of vLLM 0.32: /v1/completions
+(entrypoints/openai/completion: token ids with their log probabilities, the top 5 keyed "token_id:<id>", the
+finish reason, a last chunk with the usage and the speculative decoding counts) and, on a server started with
+--enable-scale-out, /inference/v1/generate (entrypoints/scale_out/token_in_token_out: the same with each token's
+rank, the chosen token first in its list, sampling masks with --return-sampling-mask, and media sent next to the
+placeholders, which the server expands and, asked to, sends back).
 
 Most tests use a tokenizer in the fakes' simplified chat format, so they need neither the Hub nor the
 weights. The tests with the real tokenizer and chat template run when a model's files are in models/
@@ -11,27 +14,32 @@ tests ask it for real:  VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/
 import json
 import math
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from huggingface_hub import try_to_load_from_cache
+from transformers import AutoProcessor
 
 import families
+import media
 import render
 import vllm_backend
 from agent import Run, RunSettings
 from backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
 from families import GEMMA4, QWEN3_5
-from fakes import FakeLLM, fake_folder, pieces, qwen_tool_call, tool_call
+from fakes import MEDIA_TOKENS, PLACEHOLDERS, FakeLLM, fake_folder, pieces, qwen_tool_call, tool_call
 from html_check import assert_balanced
 from i18n import LANGS, pick
 from llm import MODELS_DIR
 from test_render import render_everything
-from vllm_backend import ServerError, VLLMBackend
+from vllm_backend import GENERATE, ServerError, VLLMBackend
 
 URL = "http://vllm.test:8000"
 ANSWER = "答案是 42。<turn|>"
+EXAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
+KIND_OF_PART = {"image_url": "image", "audio_url": "audio", "video_url": "video"}
 
 
 class Tokenizer:
@@ -80,24 +88,50 @@ class Stream(httpx.SyncByteStream):
         self.server.closed = True
 
 
-class Server:
-    """vLLM's OpenAI-compatible server, as far as VLLMBackend asks it anything: /v1/models, /version and streamed
-    /v1/completions. Each completion is the next of `outputs`: its tokens until one of the request's stop_token_ids
-    or max_tokens, `per_chunk` to a chunk. The chosen token has probability `p` (a dict maps a token's index to
-    another), and the rest of the top 5 are other tokens; a chosen token below 0.01 is outside the top 5."""
+def sse(chunk: dict) -> str:
+    return f"data: {json.dumps(chunk)}\n\n"
 
-    def __init__(self, outputs: list[str], root="google/gemma-4-E2B-it", served_as=None, max_model_len=4096, per_chunk=2):
+
+class Server:
+    """vLLM's server, as far as VLLMBackend asks it anything: /v1/models, /version, streamed /v1/completions and, with
+    `scale_out`, /inference/v1/generate, which otherwise answers 403 as vLLM's does. Each streamed answer is the next
+    of `outputs`: its tokens until one of the request's stop_token_ids or max_tokens, `per_chunk` to a chunk. The
+    chosen token has probability `p` (a dict maps a token's index to another) and the others listed are other tokens;
+    a chosen token below 0.01 is outside the top 5. With `masks` (--return-sampling-mask), a token's mask is the chosen
+    token and the others listed at 0.02 or more. The server takes the media in `takes`, expanding each placeholder into
+    `expand` tokens as FakeLLM.encode does, and refuses other kinds. `spec` is the speculative decoding counts the last
+    chunk carries."""
+
+    tokenizers: dict = {}  # family key -> the tokenizer the hub fixture hands the backend, which this server shares
+
+    def __init__(self, outputs: list[str], root="google/gemma-4-E2B-it", served_as=None, max_model_len=4096, per_chunk=2,
+                 scale_out=False, masks=False, takes=media.MEDIA):
         self.outputs, self.root, self.served_as, self.max_model_len, self.per_chunk = list(outputs), root, served_as or root, max_model_len, per_chunk
-        self.tokenizer = None  # the backend's, once it has one
-        self.requests: list[dict] = []
+        self.scale_out, self.masks, self.takes, self.expand = scale_out, masks, takes, MEDIA_TOKENS
+        self._tokenizer = None
+        self.requests: list[dict] = []  # the /v1/completions bodies
+        self.generates: list[dict] = []  # the /inference/v1/generate bodies, one-token ones (probes, expansions) included
         self.headers: list[httpx.Headers] = []
         self.p: dict[int, float] = {}
-        self.spec = None  # the speculative decoding counts the last chunk carries
+        self.unlisted = False  # put a token in each mask that is not among the listed log probabilities
+        self.spec = None
         self.finish = None  # a finish reason to end with instead of vLLM's own
-        self.fail = None  # (status, body) to answer the next completion with
+        self.fail = None  # (status, body) to answer the next streamed request with
         self.stream_error = None  # an error chunk to send instead of the tokens
         self.sent = 0
         self.closed = False
+
+    @property
+    def family(self) -> str:
+        return "qwen3_5" if "qwen" in self.root.lower() else "gemma4"
+
+    @property
+    def tokenizer(self):
+        return self._tokenizer or self.tokenizers[self.family]
+
+    @tokenizer.setter
+    def tokenizer(self, tokenizer):
+        self._tokenizer = tokenizer
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
@@ -110,36 +144,94 @@ class Server:
         if request.url.path == "/version":
             return httpx.Response(200, json={"version": "0.32.0"})
         body = json.loads(request.content)
+        if request.url.path == GENERATE:
+            return self.generate(body)
         self.requests.append(body)
         if self.fail:
             status, error = self.fail
             return httpx.Response(status, json=error)
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Stream(self.lines(body), self))
 
-    def top(self, token_id: int, p: float) -> dict[str, float]:
+    # ---------- /inference/v1/generate ----------
+
+    def generate(self, body: dict) -> httpx.Response:
+        self.generates.append(body)
+        if not self.scale_out:
+            message = "Scale-out endpoints are disabled. Restart vllm serve with --enable-scale-out to enable them."
+            return httpx.Response(403, json={"error": {"message": message, "type": "PermissionDeniedError", "param": None, "code": 403}})
+        if self.fail and body.get("stream"):
+            status, error = self.fail
+            return httpx.Response(status, json=error)
+        try:
+            prompt = self.expanded(body["token_ids"], body.get("content_parts") or [])
+        except ValueError as e:
+            return httpx.Response(400, json={"error": {"message": str(e), "type": "BadRequestError", "param": None, "code": 400}})
+        if not body.get("stream"):
+            choice = {"index": 0, "token_ids": [prompt[-1]], "finish_reason": "length", "stop_reason": None}
+            if self.masks:
+                choice["sampling_mask"] = [[prompt[-1]]]
+            reply = {"request_id": "generate-tokens-1", "choices": [choice]}
+            if body.get("return_token_ids"):
+                reply["prompt_token_ids"] = prompt
+            return httpx.Response(200, json=reply)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Stream(self.generate_lines(body, prompt), self))
+
+    def expanded(self, ids: list[int], parts: list[dict]) -> list[int]:
+        """The prompt with each placeholder the chat template wrote expanded for its file, in order."""
+        out, at = list(ids), 0
+        for part in parts:
+            kind = KIND_OF_PART[part["type"]]
+            if kind not in self.takes:
+                raise ValueError(f"At most 0 {kind}(s) may be provided in one prompt.")
+            assert part["url"].startswith("data:"), part["url"][:30]
+            mark, start, end = (self.tokenizer.convert_tokens_to_ids(t) for t in PLACEHOLDERS[self.family][kind])
+            at = out.index(mark, at)
+            tokens = [start, *[mark] * self.expand, end] if self.family == "gemma4" else [mark] * self.expand
+            out[at : at + 1] = tokens
+            at += len(tokens)
+        return out
+
+    def ranked(self, token_id: int, p: float) -> list[tuple[int, float]]:
+        """The chosen token and the others listed with it, most likely first."""
         # other tokens: new pieces of the fake tokenizer, or any five ids of a real one
         others = [self.tokenizer.id(f"▁alt{k}") if isinstance(self.tokenizer, Tokenizer) else 100 + k for k in range(5)]
         probs = [0.05, 0.02, 0.01, 0.005] if p >= 0.01 else [0.3, 0.2, 0.1, 0.05, 0.02]
-        listed = {f"token_id:{i}": math.log(q) for i, q in zip(others, probs)}
-        return {f"token_id:{token_id}": math.log(p), **listed}
+        return sorted([(token_id, p), *zip(others, probs)], key=lambda c: (-c[1], c[0]))
+
+    def entry(self, token_id: int, p: float, n: int) -> dict:
+        """A token's logprobs as /inference/v1/generate sends them: its own and rank, then the chosen token first and
+        the most likely after it, `n` in all."""
+        ranks = {i: r for r, (i, _) in enumerate(self.ranked(token_id, p), 1)}
+        listed = [(token_id, p)] + [c for c in self.ranked(token_id, p) if c[0] != token_id]
+        return {"token_id": token_id, "logprob": math.log(p), "rank": ranks[token_id],
+                "top_logprobs": [{"token_id": i, "logprob": math.log(q), "rank": ranks[i]} for i, q in listed[: max(n, 1)]]}
+
+    def mask(self, token_id: int, p: float) -> list[int]:
+        left = [i for i, q in self.ranked(token_id, p) if q >= 0.02 or i == token_id]
+        return left + ([self.tokenizer.id("▁unlisted")] if self.unlisted else [])
+
+    def generate_lines(self, body: dict, prompt: list[int]) -> list[str]:
+        params = body["sampling_params"]
+        lines = []
+        for n, (chunk_ids, probs, finish, stop_reason) in enumerate(self.chunks(params["stop_token_ids"], params["max_tokens"])):
+            choice = {"index": 0, "token_ids": chunk_ids, "finish_reason": finish, "stop_reason": stop_reason,
+                      "logprobs": {"content": [self.entry(i, p, params.get("logprobs") or 0) for i, p in zip(chunk_ids, probs)]}}
+            if self.masks:
+                choice["sampling_mask"] = [self.mask(i, p) for i, p in zip(chunk_ids, probs)]
+            chunk = {"request_id": "generate-tokens-1", "output_mode": "tokens", "choices": [choice]}
+            if n == 0 and body.get("return_token_ids"):
+                chunk.update(prompt_token_ids=prompt, mm_placeholders={})
+            lines.append(sse(chunk))
+        return lines + self.usage(body, len(prompt), {"request_id": "generate-tokens-1", "output_mode": "tokens"})
+
+    # ---------- /v1/completions ----------
+
+    def top(self, token_id: int, p: float) -> dict[str, float]:
+        return {f"token_id:{i}": math.log(q) for i, q in [(token_id, p)] + [c for c in self.ranked(token_id, p) if c[0] != token_id]}
 
     def lines(self, body: dict) -> list[str]:
-        if self.stream_error:
-            return [f"data: {json.dumps({'error': self.stream_error})}\n\n", "data: [DONE]\n\n"]
-        ids = self.tokenizer(self.outputs.pop(0), add_special_tokens=False).input_ids
-        out, finish, stop_reason = [], "length", None
-        for token_id in ids:
-            out.append(token_id)
-            if token_id in body["stop_token_ids"]:
-                finish, stop_reason = "stop", token_id
-                break
-            if len(out) == body["max_tokens"]:
-                break
         lines = []
-        for start in range(0, len(out), self.per_chunk):
-            chunk_ids = out[start : start + self.per_chunk]
-            last = start + self.per_chunk >= len(out)
-            probs = [self.p.get(start + n, 0.9) for n in range(len(chunk_ids))]
+        for chunk_ids, probs, finish, stop_reason in self.chunks(body["stop_token_ids"], body["max_tokens"]):
             choice = {
                 "index": 0,
                 "text": "",  # VLLMBackend decodes the ids itself
@@ -149,58 +241,97 @@ class Server:
                     "tokens": [f"token_id:{i}" for i in chunk_ids],
                     "top_logprobs": [self.top(i, p) for i, p in zip(chunk_ids, probs)],
                 },
-                "finish_reason": (self.finish or finish) if last else None,
-                "stop_reason": stop_reason if last else None,
+                "finish_reason": finish,
+                "stop_reason": stop_reason,
                 "token_ids": chunk_ids,
             }
-            lines.append(f"data: {json.dumps({'id': 'cmpl-1', 'object': 'text_completion', 'model': self.served_as, 'choices': [choice]})}\n\n")
+            lines.append(sse({"id": "cmpl-1", "object": "text_completion", "model": self.served_as, "choices": [choice]}))
+        return lines + self.usage(body, len(body["prompt"]), {"id": "cmpl-1", "object": "text_completion", "model": self.served_as})
+
+    # ---------- both ----------
+
+    def chunks(self, stop_token_ids: list[int], max_tokens: int):
+        """The next output's tokens until a stop token or max_tokens, `per_chunk` at a time, with their probabilities and,
+        on the last, the finish reason; or the error chunk a test asked for."""
+        if self.stream_error:  # usage() sends the error chunk in their place
+            return
+        ids = self.tokenizer(self.outputs.pop(0), add_special_tokens=False).input_ids
+        out, finish, stop_reason = [], "length", None
+        for token_id in ids:
+            out.append(token_id)
+            if token_id in stop_token_ids:
+                finish, stop_reason = "stop", token_id
+                break
+            if len(out) == max_tokens:
+                break
+        for start in range(0, len(out), self.per_chunk):
+            chunk_ids = out[start : start + self.per_chunk]
+            last = start + self.per_chunk >= len(out)
+            yield chunk_ids, [self.p.get(start + n, 0.9) for n in range(len(chunk_ids))], (self.finish or finish) if last else None, stop_reason if last else None
+
+    def usage(self, body: dict, prompt_tokens: int, head: dict) -> list[str]:
+        if self.stream_error:
+            return [sse({"error": self.stream_error}), "data: [DONE]\n\n"]
+        lines = []
         if body.get("stream_options", {}).get("include_usage"):
-            usage = {"id": "cmpl-1", "object": "text_completion", "model": self.served_as, "choices": [],
-                     "usage": {"prompt_tokens": len(body["prompt"]), "completion_tokens": len(out), "total_tokens": len(body["prompt"]) + len(out)}}
+            usage = {**head, "choices": [], "usage": {"prompt_tokens": prompt_tokens}}
             if self.spec:
                 usage["metrics"] = {"speculative_decoding": self.spec}
-            lines.append(f"data: {json.dumps(usage)}\n\n")
+            lines.append(sse(usage))
         return lines + ["data: [DONE]\n\n"]
 
 
-CONFIGS = {
-    "gemma4": SimpleNamespace(model_type="gemma4", architectures=["Gemma4ForConditionalGeneration"], text_config=SimpleNamespace(
-        num_hidden_layers=35, hidden_size=1536, num_attention_heads=8, num_key_value_heads=1, sliding_window=512,
-        layer_types=["sliding_attention"] * 28 + ["full_attention"] * 7, max_position_embeddings=131072, vocab_size=262144)),
-    "qwen3_5": SimpleNamespace(model_type="qwen3_5", architectures=["Qwen3_5ForConditionalGeneration"], text_config=SimpleNamespace(
-        num_hidden_layers=24, hidden_size=1024, num_attention_heads=8, num_key_value_heads=2,
-        layer_types=["linear_attention"] * 18 + ["full_attention"] * 6, max_position_embeddings=262144, vocab_size=248320)),
-}
+def configs(tokenizers: dict) -> dict:
+    """Each family's config.json as the backend reads it, with an encoder for each kind of media its checkpoint reads."""
+    def ids(key, kind):
+        return tokenizers[key].vocab[PLACEHOLDERS[key][kind][0]]
+
+    return {
+        "gemma4": SimpleNamespace(
+            model_type="gemma4", architectures=["Gemma4ForConditionalGeneration"], vision_config={}, audio_config={},
+            image_token_id=ids("gemma4", "image"), audio_token_id=ids("gemma4", "audio"), video_token_id=ids("gemma4", "video"),
+            text_config=SimpleNamespace(num_hidden_layers=35, hidden_size=1536, num_attention_heads=8, num_key_value_heads=1, sliding_window=512,
+                                        layer_types=["sliding_attention"] * 28 + ["full_attention"] * 7, max_position_embeddings=131072, vocab_size=262144)),
+        "qwen3_5": SimpleNamespace(
+            model_type="qwen3_5", architectures=["Qwen3_5ForConditionalGeneration"], vision_config={},
+            image_token_id=ids("qwen3_5", "image"), video_token_id=ids("qwen3_5", "video"),
+            text_config=SimpleNamespace(num_hidden_layers=24, hidden_size=1024, num_attention_heads=8, num_key_value_heads=2,
+                                        layer_types=["linear_attention"] * 18 + ["full_attention"] * 6, max_position_embeddings=262144, vocab_size=248320)),
+    }
 
 
 @pytest.fixture
 def hub(monkeypatch):
-    """The checkpoint's files without the Hub: the downloads it was asked for, a config, a tokenizer in the fakes' format, and
-    Gemma's generation config (Qwen3.5 ships none, so its comes from the config)."""
-    seen = {"downloads": []}
+    """The checkpoint's files without the Hub: the downloads it was asked for, a config, a processor whose tokenizer is
+    in the fakes' format (shared with the fake server), and Gemma's generation config (Qwen3.5 ships none, so its comes
+    from the config). Gemma's checkpoint reads images, sound and video; Qwen's images and video."""
+    tokenizers = {"gemma4": Tokenizer(GEMMA4), "qwen3_5": Tokenizer(QWEN3_5)}
+    seen = {"downloads": [], "tokenizers": tokenizers}
+    monkeypatch.setattr(Server, "tokenizers", tokenizers)
+
+    def key(folder: str) -> str:
+        return "qwen3_5" if "qwen" in folder.lower() else "gemma4"
 
     def snapshot_download(model_id, revision=None, cache_dir=None, ignore_patterns=None):
         seen["downloads"].append({"model_id": model_id, "revision": revision, "cache_dir": cache_dir, "ignore": ignore_patterns})
         return f"/hub/{model_id}"
 
-    def config(folder):
-        return CONFIGS["qwen3_5" if "qwen" in folder.lower() else "gemma4"]
-
     def processor(folder):
-        seen["tokenizer"] = Tokenizer(QWEN3_5 if "qwen" in folder.lower() else GEMMA4)
-        return SimpleNamespace(tokenizer=seen["tokenizer"])
+        seen["tokenizer"] = tokenizers[key(folder)]
+        hears = {"feature_extractor": SimpleNamespace(sampling_rate=16000)} if key(folder) == "gemma4" else {}
+        return SimpleNamespace(tokenizer=seen["tokenizer"], image_processor=object(), video_processor=object(), **hears)
 
     def generation(folder):
-        if "qwen" in folder.lower():
+        if key(folder) == "qwen3_5":
             raise OSError("no generation_config.json")
-        vocab = seen["tokenizer"].vocab
+        vocab = tokenizers["gemma4"].vocab
         return SimpleNamespace(eos_token_id=[vocab["<eos>"], vocab["<turn|>"]], temperature=1.0, top_p=0.95, top_k=64)
 
     def from_model_config(config):
-        return SimpleNamespace(eos_token_id=seen["tokenizer"].vocab["<|endoftext|>"], temperature=None, top_p=None, top_k=None, _from_model_config=True)
+        return SimpleNamespace(eos_token_id=tokenizers["qwen3_5"].vocab["<|endoftext|>"], temperature=None, top_p=None, top_k=None, _from_model_config=True)
 
     monkeypatch.setattr(vllm_backend, "snapshot_download", snapshot_download)
-    monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=config))
+    monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=lambda folder: configs(tokenizers)[key(folder)]))
     monkeypatch.setattr(vllm_backend, "AutoProcessor", SimpleNamespace(from_pretrained=processor))
     monkeypatch.setattr(vllm_backend, "GenerationConfig", SimpleNamespace(from_pretrained=generation, from_model_config=from_model_config))
     monkeypatch.setattr(vllm_backend, "describe_folder", lambda folder, notes: fake_folder("fake", {"config.json": 4954, "tokenizer.json": 32_169_626}, {}))
@@ -208,9 +339,7 @@ def hub(monkeypatch):
 
 
 def connect(server: Server, model_id="google/gemma-4-E2B-it") -> VLLMBackend:
-    llm = VLLMBackend(model_id, URL, transport=server.transport())
-    server.tokenizer = llm.tokenizer
-    return llm
+    return VLLMBackend(model_id, URL, transport=server.transport())
 
 
 def generate(llm: VLLMBackend, prompt="Hi", sampling=None, should_stop=lambda: False):
@@ -226,7 +355,7 @@ def test_the_backend_is_a_backend_that_reads_text_only(hub):
     assert isinstance(llm, Backend)
     assert llm.modalities == () and llm.info["modalities"] == []
     assert llm.drafter_id is None and llm.drafter is None
-    with pytest.raises(ValueError, match="text only"):
+    with pytest.raises(ValueError, match="takes no image here, only text"):
         llm.encode("<|image|>", [{"type": "image", "path": "/chat/photo.png"}])
 
 
@@ -330,13 +459,13 @@ def test_equally_likely_candidates_go_lowest_id_first_as_with_local_inference(hu
     server = Server([ANSWER])
     llm = connect(server)
     a, b = server.tokenizer.id("▁a"), server.tokenizer.id("▁b")
-    details = llm._details(b, {"token_logprobs": [math.log(0.4)], "top_logprobs": [{f"token_id:{b}": math.log(0.4), f"token_id:{a}": math.log(0.4)}]}, 0)
+    details = llm._details(b, {"token_logprobs": [math.log(0.4)], "top_logprobs": [{f"token_id:{b}": math.log(0.4), f"token_id:{a}": math.log(0.4)}]}, 0, Sampling())
     assert [c["id"] for c in details["top"]] == [a, b] and details["rank"] == 1
 
 
 def test_a_token_the_server_sent_no_log_probability_for_carries_no_details(hub):
     llm = connect(Server([]))
-    assert llm._details(5, {}, 0) == {} and llm._details(5, {"token_logprobs": [None], "top_logprobs": [None]}, 0) == {}
+    assert llm._details(5, {}, 0, Sampling()) == {} and llm._details(5, {"token_logprobs": [None], "top_logprobs": [None]}, 0, Sampling()) == {}
 
 
 def test_reaching_max_tokens_is_the_token_limit(hub):
@@ -416,7 +545,9 @@ def test_the_context_limit_and_the_specs_come_from_the_server_and_the_config(hub
     assert llm.context_length == info["context_length"] == 8192  # the server's --max-model-len, not the config's 131072
     assert (info["architecture"], info["layers"], info["kv_heads"], info["sliding_window"]) == ("Gemma4ForConditionalGeneration", 35, 1, 512)
     assert info["layer_types"] == {"sliding_attention": 28, "full_attention": 7}
-    assert info["server"] == {"engine": "vLLM", "version": "0.32.0", "url": URL, "served_as": "google/gemma-4-E2B-it"}
+    server = info["server"]
+    assert {k: server[k] for k in ("engine", "version", "url", "served_as")} == {"engine": "vLLM", "version": "0.32.0", "url": URL, "served_as": "google/gemma-4-E2B-it"}
+    assert not server["generate_api"] and not server["sampling_mask"] and set(server["refused"]) == {"image", "audio", "video"}
     assert info["defaults"] == {"temperature": 1.0, "top_p": 0.95, "top_k": 64}
     assert not {"device", "dtype", "parameters", "parameter_parts", "load_seconds"} & set(info)  # nothing here knows them
     assert set(info["stop_tokens"]) >= set(GEMMA4.stop_tokens) and set(info["special_tokens"]) == set(GEMMA4.special_tokens)
@@ -438,6 +569,19 @@ def test_the_model_card_says_where_the_model_runs_and_leaves_out_what_is_not_kno
     assert ("transformers" not in card) and ("None" not in card)
     assert pick(lang, "只在伺服器上", "on the server only") in folder  # the weights the family notes
     assert pick(lang, "伺服器自己讀權重", "server reads the weights itself") in folder
+    # A plain `vllm serve` takes no media, and the card says which and why; the cut candidates stay on the server.
+    assert card.count("<li><b>") == 1 and card.count("--enable-scale-out") == 1 and pick(lang, "留在伺服器上", "stays on the server") in card
+    assert pick(lang, "<b>圖片、聲音、影片</b>", "<b>image, audio, video</b>") in card
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_the_model_card_says_what_a_server_with_scale_out_and_masks_shows_and_which_media_it_refused(hub, lang):
+    info = connect(Server([], scale_out=True, masks=True, takes=("image", "video"))).info
+    card = render.model_html(info, lang)
+    assert_balanced(card)
+    assert pick(lang, "看得到剩下幾個候選、哪些被剃掉", "how many candidates were left and which were cut show too") in card
+    assert card.count("<li><b>") == 1 and pick(lang, "<b>聲音</b>", "<b>audio</b>") in card and "At most 0 audio(s)" in card
+    assert pick(lang, "圖片 · 影片", "image · video") in card  # what the model reads here
 
 
 # ---------- a whole turn ----------
@@ -474,6 +618,214 @@ def test_a_server_that_drafts_shows_its_counts_in_the_step_without_underlines(hu
     assert "MTP kept" in render.step_rows(data, lang="en")[0]
 
 
+# ---------- what the server can do: /inference/v1/generate ----------
+
+def test_without_scale_out_steps_go_to_completions_and_no_media_can_go(hub):
+    server = Server([ANSWER])
+    llm = connect(server)
+    assert not llm.generate_api and llm.modalities == () and llm.info["modalities"] == []
+    refused = llm.info["server"]["refused"]
+    assert set(refused) == {"image", "audio", "video"}
+    assert all("--enable-scale-out" in why["en"] and "--enable-scale-out" in why["zh"] for why in refused.values())
+    generate(llm)
+    assert len(server.requests) == 1 and len(server.generates) == 1  # the one probe, which vLLM answered with 403
+
+
+def test_with_scale_out_each_step_sends_the_token_ids_to_inference_generate(hub):
+    server = Server([ANSWER], scale_out=True)
+    llm = connect(server)
+    assert llm.generate_api and not llm.masks and llm.modalities == ("image", "audio", "video")
+    prompt = llm.render([{"role": "user", "content": "Hi"}], None, False)
+    generate(llm, sampling=Sampling(temperature=0.7, top_p=0.9, top_k=40, max_new_tokens=100))
+    body = server.generates[-1]
+    assert server.requests == [] and body["token_ids"] == hub["tokenizer"](prompt).input_ids and body["stream"] and body["model"] == "google/gemma-4-E2B-it"
+    params = body["sampling_params"]
+    assert (params["temperature"], params["top_p"], params["top_k"], params["max_tokens"]) == (0.7, 0.9, 40, 100)
+    assert (params["min_p"], params["repetition_penalty"], params["presence_penalty"], params["frequency_penalty"]) == (0.0, 1.0, 0.0, 0.0)
+    assert params["logprobs"] == 6 and params["detokenize"] is False and set(params["stop_token_ids"]) == llm.eos_ids
+    assert "content_parts" not in body and body["stream_options"] == {"include_usage": True}
+
+
+def test_inference_generate_gives_every_tokens_rank_and_the_top_five_by_rank(hub):
+    server = Server([ANSWER], scale_out=True)
+    server.p = {1: 0.03, 2: 0.001}
+    _, tokens, _ = generate(connect(server))
+    assert [t["rank"] for t in tokens[:3]] == [1, 2, 6]  # the third is outside the top 5, and its rank is known all the same
+    assert [c["p"] for c in tokens[1]["top"]] == pytest.approx([0.05, 0.03, 0.02, 0.01, 0.005])  # vLLM listed the chosen one first
+    assert [c["p"] for c in tokens[2]["top"]] == pytest.approx([0.3, 0.2, 0.1, 0.05, 0.02]) and all(c["id"] != tokens[2]["id"] for c in tokens[2]["top"])
+    assert not {"kept", "p_sampled"} & set(tokens[0])  # no sampling masks from this server
+    html = render.tip_html({**tokens[2], "index": 2}, GEMMA4, lang="en")
+    assert "Drew the token ranked #6, outside the top 5." in html
+
+
+@pytest.mark.parametrize("temperature", [1.0, 0.5])
+def test_sampling_masks_give_the_candidates_left_the_cut_ones_and_the_sampling_probability(hub, temperature):
+    server = Server([ANSWER], scale_out=True, masks=True)
+    llm = connect(server)
+    assert llm.masks and llm.info["server"]["sampling_mask"]
+    _, tokens, _ = generate(llm, sampling=Sampling(temperature=temperature, top_k=64, top_p=0.95))
+    tok = tokens[0]
+    assert server.generates[-1]["sampling_params"]["logprobs"] == 20  # enough to know every token left
+    assert tok["kept"] == 3 and [c["kept"] for c in tok["top"]] == [True, True, True, False, False]
+    weights = [q ** (1 / temperature) for q in (0.9, 0.05, 0.02)]
+    assert tok["p_sampled"] == pytest.approx(weights[0] / sum(weights))
+    assert set(tok) - {"type"} == {*TOKEN_FIELDS, *TOKEN_DETAILS} - {"draft"}  # everything LocalLLM sends
+    html = render.tip_html(tok, GEMMA4, lang="en")
+    assert "candidates left</span><b>3</b>" in html and html.count('class="c cut"') == 2 and "gray = cut" in html
+
+
+def test_when_a_token_left_has_no_probability_listed_the_sampling_probability_is_left_out(hub):
+    server = Server([ANSWER], scale_out=True, masks=True)
+    server.unlisted = True
+    _, tokens, _ = generate(connect(server))
+    assert tokens[0]["kept"] == 4 and "p_sampled" not in tokens[0]
+
+
+@pytest.mark.parametrize("scale_out", [False, True])
+def test_greedy_leaves_one_candidate_drawn_for_sure(hub, scale_out):
+    server = Server([ANSWER], scale_out=scale_out, masks=scale_out)
+    _, tokens, _ = generate(connect(server), sampling=Sampling(temperature=0))
+    tok = tokens[0]
+    assert tok["kept"] == 1 and tok["p_sampled"] == 1.0 and [c["kept"] for c in tok["top"]] == [True, False, False, False, False]
+
+
+def test_with_masks_greedy_and_no_top_k_go_to_completions_where_no_mask_lists_the_vocabulary(hub):
+    server = Server([ANSWER] * 3, scale_out=True, masks=True)
+    llm = connect(server)
+    probes = len(server.generates)
+    generate(llm, sampling=Sampling(temperature=0))
+    generate(llm, sampling=Sampling(top_k=0))
+    generate(llm, sampling=Sampling(top_k=64))
+    assert len(server.requests) == 2 and len(server.generates) == probes + 1
+
+
+# ---------- images, sound and video ----------
+
+def ask_with(llm: VLLMBackend, *names: str) -> tuple[list[dict], str]:
+    """A question with example files attached, as the harness has it: its messages, and the prompt rendered from them."""
+    kinds = {"png": "image", "flac": "audio", "mp4": "video"}
+    attached = [media.Attachment(n, kinds[n.rsplit(".", 1)[1]], str(EXAMPLES / n), (EXAMPLES / n).stat().st_size) for n in names]
+    messages = [{"role": "user", "content": media.user_content("這是什麼？", attached)}]
+    return messages, llm.render(messages, None, False)
+
+
+def test_the_server_is_asked_which_media_it_takes(hub):
+    server = Server([], scale_out=True, takes=("image",))
+    llm = connect(server)
+    assert llm.modalities == ("image",) and llm.info["modalities"] == ["image"]
+    refused = llm.info["server"]["refused"]
+    assert set(refused) == {"audio", "video"}
+    assert "At most 0 audio(s) may be provided in one prompt." in refused["audio"]["en"] and "At most 0 audio(s)" in refused["audio"]["zh"]
+    probes = [b for b in server.generates if b.get("content_parts")]
+    assert [b["content_parts"][0]["url"].split(";")[0] for b in probes] == ["data:image/png", "data:audio/wav", "data:video/mp4"]
+    assert all(b["sampling_params"]["max_tokens"] == 1 for b in server.generates)  # one token each
+
+
+def test_qwens_checkpoint_has_no_sound_to_ask_about(hub):
+    server = Server([], root="Qwen/Qwen3.5-0.8B", scale_out=True)
+    llm = connect(server, "Qwen/Qwen3.5-0.8B")
+    assert llm.modalities == ("image", "video") and llm.info["server"]["refused"] == {}
+
+
+def test_media_go_to_the_server_as_files_and_the_context_is_the_prompt_it_expanded(hub):
+    server = Server([ANSWER], scale_out=True, masks=True)
+    llm = connect(server)
+    messages, prompt = ask_with(llm, "receipt.png", "speech.flac", "ball.mp4")
+    before = len(server.generates)
+    encoded = llm.encode(prompt, media.parts(messages))
+    expansion = server.generates[before]
+    assert expansion["token_ids"] == hub["tokenizer"](prompt).input_ids and expansion["return_token_ids"] and not expansion["stream"]
+    assert [p["url"].split(";")[0] for p in expansion["content_parts"]] == ["data:image/png", "data:audio/wav", "data:video/mp4"]
+    assert expansion["content_parts"][2]["url"].endswith(vllm_backend.base64.b64encode((EXAMPLES / "ball.mp4").read_bytes()).decode())
+    # The Context tab gets the prompt as the server read it: each placeholder expanded, as a processor expands it.
+    assert encoded.text == FakeLLM(family=GEMMA4).encode(prompt, media.parts(messages)).text
+    assert encoded.media_tokens == {"image": MEDIA_TOKENS, "audio": MEDIA_TOKENS, "video": MEDIA_TOKENS}
+    assert encoded.n_tokens == len(hub["tokenizer"](encoded.text).input_ids)
+    events = list(llm.generate(encoded, Sampling(top_k=0), lambda: False))  # media go to /inference/v1/generate even without top-k
+    body = server.generates[-1]
+    assert body["stream"] and body["content_parts"] == expansion["content_parts"] and body["token_ids"] == expansion["token_ids"] and body["return_token_ids"]
+    assert events[0]["n_tokens"] == encoded.n_tokens and events[-1]["finish"] == "stop_token"
+
+
+def test_a_server_that_expands_the_media_differently_the_second_time_is_an_error(hub):
+    server = Server([ANSWER], scale_out=True)
+    llm = connect(server)
+    messages, prompt = ask_with(llm, "receipt.png")
+    encoded = llm.encode(prompt, media.parts(messages))
+    server.expand = MEDIA_TOKENS + 1
+    with pytest.raises(ServerError, match="expanded the media differently"):
+        list(llm.generate(encoded, Sampling(), lambda: False))
+
+
+def test_a_question_with_an_image_runs_through_the_harness_and_every_moment_of_it_renders(hub, tmp_path):
+    server = Server([ANSWER], scale_out=True, masks=True)
+    llm = connect(server)
+    photo = media.save(tmp_path, "receipt.png", (EXAMPLES / "receipt.png").read_bytes(), llm.modalities)
+    events = []
+    Run(llm, [], "這張收據的總計是多少？", RunSettings(), events.append, [photo], tmp_path).run()
+    assert events[-1]["stop_reason"] == "no_tool_call" and events[-1]["final"] == "答案是 42。"
+    context = next(e for e in events if e["type"] == "context")
+    assert context["media_tokens"] == {"image": MEDIA_TOKENS} and "<|image|>" * MEDIA_TOKENS in context["prompt"]
+    for lang in LANGS:
+        for n in range(len(events) + 1):
+            for piece in render_everything(render.build(events[:n]), live=n < len(events), lang=lang):
+                assert_balanced(piece)
+
+
+def test_a_kind_the_server_does_not_take_is_a_plain_file_for_run_python(hub, tmp_path):
+    server = Server([ANSWER], scale_out=True, takes=("image",))
+    llm = connect(server)
+    clip = media.save(tmp_path, "speech.flac", (EXAMPLES / "speech.flac").read_bytes(), llm.modalities)
+    assert clip.kind == "file"
+    assert media.parts([{"role": "user", "content": media.user_content("?", [clip])}]) == []
+
+
+# ---------- MTP: which tokens were guesses ----------
+
+DETAILED = {"num_spec_steps": 3, "num_accepted_draft_tokens": 5, "num_draft_tokens": 9, "acceptance_histogram": [1, 0, 1, 1],
+            "mean_acceptance_length": 2.67, "draft_acceptance_rate": 0.56, "num_spec_tokens": 3,
+            "per_step_accepted": [2, 0, 3], "per_step_drafted": [3, 3, 3]}
+
+
+def test_per_step_counts_mark_the_guesses_once_the_step_is_done(hub):
+    server = Server([ANSWER])  # 8 tokens: one from the prefill, then 2 + 1, 0 + 1 and 3, where the stop token ends it
+    server.spec = DETAILED
+    events = []
+    Run(connect(server), [], "Hi", RunSettings(), events.append).run()
+    end = next(e for e in events if e["type"] == "model_end")
+    assert end["mtp"] == {"drafted": 9, "accepted": 5, "forwards": 3, "kept_at": [1, 2, 5, 6, 7], "turned_down_at": [3, 4]}
+    assert not any("draft" in e for e in events if e["type"] == "token")  # the events stay as the server sent them
+    data = render.build(events)
+    tokens = data["steps"][0]["tokens"]
+    assert [t["index"] for t in tokens if (t.get("draft") or {}).get("accepted")] == [1, 2, 5, 6, 7]
+    assert [t["draft"] for t in tokens if t["index"] in (3, 4)] == [{"piece": None, "accepted": False}] * 2
+    html = render.step_html(data["steps"][0], data, lang="en", live=False)
+    assert html.split('<div class="tokens">')[1].count(' drafted"') == 5
+    assert "the server does not say which" in html and 'underline</span> = guessed by the MTP drafter' in html
+    assert "MTP kept <b>5</b> / 9 guesses" in html
+    live = render.build(events[: next(i for i, e in enumerate(events) if e["type"] == "model_end")])
+    assert ' drafted"' not in render.step_html(live["steps"][0], live, lang="en", live=True)  # nobody knows while it generates
+
+
+def test_per_step_counts_that_do_not_add_up_mark_no_token(hub):
+    server = Server([ANSWER])
+    server.spec = {**DETAILED, "num_spec_steps": 1, "num_accepted_draft_tokens": 1, "num_draft_tokens": 3, "per_step_accepted": [1], "per_step_drafted": [3]}
+    _, _, done = generate(connect(server))
+    assert done["mtp"] == {"drafted": 3, "accepted": 1, "forwards": 1}
+
+
+@pytest.mark.parametrize(("accepted", "drafted", "n_tokens", "marks"), [
+    ([2, 0, 3], [3, 3, 3], 9, {"kept_at": [1, 2, 5, 6, 7], "turned_down_at": [3, 4]}),  # every step whole, the last one's bonus token included
+    ([2, 0, 3], [3, 3, 3], 6, {"kept_at": [1, 2, 5], "turned_down_at": [3, 4]}),  # a stop token among the last step's guesses
+    ([2, 0, 3], [3, 3, 3], 10, None),  # one more token than the steps give: a step without guesses somewhere
+    ([2, 0, 3], [3, 3, 3], 5, None),  # the last step gave nothing at all
+    ([], [], 1, {"kept_at": [], "turned_down_at": []}),  # one token, from the prefill
+    ([1, 1], [1, 2], 5, {"kept_at": [1, 3], "turned_down_at": [4]}),
+])
+def test_drafted_tokens_follow_the_verify_steps(accepted, drafted, n_tokens, marks):
+    assert vllm_backend.drafted_tokens(accepted, drafted, n_tokens) == marks
+
+
 # ---------- with the real tokenizer and chat template (no weights) ----------
 
 def downloaded(model_id: str) -> str | None:
@@ -496,6 +848,7 @@ def test_with_the_real_tokenizer_the_server_reads_the_prompt_the_page_shows(mode
         pytest.skip(f"{model_id}'s tokenizer is not in models/")
     monkeypatch.setattr(vllm_backend, "snapshot_download", lambda *args, **kwargs: folder)  # the files are here: no Hub
     server = Server(list(REAL_REPLIES[model_id]), root=model_id, per_chunk=3)
+    server.tokenizer = AutoProcessor.from_pretrained(folder).tokenizer  # the server answers with the real tokenizer's ids
     llm = connect(server, model_id)
     events = []
     Run(llm, [], "6 乘以 7 是多少？", RunSettings(), events.append).run()
@@ -532,6 +885,39 @@ def test_real_server_greedy_tokens_carry_their_probability_and_candidates(served
     _, tokens, done = generate(served, "用一句話介紹台北。", Sampling(temperature=0, max_new_tokens=24))
     assert tokens and done["n_tokens"] == len(tokens) and "".join(t["text"] for t in tokens) == done["raw"]
     assert all(t["rank"] == 1 and t["top"][0]["id"] == t["id"] and 0 < t["p"] <= 1 for t in tokens)  # greedy takes the top token
+
+
+@real_server
+def test_real_server_with_scale_out_gives_every_rank_and_with_masks_what_was_cut(served):
+    if not served.generate_api:
+        pytest.skip("the server was started without --enable-scale-out")
+    _, tokens, _ = generate(served, "用一句話介紹台北。", Sampling(temperature=1.0, top_k=20, top_p=0.95, max_new_tokens=24))
+    assert all(t.get("rank", 0) >= 1 for t in tokens)
+    if served.masks:  # --return-sampling-mask
+        assert all(1 <= t["kept"] <= 20 and all("kept" in c for c in t["top"]) for t in tokens)
+        assert all(0 < t["p_sampled"] <= 1 for t in tokens)  # top-k 20 keeps every token left in the 20 log probabilities
+
+
+@real_server
+@pytest.mark.parametrize("name", ["receipt.png", "speech.flac", "ball.mp4"])
+def test_real_server_reads_each_kind_of_media_it_takes(served, name):
+    kind = {"png": "image", "flac": "audio", "mp4": "video"}[name.rsplit(".", 1)[1]]
+    if kind not in served.modalities:
+        pytest.skip(f"the server does not take {kind}: {served.info['server']['refused'].get(kind, {}).get('en', 'the checkpoint has no encoder for it')}")
+    messages, prompt = ask_with(served, name)
+    encoded = served.encode(prompt, media.parts(messages))
+    assert encoded.media_tokens.get(kind, 0) > 0 and encoded.n_tokens > len(served.tokenizer(prompt, add_special_tokens=False).input_ids)
+    events = list(served.generate(encoded, Sampling(temperature=0, max_new_tokens=16), lambda: False))
+    assert events[-1]["n_tokens"] > 0
+
+
+@real_server
+def test_real_server_with_detailed_spec_counts_marks_guesses_that_add_up(served):
+    _, tokens, done = generate(served, "Write a Python function that adds two numbers.", Sampling(temperature=0, max_new_tokens=64))
+    if not (done["mtp"] or {}).get("kept_at") and not (done["mtp"] or {}).get("turned_down_at"):
+        pytest.skip("the server does not decode speculatively with --per-request-spec-decode-metrics detailed, or its counts did not add up")
+    marked = done["mtp"]["kept_at"] + done["mtp"]["turned_down_at"]
+    assert all(0 < i < len(tokens) for i in marked) and len(done["mtp"]["kept_at"]) <= done["mtp"]["accepted"]
 
 
 @real_server

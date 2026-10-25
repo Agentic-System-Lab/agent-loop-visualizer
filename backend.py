@@ -52,7 +52,10 @@ TOKEN_FIELDS = ("index", "id", "piece", "text", "special", "channel")
 #   p_sampled   its probability in the distribution it was drawn from, after temperature, top-k and top-p
 #   kept        how many candidates top-k and top-p left
 #   top         the 5 most likely tokens, each with id, piece, p, and kept (whether top-k and top-p left it) when known
-#   draft       with MTP, what the drafter guessed here and whether the model kept it; absent where it guessed nothing
+#   draft       with MTP, what the drafter guessed here and whether the model kept it; absent where it guessed nothing.
+#               A backend that learns only at the end of a step which tokens were guesses (vllm_backend.py) says so in
+#               done's mtp instead (kept_at, turned_down_at), and render.py marks those tokens; it may not know what a
+#               turned-down guess was (piece None).
 TOKEN_DETAILS = ("p", "logprob", "rank", "p_sampled", "kept", "top", "draft")
 
 
@@ -90,5 +93,6 @@ class Backend(Protocol):
         - {"type": "token", ...} for each token, with TOKEN_FIELDS and the TOKEN_DETAILS the backend knows;
         - {"type": "done", "finish", "stop_piece", "n_tokens", "decode_ms", "tok_per_s", "mtp", "raw"}: `finish`
           is "stop_token", "max_new_tokens" or "user_stopped"; `stop_piece` is the stop token's piece; `mtp` is
-          {"drafted", "accepted", "forwards"} with MTP on, else None; and `raw` is the whole output, special
-          tokens included, which the family parses."""
+          {"drafted", "accepted", "forwards"} with MTP on (and "kept_at", "turned_down_at" from a backend that
+          learns the guesses only then), else None; and `raw` is the whole output, special tokens included, which
+          the family parses."""

@@ -387,6 +387,10 @@ def chat_panel(llm: Backend, live_run: LiveRun | None, other: LiveRun | None):
                               + ("，或按麥克風錄一段話。" if "audio" in llm.modalities else "。"),
                               f"This model reads {kinds}: attach a file with the + at the left of the input box"
                               + (", or record yourself with the microphone." if "audio" in llm.modalities else ".")))
+            if refused := (llm.info.get("server") or {}).get("refused"):  # what the vLLM server did not take, and so cannot be attached
+                kinds = pick(st.session_state.lang, "、", ", ").join(render.MODALITIES[st.session_state.lang][k] for k in refused)
+                st.caption(tr(f"這台 vLLM 伺服器不收{kinds}，所以不能附上；原因寫在模型分頁。",
+                              f"This vLLM server does not take {kinds}, so they cannot be attached; the Model tab says why."))
             st.caption(tr("試試看", "Try one"))
             examples(llm, busy)
         for i, run in enumerate(runs):

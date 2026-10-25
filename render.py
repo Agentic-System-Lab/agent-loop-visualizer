@@ -329,6 +329,7 @@ def build(events: list[dict]) -> dict:
                 step[kind] = ev
             elif kind == "model_end":
                 step["done"] = ev
+                step["tokens"] = with_drafts(step["tokens"], ev.get("mtp") or {})
             elif kind == "tool_call":
                 step["calls"][ev["call_id"]] = {**ev, "approval": None, "started": False, "result": None}
             elif kind == "approval_request":
@@ -348,6 +349,16 @@ def build(events: list[dict]) -> dict:
             elif kind == "tool_result":
                 step["calls"][ev["call_id"]]["result"] = ev
     return data
+
+
+def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:
+    """Mark the guesses a server reported only at the end of a step (vllm_backend.drafted_tokens: the places in kept_at
+    and turned_down_at), as llm.py marks them while generating. The server does not say what a guess turned down was."""
+    kept, turned_down = set(mtp.get("kept_at", ())), set(mtp.get("turned_down_at", ()))
+    if not kept and not turned_down:
+        return tokens
+    marks = {**{i: {"piece": None, "accepted": False} for i in turned_down}, **{i: {"accepted": True} for i in kept}}
+    return [{**t, "draft": {"piece": t["piece"], **marks[t["index"]]}} if t["index"] in marks and "draft" not in t else t for t in tokens]
 
 
 def images(steps: list[dict]) -> list[str]:
@@ -620,6 +631,14 @@ def draft_note(tok: dict, family: families.Family, lang: str) -> str:
             "<b>MTP: the drafter guessed it</b>The drafter guessed this token first, and the model kept it after checking it "
             "in the same forward pass (in greedy decoding it had to be the top token; when sampling, it is kept with its sampling probability).",
         ) + "</span>"
+    if draft["piece"] is None:  # a server that counts the guesses it turned down but does not say what they were
+        return '<span class="tip-draft">' + pick(
+            lang,
+            "<b>MTP：草稿被退回</b>草稿模型在這裡猜了另一個 token（伺服器沒說是哪一個），主模型沒有收下，"
+            "這個 token 由主模型自己選，後面的猜測一起作廢。",
+            "<b>MTP: the guess was turned down</b>The drafter guessed another token here (the server does not say which), and the "
+            "model did not keep it. The model picked this token itself, and the guesses after it were dropped.",
+        ) + "</span>"
     guess = f'<span class="tk">{esc(family.show_piece(draft["piece"]))}</span>'
     return '<span class="tip-draft">' + pick(
         lang,
@@ -730,16 +749,17 @@ def token_legend(s: dict, live: bool, lang: str, tokens: list[dict] = ()) -> str
             lang, "滑過 token 看它的 id", "hover over a token to see its id"
         )
     scale = f'<span class="heat-scale">{pick(lang, "機率高 <i></i> 低", "likely <i></i> unlikely")}</span>' if reported(tokens, "p") else ""
+    drafts = s.get("mtp") or any(t.get("draft") for t in tokens)  # asked for in the sidebar, or reported by a server
     drafted = pick(
         lang, '<span><span class="tok drafted">底線</span> = MTP 草稿猜中</span>', '<span><span class="tok drafted">underline</span> = guessed by the MTP drafter</span>'
-    ) if s.get("mtp") else ""
+    ) if drafts else ""
     mtp = '<p class="tok-legend">' + pick(
         lang,
         "MTP：每個沒有底線的 token 之後，草稿模型先猜接下來幾個，主模型一次 forward 全部驗證；"
         "一串底線加上後面那個沒有底線的 token，是主模型同一次 forward 的產出。",
         "MTP: after each token without an underline, the drafter guesses the next few and the model checks them all in one forward pass; "
         "a run of underlined tokens and the plain token after it come from the same forward pass of the model.",
-    ) + "</p>" if s.get("mtp") else ""
+    ) + "</p>" if drafts else ""
     return (
         f'<p class="tok-legend">{scale}'
         + pick(
@@ -973,10 +993,15 @@ def model_html(info: dict, lang: str) -> str:
     name, arch = esc(family.name), esc(info["architecture"])
     if server:
         engine, url = esc(server["engine"]), esc(server["url"])
+        if server.get("sampling_mask"):
+            cut = pick(lang, "伺服器也送回 top-k、top-p 留下了哪些 token，所以看得到剩下幾個候選、哪些被剃掉。",
+                       "The server also sends which tokens top-k and top-p left, so how many candidates were left and which were cut show too. ")
+        else:
+            cut = pick(lang, "取樣時剃掉了哪些候選，留在伺服器上。", "Which candidates the sampling cut stays on the server. ")
         where = pick(lang, f"{name} 家族，由 {url} 的 {engine} 伺服器跑（{arch}）：prompt 在這裡 render 成 token id 送過去，"
-                           "每個 token 回來時帶著它的機率和前 5 名候選；取樣時剃掉了哪些候選，留在伺服器上。",
+                           "每個 token 回來時帶著它的機率和前 5 名候選。",
                      f"The {name} family, run by the {engine} server at {url} ({arch}): the prompt is rendered into token ids here and sent "
-                     "there, and each token comes back with its probability and the top 5 candidates; which candidates the sampling cut stays on the server. ")
+                     "there, and each token comes back with its probability and the top 5 candidates. ") + cut
     else:
         where = pick(lang, f"{name} 家族，在你的電腦上用 transformers 跑（{arch}）。", f"The {name} family, running on your computer with transformers ({arch}). ")
     return (
@@ -986,10 +1011,26 @@ def model_html(info: dict, lang: str) -> str:
         + where
         + f'{prose_html(family.model_note.get(lang, ""))}</p>'
         f'<dl class="specs">{spec_html}</dl>'
+        + refused_html(server, lang)
         + (f'<div class="params-bar">{bar}</div><ul class="params-legend">{legend}</ul>' if parts else "")
         + f'<p class="card-sub stops-label">{pick(lang, "停止 token：生成到這些 token 就交回 harness", "Stop tokens: generating one of these hands control back to the harness")}</p>'
         f'<ul class="stop-list">{stops}</ul>'
         f'{drafter_html(info, lang)}</div>'
+    )
+
+
+def refused_html(server: dict | None, lang: str) -> str:
+    """The media the checkpoint reads but the server did not take (vllm_backend.VLLMBackend._probe), and why."""
+    refused = (server or {}).get("refused")
+    if not refused:
+        return ""
+    reasons: dict[str, list[str]] = {}  # one reason, such as no --enable-scale-out, often covers every kind
+    for kind, why in refused.items():
+        reasons.setdefault(why[lang], []).append(MODALITIES[lang][kind])
+    items = "".join(f'<li><b>{pick(lang, "、", ", ").join(kinds)}</b>{pick(lang, "：", ": ")}{prose_html(why)}</li>' for why, kinds in reasons.items())
+    return (
+        f'<p class="card-sub stops-label">{pick(lang, "這個 checkpoint 讀得懂、但這台伺服器不收的媒體：", "Media the checkpoint reads but this server does not take:")}</p>'
+        f'<ul class="refused-list">{items}</ul>'
     )
 
 

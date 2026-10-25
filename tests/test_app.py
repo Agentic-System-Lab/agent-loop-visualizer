@@ -422,18 +422,20 @@ def test_reset_turns_mtp_off(at):
 @pytest.fixture
 def vllm(monkeypatch, models, outputs):
     """The page with VLLM_URL set. The server serves Qwen3.5 under the name "qwen", and a fake model with what a
-    VLLMBackend has (text only, the server in its info, nothing about weights loaded here) stands in for the backend.
-    `made` holds each one the page makes; set `down` and the server cannot be reached."""
+    VLLMBackend has (the server in its info, nothing about weights loaded here) stands in for the backend; the server
+    takes images but refused video. `made` holds each one the page makes; set `down` and the server cannot be reached."""
     state = {"made": [], "down": False}
 
     class ServedLLM(FakeLLM):
         def __init__(self, model_id, url):
             super().__init__(outputs, model_id)
-            self.modalities = ()
+            self.modalities = ("image",)
             self.drafter_id = None
             unknown = ("device", "dtype", "parameters", "parameter_parts", "load_seconds")
-            self.info = {k: v for k, v in self.info.items() if k not in unknown} | {
-                "modalities": [], "drafter_id": None, "server": {"engine": "vLLM", "version": "0.32.0", "url": url, "served_as": "qwen"}}
+            refused = {"video": {"zh": "伺服器不收：At most 0 video(s) may be provided in one prompt.",
+                                 "en": "the server refused it: At most 0 video(s) may be provided in one prompt."}}
+            self.info = {k: v for k, v in self.info.items() if k not in unknown} | {"modalities": ["image"], "drafter_id": None, "server": {
+                "engine": "vLLM", "version": "0.32.0", "url": url, "served_as": "qwen", "generate_api": True, "sampling_mask": True, "refused": refused}}
             state["made"].append(self)
 
     def served_models(url, transport=None):
@@ -462,11 +464,18 @@ def test_with_vllm_the_sidebar_says_the_server_decides_speculative_decoding(vllm
     assert "--speculative-config" in mtp_toggle(at).help and "--per-request-spec-decode-metrics" in mtp_toggle(at).help
 
 
-def test_with_vllm_the_model_reads_text_only(vllm, at):
+def test_with_vllm_the_model_reads_what_the_server_takes_and_the_page_says_what_it_refused(vllm, at):
     labels = example_labels(at)
-    assert "這張收據上的品項加起來是多少？和收據上寫的總計一樣嗎？" not in labels
-    assert "影片裡的紅球是從左邊滾到右邊，還是從右邊滾到左邊？" not in labels
+    assert "這張收據上的品項加起來是多少？和收據上寫的總計一樣嗎？" in labels
+    assert "影片裡的紅球是從左邊滾到右邊，還是從右邊滾到左邊？" not in labels  # the server refused video
     assert "台北現在幾點？紐約呢？" in labels
+    assert "這個模型讀得懂圖片：用輸入框左邊的 ＋ 附上檔案。" in captions(at)
+    assert "這台 vLLM 伺服器不收影片，所以不能附上；原因寫在模型分頁。" in captions(at)
+    assert ".png" in at.chat_input[0].proto.file_type and ".mp4" not in at.chat_input[0].proto.file_type
+    tab(at).set_value("model").run()
+    html = page_html(at)
+    assert "這個 checkpoint 讀得懂、但這台伺服器不收的媒體" in html and "<b>影片</b>：伺服器不收：At most 0 video(s)" in html
+    assert "看得到剩下幾個候選、哪些被剃掉" in html
 
 
 def test_with_vllm_the_model_tab_says_the_server_runs_it(vllm, at):
