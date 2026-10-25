@@ -417,32 +417,76 @@ def test_checking_a_guess_leaves_the_distribution_unchanged(draft):
 
 # ---------- loading helpers ----------
 
-def test_load_prefers_local_cache():
+class Loaded(Exception):
+    """The fake weights end LocalLLM.__init__: everything after them needs a real model."""
+
+
+def fake_hub(monkeypatch, model_type="gemma4"):
+    """Records each download and each from_pretrained, in order, and where it loaded from."""
     seen = []
 
-    class Cls:
-        @staticmethod
-        def from_pretrained(model_id, **kwargs):
-            seen.append(kwargs)
-            return "model"
+    def snapshot_download(model_id, allow_patterns=None):
+        seen.append(("download", model_id, allow_patterns))
+        return f"/hub/{model_id}"
 
-    assert llm._load(Cls, "m", dtype="bf16") == "model"
-    assert seen == [{"local_files_only": True, "dtype": "bf16"}]
+    def loader(name, result):
+        def from_pretrained(path, **kwargs):
+            seen.append((name, path, kwargs))
+            if result is Loaded:
+                raise Loaded
+            return result
+        return SimpleNamespace(from_pretrained=from_pretrained)
+
+    monkeypatch.setattr(llm, "snapshot_download", snapshot_download)
+    monkeypatch.setattr(llm, "AutoConfig", loader("config", SimpleNamespace(model_type=model_type)))
+    monkeypatch.setattr(llm, "AutoTokenizer", loader("tokenizer", "tokenizer"))
+    monkeypatch.setattr(llm, "AutoModelForMultimodalLM", loader("model", Loaded))
+    monkeypatch.setattr(llm, "AutoModelForCausalLM", loader("drafter", Loaded))
+    monkeypatch.setattr(llm, "pick_device", lambda: "cuda")
+    return seen
 
 
-def test_load_falls_back_to_download():
-    seen = []
+def test_the_tokenizer_and_weights_load_from_the_whole_downloaded_model(monkeypatch):
+    # A cache holding only config.json used to load Gemma's tokenizer locally and fail, and Qwen's empty.
+    seen = fake_hub(monkeypatch)
+    with pytest.raises(Loaded):
+        LocalLLM("google/gemma-4-E2B-it")
+    assert seen == [
+        ("download", "google/gemma-4-E2B-it", "config.json"),
+        ("config", "/hub/google/gemma-4-E2B-it", {}),
+        ("download", "google/gemma-4-E2B-it", None),
+        ("tokenizer", "/hub/google/gemma-4-E2B-it", {}),
+        ("model", "/hub/google/gemma-4-E2B-it", {"dtype": torch.bfloat16, "device_map": "cuda"}),
+    ]
 
-    class Cls:
-        @staticmethod
-        def from_pretrained(model_id, **kwargs):
-            seen.append(kwargs)
-            if kwargs.get("local_files_only"):
-                raise OSError("not cached")
-            return "downloaded"
 
-    assert llm._load(Cls, "m") == "downloaded"
-    assert seen == [{"local_files_only": True}, {}]
+def test_an_unsupported_model_fails_before_its_weights_download(monkeypatch):
+    seen = fake_hub(monkeypatch, model_type="llama")
+    with pytest.raises(ValueError, match="'llama' are not supported"):
+        LocalLLM("meta/llama")
+    assert seen == [("download", "meta/llama", "config.json"), ("config", "/hub/meta/llama", {})]
+
+
+def test_a_checkpoint_on_disk_loads_in_place(monkeypatch, tmp_path):
+    seen = fake_hub(monkeypatch)
+    with pytest.raises(Loaded):
+        LocalLLM(str(tmp_path))
+    assert [s for s in seen if s[0] == "download"] == []
+    assert {path for _, path, _ in seen} == {str(tmp_path)}
+
+
+def test_the_drafter_loads_from_its_downloaded_files(monkeypatch):
+    seen = fake_hub(monkeypatch)
+    m = make_llm()
+    m.dtype, m.device = torch.bfloat16, "cuda"
+    m.drafter, m.drafter_id = None, "google/gemma-4-E2B-it-assistant"
+    m._drafter_lock = llm.threading.Lock()
+    with pytest.raises(Loaded):
+        m.load_drafter()
+    assert seen == [
+        ("download", "google/gemma-4-E2B-it-assistant", None),
+        ("drafter", "/hub/google/gemma-4-E2B-it-assistant", {"dtype": torch.bfloat16, "device_map": "cuda"}),
+    ]
 
 
 @pytest.mark.parametrize("cuda, mps, expected", [(True, True, "cuda"), (False, True, "mps"), (False, False, "cpu")])

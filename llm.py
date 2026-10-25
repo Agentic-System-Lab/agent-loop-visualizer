@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterator
 
 import torch
+from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoTokenizer
 
 import families
@@ -37,12 +38,16 @@ class Sampling:
     mtp: bool = False  # let the MTP drafter guess ahead, once it is loaded (LocalLLM.load_drafter)
 
 
-def _load(cls, model_id: str, **kwargs):
-    """Use the local Hugging Face cache first, so a downloaded model starts offline."""
-    try:
-        return cls.from_pretrained(model_id, local_files_only=True, **kwargs)
-    except OSError:
-        return cls.from_pretrained(model_id, **kwargs)
+def _download(model_id: str, only: str | None = None) -> str:
+    """The model's folder in the local Hugging Face cache, after fetching the files it lacks (only `only`, if given).
+
+    from_pretrained(local_files_only=True) is no test of the cache: once config.json is cached, a tokenizer whose
+    own files are missing raises a ValueError (Gemma 4) or loads empty (Qwen3.5) rather than an OSError.
+    snapshot_download lists the model's files on the Hub and fetches only those the cache lacks; when the Hub
+    can't be reached it returns the cached folder, so a downloaded model still starts offline."""
+    if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
+        return model_id
+    return snapshot_download(model_id, allow_patterns=only)
 
 
 def _not_a_kernel_notice(record: logging.LogRecord) -> bool:
@@ -74,10 +79,11 @@ class LocalLLM:
         self.drafter = None  # loaded the first time MTP is switched on
         self._drafter_lock = threading.Lock()
         start = time.perf_counter()
-        # config.json alone says which family the model belongs to; an unsupported one fails before the weights load.
-        self.family = families.for_model_type(_load(AutoConfig, model_id).model_type)
-        self.tokenizer = _load(AutoTokenizer, model_id)
-        self.model = _load(AutoModelForMultimodalLM, model_id, dtype=self.dtype, device_map=self.device).eval()
+        # config.json alone says which family the model belongs to; an unsupported one fails before the weights download.
+        self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
+        files = _download(model_id)
+        self.tokenizer = AutoTokenizer.from_pretrained(files)
+        self.model = AutoModelForMultimodalLM.from_pretrained(files, dtype=self.dtype, device_map=self.device).eval()
         self.load_seconds = time.perf_counter() - start
 
         # The generation config's stop tokens, plus the family's: a checkpoint may list only some of them.
@@ -143,7 +149,7 @@ class LocalLLM:
             if self.drafter is not None or self.drafter_id is None:
                 return
             start = time.perf_counter()
-            self.drafter = _load(AutoModelForCausalLM, self.drafter_id, dtype=self.dtype, device_map=self.device).eval()
+            self.drafter = AutoModelForCausalLM.from_pretrained(_download(self.drafter_id), dtype=self.dtype, device_map=self.device).eval()
             self.draft_tokens = self.drafter.generation_config.num_assistant_tokens  # guesses per forward pass
             self.warmup(mtp=True)
             cfg = self.drafter.config.get_text_config()

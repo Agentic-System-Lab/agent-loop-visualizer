@@ -3,9 +3,11 @@ and chat template. These tests check those assumptions against the real files, f
 model in the menu. Only the tokenizer is loaded (a few seconds); a model that is not in the
 local Hugging Face cache is skipped."""
 
+import os
 import re
 
 import pytest
+from huggingface_hub import try_to_load_from_cache
 
 import families
 import render
@@ -26,14 +28,15 @@ def model(request):
     """A LocalLLM with the real tokenizer and family but no weights."""
     from transformers import AutoConfig, AutoTokenizer
 
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(request.param, local_files_only=True)
-        config = AutoConfig.from_pretrained(request.param, local_files_only=True)
-    except OSError:
+    # Look for the files themselves: with only config.json cached, local_files_only=True fails on Gemma's
+    # tokenizer with a ValueError and loads Qwen's empty, rather than raising an OSError.
+    files = [try_to_load_from_cache(request.param, f) for f in ("config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja")]
+    if not all(isinstance(f, str) for f in files):
         pytest.skip(f"{request.param} is not in the local Hugging Face cache")
+    folder = os.path.dirname(files[0])
     m = LocalLLM.__new__(LocalLLM)
-    m.tokenizer = tokenizer
-    m.family = families.for_model_type(config.model_type)
+    m.tokenizer = AutoTokenizer.from_pretrained(folder)
+    m.family = families.for_model_type(AutoConfig.from_pretrained(folder).model_type)
     return m
 
 
