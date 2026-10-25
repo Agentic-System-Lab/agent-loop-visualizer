@@ -1,4 +1,4 @@
-"""A stand-in for simple_backend.LocalLLM that replays scripted model outputs.
+"""A stand-in for simple_backend.SimpleBackend that replays scripted model outputs.
 
 It is a Backend (backend.py) like the real thing (render, encode, generate, family, modalities,
 info, load_drafter), and it has a tokenizer too; it renders prompts in a simplified form of its family's chat format

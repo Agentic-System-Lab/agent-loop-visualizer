@@ -44,8 +44,8 @@ app/                     the Streamlit app
 harness/                 the agent, the model and what runs it; no Streamlit
   agent.py               the harness (Run): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
   backends/
-    backend.py           Backend: what agent.py and the page ask of whatever runs the model (LocalLLM, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
-    simple_backend.py    LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
+    backend.py           Backend: what agent.py and the page ask of whatever runs the model (SimpleBackend, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
+    simple_backend.py    SimpleBackend: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
     vllm_backend.py      VLLMBackend (VLLM_URL): the tokenizer and chat template here, the token ids to a vLLM server (/v1/completions, or /inference/v1/generate with --enable-scale-out: media, sampling masks), what it says about each token back
     vllm_docker.py       the sidebar's vLLM (Docker): downloads the model, `docker compose up -d` with it, waits until it answers, `docker compose down`; DockerError in both languages
   families/              everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
@@ -54,7 +54,7 @@ harness/                 the agent, the model and what runs it; no Streamlit
   i18n.py                the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
   sandbox/               run_python's sandbox image, agent-loop-sandbox: the Dockerfile, and the matplotlib backend (agent_loop_figures.py) and matplotlibrc that send charts back on stdout
 docker-compose/          the vLLM server vllm_docker.py starts: compose.yaml (CPU, any machine), compose.gpu.yaml (on top: NVIDIA GPUs), vllm-cpu/ (vLLM 0.32.0's CPU image + patch_vllm.py's two fixes)
-tests/                   pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
+tests/                   pytest; fakes.py is a scripted stand-in for SimpleBackend; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
 models/                  downloaded models (simple_backend.MODELS_DIR), which git ignores; AGENT_LOOP_MODELS moves them, HF_HUB_CACHE does not
 ```
 
@@ -69,7 +69,7 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
 - **app/page.py is imported once, not run as a script.** streamlit_app.py imports it and calls `main()` on every
   rerun, so everything a rerun does is inside functions, and what the module reads from the environment (`VLLM_URL`,
   `MODEL_ID`, `AGENT_LOOP_UPLOADS`) is read once per process. Tests change those on the module (`page.VLLM_URL`,
-  `page.UPLOADS`, `page.LocalLLM`), not in the environment.
+  `page.UPLOADS`, `page.SimpleBackend`), not in the environment.
 - **Events are the interface.** `agent.Run` runs in a background thread and appends one event per
   stage; the order is in the READMEs' Architecture (架構) section. `app/render.py` is a pure function of that list and the
   page only draws it, which is why stop and approve can rerun the script without interrupting the loop.
@@ -137,7 +137,7 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   at once, at thousands of tok/s; and `runner.fastReruns` off: a rerun in a new thread beside the one loading a model let
   that load finish after the model was let go, beside vLLM (tests/test_app.py checks both). `simple_backend.empty_cache()`
   frees cuBLAS's workspaces before emptying CUDA's cache, or the segment holding the weights stays reserved.
-- **What a model reads comes from the checkpoint and the backend.** `LocalLLM.modalities` is worked out from the config
+- **What a model reads comes from the checkpoint and the backend.** `SimpleBackend.modalities` is worked out from the config
   and the processor, not the family; `VLLMBackend.modalities` is that minus what the server refused when it was probed at
   load (all of it without `--enable-scale-out`), and the page says which it refused and why. A file of a kind the model does not read is a plain file for
   `run_python`. `encode()` expands the media into their tokens, and the `context` event carries that
@@ -153,7 +153,7 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
 
 ## Tests
 
-- Most tests use `FakeLLM` from tests/fakes.py: same interface as `LocalLLM`, prompts in a simplified
+- Most tests use `FakeLLM` from tests/fakes.py: same interface as `SimpleBackend`, prompts in a simplified
   form of each family's chat format, scripted replies streamed token by token. Cover new harness or UI
   behavior with it; tests/test_app.py drives the whole page through Streamlit's `AppTest`.
 - tests/test_chat_template.py checks each family against the model's real tokenizer and chat template

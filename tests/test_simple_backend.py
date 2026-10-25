@@ -15,7 +15,7 @@ import torch
 from harness import families
 from harness.backends import simple_backend
 from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend
-from harness.backends.simple_backend import LocalLLM, Sampling
+from harness.backends.simple_backend import SimpleBackend, Sampling
 from harness.families import GEMMA4, FileNote
 
 VOCAB = [
@@ -61,7 +61,7 @@ class Model:
 
 
 def make_llm(script=()):
-    m = LocalLLM.__new__(LocalLLM)  # skip __init__: no weights
+    m = SimpleBackend.__new__(SimpleBackend)  # skip __init__: no weights
     m.device = "cpu"
     m.tokenizer = Tokenizer()
     m.model = Model(script)
@@ -172,17 +172,17 @@ def test_token_events_carry_every_field_and_every_detail_a_backend_can_send():
     assert all(set(t) == {"type", *TOKEN_FIELDS, *TOKEN_DETAILS} - {"draft"} for t in tokens)
 
 
-def test_local_llm_has_every_method_of_a_backend_with_its_parameters():
+def test_simple_backend_has_every_method_of_a_backend_with_its_parameters():
     for name in ("warmup", "load_drafter", "render", "encode", "generate"):
         wanted = list(inspect.signature(getattr(Backend, name)).parameters)
-        params = inspect.signature(getattr(LocalLLM, name)).parameters
+        params = inspect.signature(getattr(SimpleBackend, name)).parameters
         assert list(params)[: len(wanted)] == wanted, name
         assert all(p.default is not p.empty for p in list(params.values())[len(wanted):]), name  # anything more is optional
 
 
-def test_local_llm_sets_every_attribute_of_a_backend_when_it_loads():
+def test_simple_backend_sets_every_attribute_of_a_backend_when_it_loads():
     # Loading needs real weights (test_real_model.py checks a loaded model), so look for where __init__ sets each one.
-    init = inspect.getsource(LocalLLM.__init__)
+    init = inspect.getsource(SimpleBackend.__init__)
     for name in Backend.__annotations__:
         assert f"self.{name} = " in init, name
 
@@ -550,7 +550,7 @@ def test_images_go_through_the_vision_encoder_before_the_prefill():
 # ---------- loading helpers ----------
 
 class Loaded(Exception):
-    """The fake weights end LocalLLM.__init__: everything after them needs a real model."""
+    """The fake weights end SimpleBackend.__init__: everything after them needs a real model."""
 
 
 def fake_hub(monkeypatch, model_type="gemma4"):
@@ -582,7 +582,7 @@ def test_the_processor_and_weights_load_from_the_whole_downloaded_model(monkeypa
     # A cache holding only config.json used to load Gemma's tokenizer locally and fail, and Qwen's empty.
     seen = fake_hub(monkeypatch)
     with pytest.raises(Loaded):
-        LocalLLM("google/gemma-4-E2B-it")
+        SimpleBackend("google/gemma-4-E2B-it")
     assert seen == [
         ("download", "google/gemma-4-E2B-it", "config.json"),
         ("config", "/hub/google/gemma-4-E2B-it", {}),
@@ -595,14 +595,14 @@ def test_the_processor_and_weights_load_from_the_whole_downloaded_model(monkeypa
 def test_an_unsupported_model_fails_before_its_weights_download(monkeypatch):
     seen = fake_hub(monkeypatch, model_type="llama")
     with pytest.raises(ValueError, match="'llama' are not supported"):
-        LocalLLM("meta/llama")
+        SimpleBackend("meta/llama")
     assert seen == [("download", "meta/llama", "config.json"), ("config", "/hub/meta/llama", {})]
 
 
 def test_a_checkpoint_on_disk_loads_in_place(monkeypatch, tmp_path):
     seen = fake_hub(monkeypatch)
     with pytest.raises(Loaded):
-        LocalLLM(str(tmp_path))
+        SimpleBackend(str(tmp_path))
     assert [s for s in seen if s[0] == "download"] == []
     assert {path for _, path, _ in seen} == {str(tmp_path)}
 
@@ -711,5 +711,5 @@ def test_the_kernel_notice_is_dropped_on_every_device(monkeypatch, device):
     fake_hub(monkeypatch)
     monkeypatch.setattr(simple_backend, "pick_device", lambda: device)
     with pytest.raises(Loaded):
-        LocalLLM("google/gemma-4-E2B-it")
+        SimpleBackend("google/gemma-4-E2B-it")
     assert simple_backend._not_a_kernel_notice in logger.filters

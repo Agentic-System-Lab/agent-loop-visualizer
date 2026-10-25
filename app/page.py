@@ -45,7 +45,7 @@ from harness import families, media, tools
 from harness.agent import Run, RunSettings
 from harness.backends import vllm_backend, vllm_docker
 from harness.backends.backend import Backend, Sampling
-from harness.backends.simple_backend import LocalLLM, empty_cache
+from harness.backends.simple_backend import SimpleBackend, empty_cache
 from harness.i18n import LANGS, from_locale, pick
 from harness.tools import TOOLS
 
@@ -132,7 +132,7 @@ def default_model() -> str:
 
 @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
 def load_llm(model_id: str, url: str | None) -> Backend:
-    llm = vllm_backend.VLLMBackend(model_id, url) if url else LocalLLM(model_id)
+    llm = vllm_backend.VLLMBackend(model_id, url) if url else SimpleBackend(model_id)
     llm.warmup()
     return llm
 

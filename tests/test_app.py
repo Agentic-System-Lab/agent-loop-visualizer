@@ -47,7 +47,7 @@ def models(monkeypatch, outputs, tmp_path, sandbox):
             made.append(self)
 
     # The page module is imported once, so what it read from the environment and imported is changed on it.
-    monkeypatch.setattr(page, "LocalLLM", AppLLM)
+    monkeypatch.setattr(page, "SimpleBackend", AppLLM)
     monkeypatch.setattr(page, "UPLOADS", tmp_path / "uploads")
     monkeypatch.setattr(page, "VLLM_URL", None)
     st.cache_resource.clear()  # a fresh model and a fresh generation lock per test

@@ -26,7 +26,7 @@ MODELS = {
 }
 
 # MTP drafters: model id -> a small model that guesses the next few tokens from the model's own last hidden
-# state and keys and values, so one forward pass of the model can check several tokens (simple_backend.LocalLLM.load_drafter).
+# state and keys and values, so one forward pass of the model can check several tokens (simple_backend.SimpleBackend.load_drafter).
 # transformers runs this for Gemma 4's assistant checkpoints only.
 DRAFTERS = {
     "google/gemma-4-E2B-it": "google/gemma-4-E2B-it-assistant",
