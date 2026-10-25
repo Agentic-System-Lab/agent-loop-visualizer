@@ -824,9 +824,10 @@ SECTIONS = [
             {"zh": "`get_current_time`：讀系統時鐘，用 IANA 時區名稱換算（[[tools.py|def get_current_time(]]）。",
              "en": "`get_current_time`: reads the system clock and converts with an IANA timezone name ([[tools.py|def get_current_time(]])."},
             {"zh": "`calculator`：在 AST 白名單上計算，從不呼叫 `eval()`。只允許數字、四則運算、次方和少數數學函式；"
-                   "算次方前先估計位數，避免 `10**10**10` 這種算式把 thread 卡死。",
+                   "算次方前先估計位數，`round` 的位數參數也有上限（它在內部也會算次方），避免 `10**10**10` 這種算式把 thread 卡死。",
              "en": "`calculator`: computes over an AST allowlist and never calls `eval()`. Only numbers, arithmetic, powers and a few math functions "
-                   "are allowed; before a power it estimates the number of digits, so an expression like `10**10**10` cannot hang the thread."},
+                   "are allowed; before a power it estimates the number of digits, and it caps the digits argument of `round`, which computes a power "
+                   "inside, so an expression like `10**10**10` cannot hang the thread."},
             {"zh": "`search_wikipedia` / `read_wikipedia`：用 httpx 呼叫 Wikipedia API（[[tools.py|def search_wikipedia(]]），"
                    "和 ReAct 論文在 HotpotQA 上用的 search / read 是同一組動作。",
              "en": "`search_wikipedia` / `read_wikipedia`: call the Wikipedia API with httpx ([[tools.py|def search_wikipedia(]]), the same pair "

@@ -114,6 +114,9 @@ def _eval(node):
         args = [_eval(a) for a in node.args]
         if node.func.id == "factorial" and args and args[0] > 500:
             raise ToolError("factorial 的參數太大", "The argument of factorial is too large")
+        # round(5, -10**9) computes 10 ** 10**9 inside int.__round__, where the check on powers above cannot see it.
+        if node.func.id == "round" and len(args) > 1 and abs(args[1]) > MAX_DIGITS:
+            raise ToolError("round 的位數參數太大", "The digits argument of round is too large")
         return FUNCS[node.func.id](*args)
     raise ToolError(f"不支援的運算：{ast.unparse(node)}", f"Unsupported operation: {ast.unparse(node)}")
 

@@ -95,6 +95,8 @@ def test_bool_is_not_a_number():
     ("factorial(5)", 120),
     ("abs(-2.5)", 2.5),
     ("round(2.567, 2)", 2.57),
+    ("round(1234, -2)", 1200),
+    ("round(5, -2000)", 0),
     ("log10(1000)", 3),
     ("floor(2.7) + ceil(2.1)", 5),
 ])
@@ -123,6 +125,7 @@ def test_calculator_keeps_huge_floats_as_float():
     ("sqrt(-1)", "math domain error"),
     ("2 ** 7000", "結果超過 2000 位數"),
     ("factorial(1000)", "factorial 的參數太大"),
+    ("round(5, 2001)", "round 的位數參數太大"),
     ("10.0 ** 400", "超出浮點數範圍"),
     ("exp(1000)", "超出浮點數範圍"),
     ("(10 ** 400) ** 0.5", "超出浮點數範圍"),
@@ -145,6 +148,13 @@ def test_calculator_refuses_nested_powers_without_computing_them():
     start = time.perf_counter()
     with pytest.raises(ToolError, match="結果超過 2000 位數"):
         calculator("((10**999)**999)**999")
+    assert time.perf_counter() - start < 1
+
+
+def test_calculator_refuses_round_to_huge_negative_digits_without_computing_them():
+    start = time.perf_counter()
+    with pytest.raises(ToolError, match="round 的位數參數太大"):
+        calculator("round(5, -10**9)")  # int.__round__ would compute 10 ** 10**9 first
     assert time.perf_counter() - start < 1
 
 
