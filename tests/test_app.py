@@ -7,7 +7,6 @@ is a Chinese one unless a test says otherwise, so the page is in Chinese.
 
 import base64
 import io
-import os
 import re
 import time
 from pathlib import Path
@@ -17,19 +16,16 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-import agent
-import render
-import simple_backend
-import tools
-import vllm_backend
-from backend import Sampling
-from families import GEMMA4, QWEN3_5
+from app import page, render
 from fakes import MEDIA_TOKENS, FakeLLM, tool_call
+from harness import agent, tools
+from harness.backends import vllm_backend
+from harness.backends.backend import Sampling
+from harness.families import GEMMA4, QWEN3_5
 
 APP = Path(__file__).resolve().parent.parent / "streamlit_app.py"
 ANSWER = "答案是 42。<turn|>"
 CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
-LANG_COOKIE = "agent_loop_lang"  # streamlit_app.LANG_COOKIE; the app is a script, not a module to import
 
 
 @pytest.fixture
@@ -47,8 +43,10 @@ def models(monkeypatch, outputs, tmp_path, sandbox):
             super().__init__(outputs, model_id)
             made.append(self)
 
-    monkeypatch.setattr(simple_backend, "LocalLLM", AppLLM)
-    monkeypatch.setenv("AGENT_LOOP_UPLOADS", str(tmp_path / "uploads"))
+    # The page module is imported once, so what it read from the environment and imported is changed on it.
+    monkeypatch.setattr(page, "LocalLLM", AppLLM)
+    monkeypatch.setattr(page, "UPLOADS", tmp_path / "uploads")
+    monkeypatch.setattr(page, "VLLM_URL", None)
     st.cache_resource.clear()  # a fresh model and a fresh generation lock per test
     st.cache_data.clear()  # and a fresh look for Docker
     yield made
@@ -447,7 +445,7 @@ def vllm(monkeypatch, models, outputs):
             raise vllm_backend.ServerError(f"連不上 {url} 的 vLLM 伺服器。", f"Could not reach the vLLM server at {url}.")
         return [{"id": "qwen", "root": "Qwen/Qwen3.5-0.8B", "max_model_len": 8192}, *state["adapters"]]
 
-    monkeypatch.setenv("VLLM_URL", "http://localhost:8000")
+    monkeypatch.setattr(page, "VLLM_URL", "http://localhost:8000")
     monkeypatch.setattr(vllm_backend, "VLLMBackend", ServedLLM)
     monkeypatch.setattr(vllm_backend, "served_models", served_models)
     return state
@@ -699,9 +697,9 @@ def test_an_english_browser_gets_the_page_in_english(browser, new_tab, outputs):
 
 
 def test_the_language_picked_last_time_wins_over_the_browser(browser, new_tab):
-    browser["cookies"] = {LANG_COOKIE: "en"}
+    browser["cookies"] = {page.LANG_COOKIE: "en"}
     assert new_tab().session_state["lang"] == "en"
-    browser["cookies"] = {LANG_COOKIE: "klingon"}  # not a language the page has: the browser's then
+    browser["cookies"] = {page.LANG_COOKIE: "klingon"}  # not a language the page has: the browser's then
     assert new_tab().session_state["lang"] == "zh"
 
 
@@ -709,9 +707,9 @@ def test_picking_a_language_remembers_it_in_a_cookie(at):
     assert "document.cookie" not in "".join(h.value for h in at.html)  # nothing picked, nothing written
     lang_switch(at).set_value("en").run()
     [script] = [h.value for h in at.html if "document.cookie" in h.value]
-    assert f"document.cookie = '{LANG_COOKIE}=en; path=/; max-age=31536000; SameSite=Lax';" in script
+    assert f"document.cookie = '{page.LANG_COOKIE}=en; path=/; max-age=31536000; SameSite=Lax';" in script
     lang_switch(at).set_value("zh").run()
-    assert any(f"'{LANG_COOKIE}=zh;" in h.value for h in at.html)
+    assert any(f"'{page.LANG_COOKIE}=zh;" in h.value for h in at.html)
 
 
 def test_switching_language_keeps_the_conversation_and_the_settings(at, outputs):
@@ -765,7 +763,7 @@ def test_an_example_with_a_file_attaches_it(at, models, outputs):
     [receipt] = run.attachments
     assert (receipt.name, receipt.kind) == ("receipt.png", "image")
     folder = Path(receipt.path).parent
-    assert folder.parent == Path(os.environ["AGENT_LOOP_UPLOADS"]) and (folder / "receipt.png").read_bytes() == (APP.parent / "assets/examples/receipt.png").read_bytes()
+    assert folder.parent == page.UPLOADS and (folder / "receipt.png").read_bytes() == (APP.parent / "app/assets/examples/receipt.png").read_bytes()
 
     fake = models[0]
     assert [p["name"] for p in fake.encodes[0]] == ["receipt.png"]  # the image goes to the processor
@@ -797,7 +795,7 @@ def test_a_sample_file_goes_with_a_question_of_ones_own(at, models, outputs):
     [run] = at.session_state["runs"]
     [receipt] = run.attachments
     assert (run.text, receipt.name, receipt.kind) == ("收據上有幾個品項？", "receipt.png", "image")
-    assert Path(receipt.path).read_bytes() == (APP.parent / "assets/examples/receipt.png").read_bytes()
+    assert Path(receipt.path).read_bytes() == (APP.parent / "app/assets/examples/receipt.png").read_bytes()
     assert [p["name"] for p in models[0].encodes[0]] == ["receipt.png"]
     assert sample_picker(at).value == [] and at.chat_input[0].placeholder != "問一個關於 receipt.png 的問題…"  # it went with that question only
 

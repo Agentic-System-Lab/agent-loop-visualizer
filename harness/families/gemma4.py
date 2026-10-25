@@ -8,8 +8,8 @@ so the arguments are not JSON and need their own small parser.
 import json
 import re
 
-from families import Family, FileNote
-from i18n import pick
+from harness.families import Family, FileNote
+from harness.i18n import pick
 
 STR = '<|"|>'
 THOUGHT_OPEN = "<|channel>thought\n"

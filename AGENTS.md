@@ -15,11 +15,11 @@ page shows, the architecture, the tests and the known limits; read the parts you
 uv sync                                                    # Python 3.12, pinned by uv.lock; uv >= 0.13.4 (required-version in pyproject.toml)
 uv run pytest                                              # ~40 s; loads no weights, touches no network
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen, ~4 min; -k Qwen for one
-docker build -t agent-loop-sandbox sandbox                 # optional: run_python's sandbox; its tests skip without it; bump SANDBOX_VERSION with the Dockerfile
+docker build -t agent-loop-sandbox harness/sandbox         # optional: run_python's sandbox; its tests skip without it; bump SANDBOX_VERSION with the Dockerfile
 uv run streamlit run streamlit_app.py                      # http://localhost:8501; MODEL_ID=Qwen/Qwen3.5-0.8B starts on Qwen
 VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py   # the model on a vLLM server: vllm serve <model> --revision <its REVISIONS commit> [--enable-scale-out [--return-sampling-mask --logprobs-mode processed_logprobs]]
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # vllm_backend.py against that real server
-uv run python guide.py _site                               # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
+uv run python -m app.guide _site                           # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
 ```
 
@@ -28,39 +28,56 @@ are not changing.
 
 ## Layout
 
+Two packages: `harness/` runs a turn, `app/` is what a person sees. `app/` imports `harness/`, never the
+other way round.
+
 ```
-streamlit_app.py   layout, session state, model menu, background thread; redraws every 0.5 s while a run is live
-agent.py           the harness (Run): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
-simple_backend.py  LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
-backend.py         Backend: what agent.py and the page ask of whatever runs the model (LocalLLM, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
-vllm_backend.py    VLLMBackend (VLLM_URL): the tokenizer and chat template here, the token ids to a vLLM server (/v1/completions, or /inference/v1/generate with --enable-scale-out: media, sampling masks), what it says about each token back
-families/          everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
-tools.py           tools: the schema the model reads plus the Python function the harness runs; run_python's docker run
-media.py           attachments: saved per conversation, written into the user message, decoded for the processor (PyAV)
-sandbox/           run_python's sandbox image, agent-loop-sandbox: the Dockerfile, and the matplotlib backend (agent_loop_figures.py) and matplotlibrc that send charts back on stdout
-render.py          pure functions from the event list to HTML: loop diagram, step cards, token heat and popovers, context
-guide.py           the 運作說明 page: content in both languages, code references by text, static HTML for GitHub Pages
-i18n.py            the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
-assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach, also offered above the input box)
-tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
-models/            downloaded models (simple_backend.MODELS_DIR), which git ignores; AGENT_LOOP_MODELS moves them, HF_HUB_CACHE does not
+streamlit_app.py         where Streamlit starts: imports app.page and calls main() on every rerun
+app/                     the Streamlit app
+  page.py                layout, session state, model menu, background thread; redraws every 0.5 s while a run is live
+  render.py              pure functions from the event list to HTML: loop diagram, step cards, token heat and popovers, context
+  guide.py               the 運作說明 page: content in both languages, code references by text, static HTML for GitHub Pages
+  assets/                style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach, also offered above the input box)
+harness/                 the agent, the model and what runs it; no Streamlit
+  agent.py               the harness (Run): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
+  backends/
+    backend.py           Backend: what agent.py and the page ask of whatever runs the model (LocalLLM, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
+    simple_backend.py    LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
+    vllm_backend.py      VLLMBackend (VLLM_URL): the tokenizer and chat template here, the token ids to a vLLM server (/v1/completions, or /inference/v1/generate with --enable-scale-out: media, sampling masks), what it says about each token back
+  families/              everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
+  tools.py               tools: the schema the model reads plus the Python function the harness runs; run_python's docker run
+  media.py               attachments: saved per conversation, written into the user message, decoded for the processor (PyAV)
+  i18n.py                the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
+  sandbox/               run_python's sandbox image, agent-loop-sandbox: the Dockerfile, and the matplotlib backend (agent_loop_figures.py) and matplotlibrc that send charts back on stdout
+tests/                   pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
+models/                  downloaded models (simple_backend.MODELS_DIR), which git ignores; AGENT_LOOP_MODELS moves them, HF_HUB_CACHE does not
 ```
+
+Imports are absolute from the project's folder (`from harness import families`, `from harness.backends.backend
+import Backend`, `from app import render`); pytest puts that folder on the path (`pythonpath` in pyproject.toml).
 
 ## Rules that keep it working
 
+- **The harness never knows the app.** Nothing in `harness/` imports `app/`, Streamlit or anything that draws; it
+  reports what happens only as events. `harness/__init__.py`, `harness/families/`, `harness/i18n.py` and
+  `app/__init__.py` import nothing heavy, because the guide's build loads them with pygments alone.
+- **app/page.py is imported once, not run as a script.** streamlit_app.py imports it and calls `main()` on every
+  rerun, so everything a rerun does is inside functions, and what the module reads from the environment (`VLLM_URL`,
+  `MODEL_ID`, `AGENT_LOOP_UPLOADS`) is read once per process. Tests change those on the module (`page.VLLM_URL`,
+  `page.UPLOADS`, `page.LocalLLM`), not in the environment.
 - **Events are the interface.** `agent.Run` runs in a background thread and appends one event per
-  stage; the order is in the READMEs' Architecture (架構) section. `render.py` is a pure function of that list and the
+  stage; the order is in the READMEs' Architecture (架構) section. `app/render.py` is a pure function of that list and the
   page only draws it, which is why stop and approve can rerun the script without interrupting the loop.
-  A new or changed event needs render.py, the `EVENTS` table in guide.py (tests check that it lists
+  A new or changed event needs render.py, the `EVENTS` table in app/guide.py (tests check that it lists
   every event the harness sends and points at the line that sends it) and the event list in both READMEs.
   The harness and the page reach the model only through `backend.Backend`; a token event's probabilities,
   rank, candidates and MTP draft (`backend.TOKEN_DETAILS`) are optional, and render.py leaves out what is missing.
-- **Nothing model-specific outside `families/`.** agent.py, simple_backend.py and render.py have no "if Gemma".
+- **Nothing model-specific outside `harness/families/`.** agent.py, simple_backend.py and render.py have no "if Gemma".
   Parsing output, the tokens that switch to thinking / tool call / reply, stop tokens, special-token
   explanations, notes on the files of its checkpoints and recommended sampling all live on the
   `Family`. Another checkpoint of a supported family is one line in `MODELS` and one in `REVISIONS`,
   the commit it downloads at (and `DRAFTERS` and its drafter's commit if it has an MTP drafter); a new family is a module like
-  `families/qwen3_5.py` added to `FAMILIES`. Moving a model to a newer commit means rerunning
+  `harness/families/qwen3_5.py` added to `FAMILIES`. Moving a model to a newer commit means rerunning
   tests/test_chat_template.py and tests/test_real_model.py and rereading the guide's model folder
   section, whose numbers come from those files.
 - **The decoding loop stays exact.** Greedy output equals `model.generate()`. MTP only changes how many
@@ -71,20 +88,20 @@ models/            downloaded models (simple_backend.MODELS_DIR), which git igno
   something else: a processed --logprobs-mode is the sampling distribution, never the model's p.
 - **Escape everything the model writes** before it reaches `st.html`. tests/test_render.py checks it,
   and also that every prefix of a run's events renders, because the page redraws mid-run.
-- **guide.py finds code by text, not line number.** `Code("agent.py", "def run(self):")` and inline
-  `[[agent.py|def run(self):]]` are looked up when the page is built, and each must match exactly one
-  line. Before renaming or rewriting a line, grep guide.py for it; if a reference breaks,
+- **app/guide.py finds code by text, not line number.** `Code("harness/agent.py", "def run(self):")` and inline
+  `[[harness/agent.py|def run(self):]]` are looked up when the page is built, by their path from the project's folder,
+  and each must match exactly one line. Before renaming, moving or rewriting a line, grep app/guide.py for it; if a reference breaks,
   tests/test_guide.py fails. Fix the reference, and when the behavior changed, the prose around it too.
 - **The guide's text is reread whenever the code it quotes changes.** tests/guide_excerpts.txt holds
   every excerpt and the line behind every chip, without line numbers. When an edit changes any of
   them, tests/test_guide.py fails and names the sections. Reread each one in both languages, fix
   what is no longer true, then rewrite the file with `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest
   tests/test_guide.py` and commit it with the change. Never regenerate it without rereading.
-- **guide.py builds with pygments alone.** The Pages workflow runs
-  `uv run --no-project --with pygments python guide.py _site`, and guide.py imports render and i18n,
-  and render imports families. Keep those free of torch, transformers, streamlit and httpx. Before
-  building, it runs tests/test_guide.py with pygments and pytest alone, so that file imports only
-  guide, i18n and tests/html_check.py (not test_render.py, which imports torch).
+- **app/guide.py builds with pygments alone.** The Pages workflow runs
+  `uv run --no-project --with pygments python -m app.guide _site`, and guide.py imports app.render and
+  harness.i18n, and render imports harness.families. Keep those (and the packages' `__init__.py`) free of torch,
+  transformers, streamlit and httpx. Before building, it runs tests/test_guide.py with pygments and pytest alone,
+  so that file imports only app.guide, harness.i18n and tests/html_check.py (not test_render.py, which imports torch).
 - **Every word a person sees exists in both languages, side by side.** In code it is
   `pick(lang, "中文", "English")`; in data (special-token notes, stop reasons, tool environments,
   guide paragraphs, the guide's event table) it is a `{"zh": ..., "en": ...}` dict. Never add a
@@ -133,7 +150,7 @@ models/            downloaded models (simple_backend.MODELS_DIR), which git igno
   `VLLM_TEST_URL` it asks a real server. Read vLLM's source before changing what is sent or read.
 - Wikipedia is faked over HTTP; the default suite never touches the network. Tests that need Docker
   run only when `tools.sandbox_problem()` finds it, and skip otherwise.
-- Every format `media.py` accepts has a sample in tests/samples.py (test_media.py fails otherwise), a
+- Every format `harness/media.py` accepts has a sample in tests/samples.py (test_media.py fails otherwise), a
   decoding test, and a real-model test that asks both models about it. A new format needs all three.
 
 ## Language and style

@@ -1,4 +1,4 @@
-<img src="assets/logo.svg" alt="" width="72">
+<img src="app/assets/logo.svg" alt="" width="72">
 
 # Agent Loop 可視化
 
@@ -49,15 +49,15 @@ uv sync
 uv run hf download google/gemma-4-E2B-it --revision 3e22461f65e89153144f8adb70e3b8c2cc9845a7 --cache-dir models   # 先下載權重（約 10 GB）；跳過的話，第一次選到這個模型時會自動下載
 uv run hf download Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --cache-dir models       # 約 1.8 GB
 uv run hf download google/gemma-4-E2B-it-assistant --revision 2d874ef7d29f9a30599a1e4b3c1cbc9595f005df --cache-dir models   # MTP 草稿模型，約 190 MB；跳過的話，第一次打開 MTP 時會自動下載
-uv run streamlit run streamlit_app.py      # 預設先載入 Gemma；MODEL_ID=Qwen/Qwen3.5-0.8B 可以先載入 Qwen
-docker build -t agent-loop-sandbox sandbox # 選用：「讓模型寫程式」用的沙箱（約 400 MB）；sandbox/Dockerfile 改了要再建一次
+uv run streamlit run streamlit_app.py              # 預設先載入 Gemma；MODEL_ID=Qwen/Qwen3.5-0.8B 可以先載入 Qwen
+docker build -t agent-loop-sandbox harness/sandbox  # 選用：「讓模型寫程式」用的沙箱（約 400 MB）；harness/sandbox/Dockerfile 改了要再建一次
 ```
 
 瀏覽器會打開 http://localhost:8501 ，語言跟著瀏覽器（中文的瀏覽器看到中文，其他看到英文），右上角的「中文 | English」可以切換，下次打開會用你選過的那個。第一次載入 Gemma 加暖機大約 10–20 秒，Qwen 幾秒；之後重新整理頁面不會再載入。側欄最上面的「模型」選單可以換模型，換了會開新對話，解碼設定也換成新模型的建議值，MTP 回到關閉。側欄的「MTP 推測解碼」第一次打開時才載入草稿模型（不到 1 秒），之後一直留在記憶體裡。
 
-側欄的「讓模型寫程式」預設關閉，關著的時候網頁完全不會去找 Docker。打開之後才檢查 Docker 和 `agent-loop-sandbox` image，缺了哪一個，或 image 是用舊版的 `sandbox/Dockerfile` 建的，就在側欄說明怎麼安裝 Docker 或建 image；兩個都在，模型才拿得到 `run_python`，要寫 Python 的範例也才會出現。你附上的檔案存在 `~/.cache/agent-loop-visualizer/uploads/` 底下，每段對話一個資料夾（按「新對話」就刪掉），沙箱裡看到的是唯讀的 `/data`。
+側欄的「讓模型寫程式」預設關閉，關著的時候網頁完全不會去找 Docker。打開之後才檢查 Docker 和 `agent-loop-sandbox` image，缺了哪一個，或 image 是用舊版的 `harness/sandbox/Dockerfile` 建的，就在側欄說明怎麼安裝 Docker 或建 image；兩個都在，模型才拿得到 `run_python`，要寫 Python 的範例也才會出現。你附上的檔案存在 `~/.cache/agent-loop-visualizer/uploads/` 底下，每段對話一個資料夾（按「新對話」就刪掉），沙箱裡看到的是唯讀的 `/data`。
 
-模型下載到專案資料夾裡的 `models/`（git 會忽略它），不是其他專案共用的 `~/.cache/huggingface/hub`；刪掉這個資料夾就能把空間拿回來。每個模型都照固定的 revision 下載，也就是 `families/__init__.py` 裡 `REVISIONS` 的 commit（上面的 `--revision`），所以不管什麼時候下載，拿到的都是這一頁寫作和測試時用的檔案，在每種作業系統上都一樣。想放在別的地方，就把 `AGENT_LOOP_MODELS` 設成那個資料夾（上面的下載指令的 `--cache-dir` 也改成它）；`AGENT_LOOP_MODELS=$HOME/.cache/huggingface/hub` 會用之前已經下載在那裡的模型。`HF_HUB_CACHE` 不會改變位置，因為它常是整台電腦所有專案共用的設定。
+模型下載到專案資料夾裡的 `models/`（git 會忽略它），不是其他專案共用的 `~/.cache/huggingface/hub`；刪掉這個資料夾就能把空間拿回來。每個模型都照固定的 revision 下載，也就是 `harness/families/__init__.py` 裡 `REVISIONS` 的 commit（上面的 `--revision`），所以不管什麼時候下載，拿到的都是這一頁寫作和測試時用的檔案，在每種作業系統上都一樣。想放在別的地方，就把 `AGENT_LOOP_MODELS` 設成那個資料夾（上面的下載指令的 `--cache-dir` 也改成它）；`AGENT_LOOP_MODELS=$HOME/.cache/huggingface/hub` 會用之前已經下載在那裡的模型。`HF_HUB_CACHE` 不會改變位置，因為它常是整台電腦所有專案共用的設定。
 
 想改在 vLLM 伺服器上跑模型，見[在 vLLM 伺服器上跑模型](#在-vllm-伺服器上跑模型)。
 
@@ -81,30 +81,36 @@ docker build -t agent-loop-sandbox sandbox # 選用：「讓模型寫程式」�
 
 ## 架構
 
+專案分成兩塊。`harness/` 跑一輪：agent 迴圈、工具、模型家族，以及跑模型的那一層。`app/` 是你看到的東西：網頁、它從 harness 的事件畫出來的 HTML，還有運作說明。兩塊的依賴只有一個方向：`app/` 建在 `harness/` 上面，`harness/` 裡沒有任何東西 import `app/` 或 Streamlit，所以迴圈不需要網頁就能跑、也能測。
+
 ```
-streamlit_app.py   版面、session state、模型選單、語言切換、背景 thread；執行中每 0.5 秒重畫一次
-guide.py           「運作說明」頁：中英文內容、行號查詢，以及產生放上 GitHub Pages 的靜態 HTML
-i18n.py            兩種語言：pick() 依語言挑文字，from_locale() 從瀏覽器語言決定預設
-render.py          把事件列表轉成 HTML：迴圈圖、step 卡片、token 熱度與浮窗、脈絡檢視
-agent.py           harness：組 prompt → 生成 → 解析 → 驗證 →（先問你）→ 執行工具 → 接回脈絡 → 判斷要不要停
-simple_backend.py  本機推論，自己寫的解碼迴圈；MTP 的草稿與驗證也在這裡
-vllm_backend.py    在 vLLM 伺服器上跑模型（VLLM_URL）：prompt 在這裡 render、切 token，token id 送給伺服器，它對每個 token 說得出的都傳回來；伺服器加了對應的參數時，還有媒體、sampling mask 和 MTP 的猜測
-backend.py         harness 和畫面透過它使用模型的 Backend：render、encode、generate，以及 token 事件的欄位；app 跑的是 simple_backend.py 這一個
-families/          跟著模型走的東西：每個模型家族怎麼寫回合、思考、工具呼叫，哪些 token 會停、各是什麼意思
-  __init__.py      Family 的定義、模型選單 MODELS、MTP 草稿模型 DRAFTERS、依 config.json 的 model_type 找家族
-  gemma4.py        Gemma 4：輸出的 parser 與 24 個特殊 token 的說明
-  qwen3_5.py       Qwen3.5：輸出的 parser 與 33 個特殊 token 的說明
-tools.py           工具：schema（給模型看）加上 Python 函式（給 harness 執行）；run_python 的 Docker 沙箱
-media.py           附件：存檔、寫進使用者訊息，把圖片、聲音、影片解碼給 processor
-sandbox/           run_python 的沙箱：Dockerfile（Python 3.12 加上 numpy、pandas、openpyxl、tabulate、matplotlib），以及把圖送回來的 matplotlib backend 和設定
-assets/            網頁的樣式和運作說明的 script；logo.svg；examples/ 是範例附上的檔案，也是輸入框上方的範例檔案
-tests/             pytest 測試，見下面「測試」
-models/            下載的模型（git 會忽略它；AGENT_LOOP_MODELS 可以換位置）
+streamlit_app.py       Streamlit 從這裡開始：每次重跑都執行 app/page.py 的 main()
+app/                   你看到的東西，站在 harness 上面
+  page.py              版面、session state、模型選單、語言切換、背景 thread；執行中每 0.5 秒重畫一次
+  render.py            把事件列表轉成 HTML：迴圈圖、step 卡片、token 熱度與浮窗、脈絡檢視
+  guide.py             「運作說明」頁：中英文內容、行號查詢，以及產生放上 GitHub Pages 的靜態 HTML
+  assets/              網頁的樣式和運作說明的 script；logo.svg；examples/ 是範例附上的檔案，也是輸入框上方的範例檔案
+harness/               跑一輪的東西；從不 import Streamlit
+  agent.py             迴圈：組 prompt → 生成 → 解析 → 驗證 →（先問你）→ 執行工具 → 接回脈絡 → 判斷要不要停
+  backends/            跑模型的那一層
+    backend.py         harness 和畫面透過它使用模型的 Backend：render、encode、generate，以及 token 事件的欄位
+    simple_backend.py  本機推論，自己寫的解碼迴圈；MTP 的草稿與驗證也在這裡
+    vllm_backend.py    在 vLLM 伺服器上跑模型（VLLM_URL）：prompt 在這裡 render、切 token，token id 送給伺服器，它對每個 token 說得出的都傳回來；伺服器加了對應的參數時，還有媒體、sampling mask 和 MTP 的猜測
+  families/            跟著模型走的東西：每個模型家族怎麼寫回合、思考、工具呼叫，哪些 token 會停、各是什麼意思
+    __init__.py        Family 的定義、模型選單 MODELS、MTP 草稿模型 DRAFTERS、依 config.json 的 model_type 找家族
+    gemma4.py          Gemma 4：輸出的 parser 與 24 個特殊 token 的說明
+    qwen3_5.py         Qwen3.5：輸出的 parser 與 33 個特殊 token 的說明
+  tools.py             工具：schema（給模型看）加上 Python 函式（給 harness 執行）；run_python 的 Docker 沙箱
+  media.py             附件：存檔、寫進使用者訊息，把圖片、聲音、影片解碼給 processor
+  i18n.py              兩種語言：pick() 依語言挑文字，from_locale() 從瀏覽器語言決定預設；模型讀到的錯誤訊息也用它
+  sandbox/             run_python 的沙箱：Dockerfile（Python 3.12 加上 numpy、pandas、openpyxl、tabulate、matplotlib），以及把圖送回來的 matplotlib backend 和設定
+tests/                 pytest 測試，見下面「測試」
+models/                下載的模型（git 會忽略它；AGENT_LOOP_MODELS 可以換位置）
 ```
 
 agent 在背景 thread 執行，每走到一個階段就 append 一個事件；UI 只負責把事件列表畫出來。所以按「停止」或「允許」時 Streamlit 重跑 script，背景的迴圈不會被打斷。
 
-「運作說明」是一個靜態頁：`uv run python guide.py _site` 會寫出 `_site/zh/index.html` 和 `_site/en/index.html`（樣式和一小段 script 都內嵌在裡面，可以直接用瀏覽器打開），以及 `_site/index.html`：它把讀者送到上次在頁面右上角選過的語言，沒選過就照瀏覽器的語言。推上 main 時，`.github/workflows/pages.yml` 先跑 `tests/test_guide.py`，再做同一件事並發佈到 GitHub Pages；測試沒過的話，網站上維持原來那一版。
+「運作說明」是一個靜態頁：`uv run python -m app.guide _site` 會寫出 `_site/zh/index.html` 和 `_site/en/index.html`（樣式和一小段 script 都內嵌在裡面，可以直接用瀏覽器打開），以及 `_site/index.html`：它把讀者送到上次在頁面右上角選過的語言，沒選過就照瀏覽器的語言。推上 main 時，`.github/workflows/pages.yml` 先跑 `tests/test_guide.py`，再做同一件事並發佈到 GitHub Pages；測試沒過的話，網站上維持原來那一版。
 
 ### 兩種語言
 
@@ -150,11 +156,11 @@ chat template 在每個檔案的位置寫一個佔位 token（Gemma 是 `<|image
 
 ### 在 Docker 沙箱裡寫程式
 
-打開「讓模型寫程式」而且 Docker 準備好時，模型多一個工具 `run_python`。每次呼叫都從 `sandbox/Dockerfile` 建的 image 開一個新容器：沒有網路，檔案系統唯讀、只有一小塊 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，拿掉所有 Linux capability，用你自己的使用者執行、絕不用 root（在 Linux 上，掛進去的資料夾保留原本的權限，換成別的使用者可能進不去），這段對話的資料夾唯讀掛在 `/data`；程式從 stdin 送進去，跑完容器就刪掉。超過 30 秒就停掉；結束代碼不是 0、記憶體用太多或什麼都沒印（也沒畫圖），都用這一輪的語言當成錯誤回給模型，附上 traceback，模型下一步可以改。
+打開「讓模型寫程式」而且 Docker 準備好時，模型多一個工具 `run_python`。每次呼叫都從 `harness/sandbox/Dockerfile` 建的 image 開一個新容器：沒有網路，檔案系統唯讀、只有一小塊 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，拿掉所有 Linux capability，用你自己的使用者執行、絕不用 root（在 Linux 上，掛進去的資料夾保留原本的權限，換成別的使用者可能進不去），這段對話的資料夾唯讀掛在 `/data`；程式從 stdin 送進去，跑完容器就刪掉。超過 30 秒就停掉；結束代碼不是 0、記憶體用太多或什麼都沒印（也沒畫圖），都用這一輪的語言當成錯誤回給模型，附上 traceback，模型下一步可以改。
 
-容器寫不進任何頁面讀得到的地方，matplotlib 畫的圖還是回得來：image 把 matplotlib 的 backend 設成 `sandbox/agent_loop_figures.py`，它在 `plt.show()` 或程式結束時把每張圖轉成 PNG，程式結束前接在印出來的東西後面，前面加一行 `run_python` 傳進去的記號。`run_python` 把它們從模型要讀的輸出切掉（最多四張），存進這段對話的資料夾，叫 `figure-1.png`、`figure-2.png`…，和觀察分開回傳：模型只讀到 `{"stdout": …, "figures": ["/data/figure-1.png"]}`，頁面把圖畫在聊天區和那一步底下。中文的標籤用 image 為此裝的文泉驛微米黑畫。載入 matplotlib 讓一次呼叫慢了約半秒（0.8 秒，純 Python 是 0.2 秒）。
+容器寫不進任何頁面讀得到的地方，matplotlib 畫的圖還是回得來：image 把 matplotlib 的 backend 設成 `harness/sandbox/agent_loop_figures.py`，它在 `plt.show()` 或程式結束時把每張圖轉成 PNG，程式結束前接在印出來的東西後面，前面加一行 `run_python` 傳進去的記號。`run_python` 把它們從模型要讀的輸出切掉（最多四張），存進這段對話的資料夾，叫 `figure-1.png`、`figure-2.png`…，和觀察分開回傳：模型只讀到 `{"stdout": …, "figures": ["/data/figure-1.png"]}`，頁面把圖畫在聊天區和那一步底下。中文的標籤用 image 為此裝的文泉驛微米黑畫。載入 matplotlib 讓一次呼叫慢了約半秒（0.8 秒，純 Python 是 0.2 秒）。
 
-image 先用 wheel 加 hash 裝好 pip 26.2.2，再用它裝其他套件：更舊的 pip 也信任它自己帶的那份 certifi，裡面還有外洩的 emSign 憑證。頁面會讀 image 的 `agent-loop-sandbox.version` label，比 `sandbox/Dockerfile` 舊就在側欄請你重建，不提供 `run_python`。
+image 先用 wheel 加 hash 裝好 pip 26.2.2，再用它裝其他套件：更舊的 pip 也信任它自己帶的那份 certifi，裡面還有外洩的 emSign 憑證。頁面會讀 image 的 `agent-loop-sandbox.version` label，比 `harness/sandbox/Dockerfile` 舊就在側欄請你重建，不提供 `run_python`。
 
 模型看不到資料檔的內容，所以 harness 在使用者訊息後面加一段說明：`run_python` 在哪裡找得到每個檔案，以及文字檔的第一行（CSV 就是欄位名稱）。少了這一行，小模型寫程式時會亂猜欄位，例如不存在的 `Date`，然後出錯；多給幾列資料也不行，Gemma 會把那幾列抄進程式，只用它們算答案。image 裡有 `tabulate`，因為小模型很愛用的 `DataFrame.to_markdown()` 需要它。
 
@@ -212,12 +218,12 @@ harness（`agent.py`）、解碼迴圈（`simple_backend.py`）和畫面（`rend
 
 要加模型：
 
-1. 同一個家族的另一個 checkpoint（例如更大的 Gemma 4 或 Qwen3.5）：在 `families/__init__.py` 的 `MODELS` 加一行，`REVISIONS` 也加一行，寫上要下載的 commit。Gemma 4 的其他 checkpoint 也有對應的 MTP 草稿模型（`google/gemma-4-*-it-assistant`），在 `DRAFTERS` 加一行（草稿模型的 commit 也加進 `REVISIONS`），側欄的 MTP 開關就能用。
-2. 新的家族：照 `families/qwen3_5.py` 寫一個模組（輸出的 parser 加上特殊 token 的說明），把它的 `Family` 加進 `FAMILIES`。載入模型時會用 checkpoint `config.json` 裡的 `model_type` 自動找到它。`tests/test_chat_template.py` 會拿真的 tokenizer 和 chat template 檢查新家族：每個特殊 token 都有說明、模板寫進歷史的工具呼叫讀得回來、step 卡片標成「新加入」的剛好是工具結果。
+1. 同一個家族的另一個 checkpoint（例如更大的 Gemma 4 或 Qwen3.5）：在 `harness/families/__init__.py` 的 `MODELS` 加一行，`REVISIONS` 也加一行，寫上要下載的 commit。Gemma 4 的其他 checkpoint 也有對應的 MTP 草稿模型（`google/gemma-4-*-it-assistant`），在 `DRAFTERS` 加一行（草稿模型的 commit 也加進 `REVISIONS`），側欄的 MTP 開關就能用。
+2. 新的家族：照 `harness/families/qwen3_5.py` 寫一個模組（輸出的 parser 加上特殊 token 的說明），把它的 `Family` 加進 `FAMILIES`。載入模型時會用 checkpoint `config.json` 裡的 `model_type` 自動找到它。`tests/test_chat_template.py` 會拿真的 tokenizer 和 chat template 檢查新家族：每個特殊 token 都有說明、模板寫進歷史的工具呼叫讀得回來、step 卡片標成「新加入」的剛好是工具結果。
 
 ### 兩個模型的格式
 
-Gemma 4 的字串用 `<|"|>` 這個特殊 token 包起來，key 也不加引號，所以不是 JSON，`families/gemma4.py` 有自己的小 parser：
+Gemma 4 的字串用 `<|"|>` 這個特殊 token 包起來，key 也不加引號，所以不是 JSON，`harness/families/gemma4.py` 有自己的小 parser：
 
 ```
 <|tool_call>call:get_current_time{timezone:<|"|>Asia/Taipei<|"|>}<tool_call|><|tool_response>
@@ -277,7 +283,7 @@ VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k 
 - 開 MTP 時，主模型一次算 7 個位置，數值和一次算 1 個會有極小的差異；greedy 遇到兩個 token 機率幾乎一樣時，偶爾會選到不同的那個。
 - Qwen3.5 的 24 層裡有 18 層是 Gated DeltaNet。transformers 有兩個加速 kernel：`flash-linear-attention`（Triton）和 `causal-conv1d`（CUDA），都要有 CUDA GPU 才能用，所以都不列為依賴：改用 PyTorch 參考實作，結果一樣，只是比較慢；`simple_backend.py` 在所有裝置上都把 transformers 這個「改用參考實作」的提示關掉了。有 GPU 時，對 0.8B 的模型差別不大：在 NVIDIA GB10（DGX Spark）上，裝了 flash-linear-attention 後 prefill 快了約 4 倍（3,571 個 token 從 368 ms 變成 93 ms），decode 幾乎沒變（56 → 60 tok/s），兩種寫法和 float32 的差距也一樣小。causal-conv1d 在那台機器上沒有 wheel，得自己編譯。沒有 GPU 的 Linux 不要裝 flash-linear-attention：transformers 還是會選它，第一次 forward 就會失敗。
 - 在 MPS 上，transformers 用多條 thread 載入 Qwen3.5 的權重會卡住，所以 `simple_backend.py` 在 MPS 上改成單一 thread 載入（`HF_DEACTIVATE_ASYNC_LOAD=1`），兩個模型的載入時間都沒有變慢。
-- Qwen3.5 0.8B 官方預設不開思考模式；開了容易一直想下去停不下來，可以把「每步 token 上限」調低。它沒附 generation_config.json，建議的解碼設定寫在 `families/qwen3_5.py`（官方建議的 presence penalty 這裡沒有實作）。
+- Qwen3.5 0.8B 官方預設不開思考模式；開了容易一直想下去停不下來，可以把「每步 token 上限」調低。它沒附 generation_config.json，建議的解碼設定寫在 `harness/families/qwen3_5.py`（官方建議的 presence penalty 這裡沒有實作）。
 - 記憶體裡同時只放一個模型。兩個分頁選了不同的模型時，輪流在兩邊操作會一直重新載入，最好所有分頁用同一個模型。
 - 只有一份模型，一次只能跑一個 agent，其他分頁要等。執行中重新整理或關掉分頁，agent 不會跟著停；其他分頁（包括重新整理後的同一頁）會顯示它還在跑，並提供「停止那個 agent」按鈕。
 - 開著「執行工具前先問我」時，等確認超過 5 分鐘沒有回應，harness 會當作拒絕並停止迴圈，停止原因顯示「等待確認逾時」。

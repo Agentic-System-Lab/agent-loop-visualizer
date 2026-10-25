@@ -13,9 +13,9 @@ import re
 import time
 from types import SimpleNamespace
 
-import families
-from backend import Encoded
-from families import GEMMA4, QWEN3_5
+from harness import families
+from harness.backends.backend import Encoded
+from harness.families import GEMMA4, QWEN3_5
 
 STR = '<|"|>'
 
@@ -331,8 +331,8 @@ def qwen_tool_call(name: str, **args) -> str:
 def record_run(outputs: list, user: str = "台北現在幾點？", history: list | None = None, sampling=None, family=None,
                attachments=(), files=None, **settings):
     """Run the harness to the end on the calling thread; return the run, its events and the fake model."""
-    from agent import Run, RunSettings
-    from backend import Sampling
+    from harness.agent import Run, RunSettings
+    from harness.backends.backend import Sampling
 
     fake = FakeLLM(list(outputs), family=family)
     if sampling and sampling.mtp:  # a model with a drafter, already loaded

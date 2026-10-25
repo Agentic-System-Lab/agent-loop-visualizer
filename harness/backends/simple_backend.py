@@ -34,13 +34,12 @@ import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoProcessor
 
-import families
-import media
-from backend import Encoded, Sampling
+from harness import families, media
+from harness.backends.backend import Encoded, Sampling
 
 TOP_N = 5
-ROOT = Path(__file__).resolve().parent
-# Models download into models/ next to this file, which git ignores, rather than into the shared
+ROOT = Path(__file__).resolve().parents[2]  # the project's folder
+# Models download into the project's models/, which git ignores, rather than into the shared
 # ~/.cache/huggingface/hub, so they are easy to find and leave with the project. AGENT_LOOP_MODELS puts them
 # elsewhere; HF_HUB_CACHE does not, because it is often set once for every project on a machine.
 MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser()

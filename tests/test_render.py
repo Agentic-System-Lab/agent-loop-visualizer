@@ -11,17 +11,16 @@ from pathlib import Path
 
 import pytest
 
-import agent
-import families
-import render
-from agent import Run, RunSettings
-from backend import TOKEN_DETAILS, Sampling
-from families import GEMMA4, QWEN3_5
+from app import render
 from fakes import DRAFTER, INFO, MEDIA_TOKENS, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
+from harness import agent, families
+from harness.agent import Run, RunSettings
+from harness.backends.backend import TOKEN_DETAILS, Sampling
+from harness.families import GEMMA4, QWEN3_5
+from harness.i18n import LANGS
+from harness.media import Attachment
+from harness.tools import TOOLS, ToolResult
 from html_check import assert_balanced
-from i18n import LANGS
-from media import Attachment
-from tools import TOOLS, ToolResult
 
 ANSWER = "現在是下午三點。<turn|>"
 
@@ -61,7 +60,7 @@ def as_reported(events: list[dict], details: tuple[str, ...] = ()) -> list[dict]
 LOGPROBS = ("p", "logprob", "top")  # what an OpenAI-style API's log probabilities give
 PHOTO = Attachment("photo.png", "image", "/chat/photo.png", 2048)
 CLIP = Attachment("clip.mp4", "video", "/chat/clip.mp4", 90_000)
-SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "assets/examples/sales.csv"), 942)
+SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "app/assets/examples/sales.csv"), 942)
 CODE = "import math\nprint(math.pi)"
 SCENARIOS = {
     "reply": lambda: record_run([ANSWER])[1],

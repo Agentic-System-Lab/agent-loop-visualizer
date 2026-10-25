@@ -51,10 +51,9 @@ from huggingface_hub import snapshot_download
 from PIL import Image
 from transformers import AutoConfig, AutoProcessor, GenerationConfig
 
-import families
-import media
-from backend import Encoded, Sampling
-from simple_backend import MODELS_DIR, TOP_N, describe_folder
+from harness import families, media
+from harness.backends.backend import Encoded, Sampling
+from harness.backends.simple_backend import MODELS_DIR, TOP_N, describe_folder
 
 # The weights stay on the server; downloading them here as well would only take up space.
 WEIGHTS = ["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"]

@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-import agent
-from agent import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, Run, RunSettings, common_prefix
-from backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
-from families import GEMMA4, QWEN3_5
 from fakes import MEDIA_TOKENS, FakeLLM, record_run, tool_call
-from media import Attachment
-from tools import TOOLS, ToolError, ToolResult
+from harness import agent
+from harness.agent import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, Run, RunSettings, common_prefix
+from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
+from harness.families import GEMMA4, QWEN3_5
+from harness.media import Attachment
+from harness.tools import TOOLS, ToolError, ToolResult
 
 ANSWER = "現在是下午三點。<turn|>"
 
@@ -217,7 +217,7 @@ def test_a_turn_can_leave_tools_out():
 
 PHOTO = Attachment("photo.png", "image", "/chat/photo.png", 2048)
 CLIP = Attachment("clip.mp4", "video", "/chat/clip.mp4", 90_000)
-SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "assets/examples/sales.csv"), 942)
+SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "app/assets/examples/sales.csv"), 942)
 
 
 def test_media_become_parts_of_the_question_and_files_a_line_for_run_python():

@@ -1,6 +1,6 @@
 """The interface between the harness and whatever runs the model.
 
-The harness (agent.Run) and the page (streamlit_app.py) reach the model only through a Backend. It renders the
+The harness (agent.Run) and the page (app/page.py) reach the model only through a Backend. It renders the
 conversation into a prompt with the model's chat template, encodes the prompt into the tokens the model reads,
 and generates, yielding the events render.py draws. simple_backend.LocalLLM is the backend the app runs: transformers on
 this machine, with a hand-written decoding loop that sees the whole distribution at every token.
@@ -19,7 +19,7 @@ Nothing here imports torch, so a backend can be written, and the interface read,
 from dataclasses import dataclass, field
 from typing import Callable, Iterator, Protocol, runtime_checkable
 
-import families
+from harness import families
 
 
 @dataclass
@@ -61,7 +61,7 @@ TOKEN_DETAILS = ("p", "logprob", "rank", "p_sampled", "kept", "top", "draft")
 
 @runtime_checkable
 class Backend(Protocol):
-    """What runs the model. The page holds one at a time (streamlit_app.current_llm) and runs one turn on it at a time."""
+    """What runs the model. The page holds one at a time (app.page.current_llm) and runs one turn on it at a time."""
 
     model_id: str
     family: families.Family  # how the model writes its turns, thinking and tool calls (families/)

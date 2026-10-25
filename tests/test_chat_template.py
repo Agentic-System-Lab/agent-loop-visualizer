@@ -10,17 +10,16 @@ from pathlib import Path
 import pytest
 from huggingface_hub import try_to_load_from_cache
 
-import families
-import render
-import media
-import simple_backend
-from agent import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, Run, RunSettings
+from app import render
 from fakes import FakeLLM, gemma_call, qwen_call
+from harness import families, media
+from harness.agent import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, Run, RunSettings
+from harness.backends import simple_backend
+from harness.backends.simple_backend import MODELS_DIR, LocalLLM
+from harness.tools import TOOLS
 from html_check import assert_balanced
-from simple_backend import MODELS_DIR, LocalLLM
-from tools import TOOLS
 
-SAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
+SAMPLES = Path(__file__).resolve().parent.parent / "app" / "assets" / "examples"
 
 # Per family: where a tool call sits in a rendered prompt, how the model ends a turn that calls
 # a tool, and how the next prompt begins the tool's result.

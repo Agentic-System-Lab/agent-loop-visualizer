@@ -4,9 +4,9 @@ import re
 
 import pytest
 
-import families
-from families import GEMMA4, QWEN3_5
-from i18n import LANGS
+from harness import families
+from harness.families import GEMMA4, QWEN3_5
+from harness.i18n import LANGS
 
 CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
 

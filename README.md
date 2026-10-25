@@ -1,4 +1,4 @@
-<img src="assets/logo.svg" alt="" width="72">
+<img src="app/assets/logo.svg" alt="" width="72">
 
 # Agent Loop Visualizer
 
@@ -49,15 +49,15 @@ uv sync
 uv run hf download google/gemma-4-E2B-it --revision 3e22461f65e89153144f8adb70e3b8c2cc9845a7 --cache-dir models   # download the weights first (about 10 GB); otherwise they download the first time the model is picked
 uv run hf download Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --cache-dir models       # about 1.8 GB
 uv run hf download google/gemma-4-E2B-it-assistant --revision 2d874ef7d29f9a30599a1e4b3c1cbc9595f005df --cache-dir models   # the MTP drafter, about 190 MB; otherwise it downloads the first time MTP is switched on
-uv run streamlit run streamlit_app.py      # loads Gemma first; MODEL_ID=Qwen/Qwen3.5-0.8B loads Qwen first
-docker build -t agent-loop-sandbox sandbox # optional: the sandbox for Let the model write code (about 400 MB); again whenever sandbox/Dockerfile changes
+uv run streamlit run streamlit_app.py              # loads Gemma first; MODEL_ID=Qwen/Qwen3.5-0.8B loads Qwen first
+docker build -t agent-loop-sandbox harness/sandbox  # optional: the sandbox for Let the model write code (about 400 MB); again whenever harness/sandbox/Dockerfile changes
 ```
 
 Your browser opens http://localhost:8501, in its own language (English unless the browser is set to Chinese); the 中文 | English switch at the top right changes it, and the next visit starts in the one you picked. Loading Gemma and warming it up takes about 10–20 seconds the first time, Qwen a few seconds; reloading the page does not load it again. The Model menu at the top of the sidebar switches models; switching starts a new conversation, resets the decoding settings to the new model's recommendations and turns MTP off. MTP speculative decoding in the sidebar loads the drafter the first time it is switched on (in under a second), and it stays in memory after that.
 
-Let the model write code in the sidebar is off by default, and while it is off the page never looks for Docker. Switched on, it checks for Docker and the `agent-loop-sandbox` image, and if either is missing, or the image was built from an older `sandbox/Dockerfile`, it says in the sidebar how to install Docker or build the image; the model gets `run_python` only once both are there, and the examples that need Python appear. Files you attach are saved in a folder per conversation under `~/.cache/agent-loop-visualizer/uploads/` (New chat removes it), which the sandbox sees, read-only, as `/data`.
+Let the model write code in the sidebar is off by default, and while it is off the page never looks for Docker. Switched on, it checks for Docker and the `agent-loop-sandbox` image, and if either is missing, or the image was built from an older `harness/sandbox/Dockerfile`, it says in the sidebar how to install Docker or build the image; the model gets `run_python` only once both are there, and the examples that need Python appear. Files you attach are saved in a folder per conversation under `~/.cache/agent-loop-visualizer/uploads/` (New chat removes it), which the sandbox sees, read-only, as `/data`.
 
-The models download into `models/` in the project folder, which git ignores, not into the `~/.cache/huggingface/hub` other projects share; deleting the folder frees the space. Each downloads at a fixed revision, the commit in `REVISIONS` in `families/__init__.py` (the `--revision` above), so whenever you download it you get the files this page was written and tested against, the same on every operating system. To keep them somewhere else, set `AGENT_LOOP_MODELS` to that folder (and give the downloads above the same `--cache-dir`); `AGENT_LOOP_MODELS=$HOME/.cache/huggingface/hub` uses the models already downloaded there. `HF_HUB_CACHE` does not move them, since it is often set once for every project on a machine.
+The models download into `models/` in the project folder, which git ignores, not into the `~/.cache/huggingface/hub` other projects share; deleting the folder frees the space. Each downloads at a fixed revision, the commit in `REVISIONS` in `harness/families/__init__.py` (the `--revision` above), so whenever you download it you get the files this page was written and tested against, the same on every operating system. To keep them somewhere else, set `AGENT_LOOP_MODELS` to that folder (and give the downloads above the same `--cache-dir`); `AGENT_LOOP_MODELS=$HOME/.cache/huggingface/hub` uses the models already downloaded there. `HF_HUB_CACHE` does not move them, since it is often set once for every project on a machine.
 
 To run the model on a vLLM server instead, see [Running the model on a vLLM server](#running-the-model-on-a-vllm-server).
 
@@ -81,30 +81,36 @@ To run the model on a vLLM server instead, see [Running the model on a vLLM serv
 
 ## Architecture
 
+The project has two parts. `harness/` runs a turn: the agent loop, the tools, the model's family and what runs the model. `app/` is what you see: the page, the HTML it draws from the harness's events, and How it works. They depend one way: `app/` builds on `harness/`, and nothing in `harness/` imports `app/` or Streamlit, so the loop runs, and is tested, without a page.
+
 ```
-streamlit_app.py   layout, session state, model menu, language switch, background thread; redraws every 0.5 s while a run is live
-guide.py           the How it works page: its content in both languages, line lookups, and the static HTML for GitHub Pages
-render.py          turns the event list into HTML: the loop diagram, step cards, token heat and popovers, the context view
-agent.py           the harness: build the prompt → generate → parse → validate → (ask you) → run the tool → back into the context → stop?
-simple_backend.py  local inference with a hand-written decoding loop; MTP's drafting and checking are here too
-vllm_backend.py    the model on a vLLM server (VLLM_URL): the prompt rendered and tokenized here, the token ids to the server, what it can tell about each token back; media, sampling masks and MTP's guesses on a server started with the flags for them
-backend.py         the Backend that the harness and the page run the model through: render, encode, generate, and the fields of a token event; simple_backend.py is the one the app runs
-i18n.py            the two languages: pick() chooses the text for one, from_locale() picks the default from the browser's language
-families/          everything that goes with the model: how each model family writes turns, thinking and tool calls, which tokens stop it, what each means
-  __init__.py      the Family definition, the model menu MODELS, the MTP drafters DRAFTERS, finding a family by config.json's model_type
-  gemma4.py        Gemma 4: the output parser and notes on its 24 special tokens
-  qwen3_5.py       Qwen3.5: the output parser and notes on its 33 special tokens
-tools.py           tools: the schema (for the model) plus the Python function (for the harness to run); run_python's Docker sandbox
-media.py           attachments: saving them, writing them into the user's message, decoding images, sound and video for the processor
-sandbox/           run_python's sandbox: the Dockerfile (Python 3.12 with numpy, pandas, openpyxl, tabulate and matplotlib), and the matplotlib backend and settings that send the charts back
-assets/            the page's styles and the guide's script; logo.svg; examples/, the files the examples attach and the sample files above the input box
-tests/             pytest tests; see Tests below
-models/            the downloaded models (git ignores it; AGENT_LOOP_MODELS moves it)
+streamlit_app.py       where Streamlit starts: it runs app/page.py's main() on every rerun
+app/                   what a person sees, built on the harness
+  page.py              layout, session state, model menu, language switch, background thread; redraws every 0.5 s while a run is live
+  render.py            turns the event list into HTML: the loop diagram, step cards, token heat and popovers, the context view
+  guide.py             the How it works page: its content in both languages, line lookups, and the static HTML for GitHub Pages
+  assets/              the page's styles and the guide's script; logo.svg; examples/, the files the examples attach and the sample files above the input box
+harness/               what runs a turn; it never imports Streamlit
+  agent.py             the loop: build the prompt → generate → parse → validate → (ask you) → run the tool → back into the context → stop?
+  backends/            what runs the model
+    backend.py         the Backend that the harness and the page run the model through: render, encode, generate, and the fields of a token event
+    simple_backend.py  local inference with a hand-written decoding loop; MTP's drafting and checking are here too
+    vllm_backend.py    the model on a vLLM server (VLLM_URL): the prompt rendered and tokenized here, the token ids to the server, what it can tell about each token back; media, sampling masks and MTP's guesses on a server started with the flags for them
+  families/            everything that goes with the model: how each model family writes turns, thinking and tool calls, which tokens stop it, what each means
+    __init__.py        the Family definition, the model menu MODELS, the MTP drafters DRAFTERS, finding a family by config.json's model_type
+    gemma4.py          Gemma 4: the output parser and notes on its 24 special tokens
+    qwen3_5.py         Qwen3.5: the output parser and notes on its 33 special tokens
+  tools.py             tools: the schema (for the model) plus the Python function (for the harness to run); run_python's Docker sandbox
+  media.py             attachments: saving them, writing them into the user's message, decoding images, sound and video for the processor
+  i18n.py              the two languages: pick() chooses the text for one, from_locale() picks the default from the browser's language; the errors the model reads use it too
+  sandbox/             run_python's sandbox: the Dockerfile (Python 3.12 with numpy, pandas, openpyxl, tabulate and matplotlib), and the matplotlib backend and settings that send the charts back
+tests/                 pytest tests; see Tests below
+models/                the downloaded models (git ignores it; AGENT_LOOP_MODELS moves it)
 ```
 
 The agent runs in a background thread and appends an event at every stage; the UI only draws the event list. So when you press Stop or Allow and Streamlit reruns the script, the loop in the background is not interrupted.
 
-How it works is a static page: `uv run python guide.py _site` writes `_site/en/index.html` and `_site/zh/index.html` (styles and a small script inlined, so they open straight in a browser), and `_site/index.html`, which sends a reader to the language they last picked on the page's switch, or else their browser's. On a push to main, `.github/workflows/pages.yml` runs `tests/test_guide.py`, then does the same and publishes it to GitHub Pages; if the tests fail, the page already up stays as it was.
+How it works is a static page: `uv run python -m app.guide _site` writes `_site/en/index.html` and `_site/zh/index.html` (styles and a small script inlined, so they open straight in a browser), and `_site/index.html`, which sends a reader to the language they last picked on the page's switch, or else their browser's. On a push to main, `.github/workflows/pages.yml` runs `tests/test_guide.py`, then does the same and publishes it to GitHub Pages; if the tests fail, the page already up stays as it was.
 
 The events of one run, in order: `run_start`, then for each step `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`, with a tool call also `tool_call` → (`approval_request` → `approval`) → `tool_start` → `tool_result`, and finally `run_end`, after an `error` if something failed: its `message` is the exception's, and a backend's error (a vLLM server's, say) also comes in both languages (`text`), so the page shows the one it is in. `context` carries the prompt as the model reads it, with each attachment expanded into its tokens, and how many tokens each kind of media took (`media_tokens`). `token` carries the token and, when the backend knows them, its probability, its rank, the top 5 candidates and what MTP's drafter guessed (`backend.TOKEN_DETAILS`): `simple_backend.py` knows them all, and the page leaves out whatever a backend does not report rather than showing a number nobody measured. A backend that learns which tokens were MTP's guesses only when the step ends (a vLLM server) says so in `model_end`'s MTP counts (`kept_at`, `turned_down_at`), and the page marks those tokens then. `tool_result` carries the observation the model reads and, apart from it, the images the tool made for you (`images`: the paths of `run_python`'s charts), which the model never reads.
 
@@ -150,11 +156,11 @@ The chat template writes one placeholder where each file goes (`<|image|>` for G
 
 ### Writing code in a Docker sandbox
 
-With Let the model write code on and Docker ready, the model gets one more tool, `run_python`. Each call starts a new container from the image `sandbox/Dockerfile` builds: no network, a read-only file system except a small `/tmp`, 512 MB of memory, one CPU, at most 64 processes, no Linux capabilities and your own user, never root (on Linux the mounted folder keeps its permissions, which might not let another user in), with the conversation's folder read-only at `/data`; the code goes in on stdin, and the container is deleted afterwards. Code that runs past 30 seconds is stopped; a nonzero exit, using too much memory or printing nothing (and drawing nothing) comes back to the model as an error, in the turn's language, with the traceback, so it can fix the code in the next step.
+With Let the model write code on and Docker ready, the model gets one more tool, `run_python`. Each call starts a new container from the image `harness/sandbox/Dockerfile` builds: no network, a read-only file system except a small `/tmp`, 512 MB of memory, one CPU, at most 64 processes, no Linux capabilities and your own user, never root (on Linux the mounted folder keeps its permissions, which might not let another user in), with the conversation's folder read-only at `/data`; the code goes in on stdin, and the container is deleted afterwards. Code that runs past 30 seconds is stopped; a nonzero exit, using too much memory or printing nothing (and drawing nothing) comes back to the model as an error, in the turn's language, with the traceback, so it can fix the code in the next step.
 
-matplotlib's charts come back too, although the container cannot write anywhere the page can read: the image sets matplotlib's backend to `sandbox/agent_loop_figures.py`, which turns each figure into a PNG at `plt.show()` or when the program ends and, as it exits, writes them after what the code printed, behind a marker line that `run_python` passes in. `run_python` cuts them off what the model reads (at most four), saves them in the conversation's folder as `figure-1.png`, `figure-2.png`… and returns them apart from the observation: the model reads only `{"stdout": …, "figures": ["/data/figure-1.png"]}`, and the page shows the images in the chat and under the step. A label in Chinese is drawn with WenQuanYi Micro Hei, the font the image installs for it. Importing matplotlib makes a call about half a second slower (0.8 s against 0.2 s for plain Python).
+matplotlib's charts come back too, although the container cannot write anywhere the page can read: the image sets matplotlib's backend to `harness/sandbox/agent_loop_figures.py`, which turns each figure into a PNG at `plt.show()` or when the program ends and, as it exits, writes them after what the code printed, behind a marker line that `run_python` passes in. `run_python` cuts them off what the model reads (at most four), saves them in the conversation's folder as `figure-1.png`, `figure-2.png`… and returns them apart from the observation: the model reads only `{"stdout": …, "figures": ["/data/figure-1.png"]}`, and the page shows the images in the chat and under the step. A label in Chinese is drawn with WenQuanYi Micro Hei, the font the image installs for it. Importing matplotlib makes a call about half a second slower (0.8 s against 0.2 s for plain Python).
 
-The image installs pip 26.2.2 first, from its wheel by hash, and everything else with it: an older pip also trusts its own copy of certifi, which still has the compromised emSign certificates. The page reads the `agent-loop-sandbox.version` label of the image, and when it is older than `sandbox/Dockerfile` the sidebar asks for a rebuild instead of offering `run_python`.
+The image installs pip 26.2.2 first, from its wheel by hash, and everything else with it: an older pip also trusts its own copy of certifi, which still has the compromised emSign certificates. The page reads the `agent-loop-sandbox.version` label of the image, and when it is older than `harness/sandbox/Dockerfile` the sidebar asks for a rebuild instead of offering `run_python`.
 
 The model cannot see into a data file, so the harness adds a note to the user's message: where `run_python` finds each file, and the first line of a text file (for a CSV, its column names). Without that line a small model guesses columns in its code, a `Date` that is not there, and fails; with a few rows of data as well, Gemma copied the rows into its code and answered from them alone. `tabulate` is in the image because `DataFrame.to_markdown()`, which small models like to print tables with, needs it.
 
@@ -212,12 +218,12 @@ The harness (`agent.py`), the decoding loop (`simple_backend.py`) and the page (
 
 To add a model:
 
-1. Another checkpoint of a family that is already here (a bigger Gemma 4 or Qwen3.5, say): add a line to `MODELS` in `families/__init__.py`, and one to `REVISIONS` with the commit to download it at. Other Gemma 4 checkpoints have MTP drafters too (`google/gemma-4-*-it-assistant`); add a line to `DRAFTERS` (and the drafter's commit to `REVISIONS`) and the sidebar's MTP switch works for them.
-2. A new family: write a module like `families/qwen3_5.py` (a parser for the output plus notes on the special tokens, in both languages) and add its `Family` to `FAMILIES`. Loading a model finds it automatically by the `model_type` in the checkpoint's `config.json`. `tests/test_chat_template.py` checks a new family against the real tokenizer and chat template: every special token has a note, tool calls the template writes into the history parse back, and what the step card marks as new is exactly the tool result.
+1. Another checkpoint of a family that is already here (a bigger Gemma 4 or Qwen3.5, say): add a line to `MODELS` in `harness/families/__init__.py`, and one to `REVISIONS` with the commit to download it at. Other Gemma 4 checkpoints have MTP drafters too (`google/gemma-4-*-it-assistant`); add a line to `DRAFTERS` (and the drafter's commit to `REVISIONS`) and the sidebar's MTP switch works for them.
+2. A new family: write a module like `harness/families/qwen3_5.py` (a parser for the output plus notes on the special tokens, in both languages) and add its `Family` to `FAMILIES`. Loading a model finds it automatically by the `model_type` in the checkpoint's `config.json`. `tests/test_chat_template.py` checks a new family against the real tokenizer and chat template: every special token has a note, tool calls the template writes into the history parse back, and what the step card marks as new is exactly the tool result.
 
 ### The two models' formats
 
-Gemma 4 wraps strings in the special token `<|"|>` and leaves keys unquoted, so it is not JSON, and `families/gemma4.py` has its own small parser:
+Gemma 4 wraps strings in the special token `<|"|>` and leaves keys unquoted, so it is not JSON, and `harness/families/gemma4.py` has its own small parser:
 
 ```
 <|tool_call>call:get_current_time{timezone:<|"|>Asia/Taipei<|"|>}<tool_call|><|tool_response>
@@ -277,7 +283,7 @@ How it works quotes code, and `tests/guide_excerpts.txt` keeps everything it quo
 - With MTP on, the model computes 7 positions at once, which gives very slightly different numbers from computing 1; when two tokens are almost equally likely, greedy decoding may now and then pick the other one.
 - 18 of Qwen3.5's 24 layers are Gated DeltaNet. transformers has two kernels to speed them up, `flash-linear-attention` (Triton) and `causal-conv1d` (CUDA). Both need a CUDA GPU, so neither is a dependency: the PyTorch reference implementation runs instead, with the same results, only slower, and `simple_backend.py` silences transformers' notice about that fallback on every device. With a GPU the difference is small for a 0.8B model. On an NVIDIA GB10 (DGX Spark), flash-linear-attention made prefill about 4× faster (3,571 tokens in 93 ms instead of 368 ms) but decoding barely changed (56 → 60 tok/s), and both paths stayed equally close to float32. causal-conv1d has no wheel for that machine and would have to be compiled. Don't install flash-linear-attention on a Linux machine without a GPU: transformers still picks it, and the first forward pass fails.
 - On MPS, transformers hangs loading Qwen3.5's weights with several threads, so on MPS `simple_backend.py` loads with one thread (`HF_DEACTIVATE_ASYNC_LOAD=1`), which does not make either model load slower.
-- Qwen3.5 0.8B has thinking off by default; on, it easily keeps thinking without stopping, and lowering Max tokens per step helps. It ships no generation_config.json, so its recommended decoding settings are in `families/qwen3_5.py` (the presence penalty it recommends is not implemented here).
+- Qwen3.5 0.8B has thinking off by default; on, it easily keeps thinking without stopping, and lowering Max tokens per step helps. It ships no generation_config.json, so its recommended decoding settings are in `harness/families/qwen3_5.py` (the presence penalty it recommends is not implemented here).
 - Only one model is kept in memory. If two tabs pick different models, using them in turn keeps reloading; it is best for every tab to use the same model.
 - There is one copy of the model, so only one agent runs at a time and other tabs wait. Reloading or closing the tab during a run does not stop the agent; other tabs (including the reloaded one) show it is still running and offer a Stop that agent button.
 - With Ask me before running a tool on, if no one answers within 5 minutes the harness takes it as a rejection and stops the loop, with "confirmation timed out" as the stop reason.

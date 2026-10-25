@@ -10,19 +10,17 @@ from pathlib import Path
 import pytest
 import torch
 
-import families
-import media
-import render
 import samples
-import tools
-from agent import SYSTEM_WITH_TOOLS, Run, RunSettings
-from backend import Backend
+from app import render
+from harness import families, media, tools
+from harness.agent import SYSTEM_WITH_TOOLS, Run, RunSettings
+from harness.backends.backend import Backend
+from harness.backends.simple_backend import LocalLLM, Sampling
+from harness.tools import TOOLS
 from html_check import assert_balanced
-from simple_backend import LocalLLM, Sampling
 from test_render import render_everything
-from tools import TOOLS
 
-SAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
+SAMPLES = Path(__file__).resolve().parent.parent / "app" / "assets" / "examples"
 
 pytestmark = [
     pytest.mark.model,

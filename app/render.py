@@ -14,8 +14,8 @@ import html
 import json
 import re
 
-import families
-from i18n import pick
+from harness import families
+from harness.i18n import pick
 
 STOP_REASONS = {
     "zh": {

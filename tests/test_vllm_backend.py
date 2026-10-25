@@ -24,23 +24,22 @@ from huggingface_hub import try_to_load_from_cache
 from huggingface_hub.utils import validate_repo_id
 from transformers import AutoProcessor
 
-import families
-import media
-import render
-import vllm_backend
-from agent import Run, RunSettings
-from backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
-from families import GEMMA4, QWEN3_5
+from app import render
 from fakes import MEDIA_TOKENS, PLACEHOLDERS, FakeLLM, fake_folder, pieces, qwen_tool_call, tool_call
+from harness import families, media
+from harness.agent import Run, RunSettings
+from harness.backends import vllm_backend
+from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
+from harness.backends.simple_backend import MODELS_DIR
+from harness.backends.vllm_backend import GENERATE, UNREPORTED, ServerError, VLLMBackend
+from harness.families import GEMMA4, QWEN3_5
+from harness.i18n import LANGS, pick
 from html_check import assert_balanced
-from i18n import LANGS, pick
-from simple_backend import MODELS_DIR
 from test_render import render_everything
-from vllm_backend import GENERATE, UNREPORTED, ServerError, VLLMBackend
 
 URL = "http://vllm.test:8000"
 ANSWER = "答案是 42。<turn|>"
-EXAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
+EXAMPLES = Path(__file__).resolve().parent.parent / "app" / "assets" / "examples"
 KIND_OF_PART = {"image_url": "image", "audio_url": "audio", "video_url": "video"}
 LOGIT = 20.0  # how far a fake logit is above the log probability it gives
 

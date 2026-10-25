@@ -12,11 +12,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import families
-import simple_backend
-from backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend
-from families import GEMMA4, FileNote
-from simple_backend import LocalLLM, Sampling
+from harness import families
+from harness.backends import simple_backend
+from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend
+from harness.backends.simple_backend import LocalLLM, Sampling
+from harness.families import GEMMA4, FileNote
 
 VOCAB = [
     "<pad>", "<eos>", "<turn|>", "<|tool_response>", "<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>",
@@ -616,7 +616,7 @@ def test_models_download_at_their_pinned_revision_into_the_project_folder_git_ig
         {"revision": families.REVISIONS["google/gemma-4-E2B-it"], "allow_patterns": None, "cache_dir": simple_backend.MODELS_DIR},
         {"revision": None, "allow_patterns": "config.json", "cache_dir": simple_backend.MODELS_DIR},  # main
     ]
-    root = Path(simple_backend.__file__).resolve().parent
+    root = Path(simple_backend.__file__).resolve().parents[2]  # the project's folder
     if not os.environ.get("AGENT_LOOP_MODELS"):  # which moves them out of the project
         assert simple_backend.MODELS_DIR == root / "models"
     assert "/models/" in (root / ".gitignore").read_text().split()
@@ -626,7 +626,7 @@ def test_only_agent_loop_models_moves_the_models_folder_not_a_machine_wide_hf_hu
     # MODELS_DIR is read when simple_backend.py is imported, so run the module's code again, apart from the imported one.
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
     monkeypatch.delenv("AGENT_LOOP_MODELS", raising=False)
-    assert runpy.run_path(simple_backend.__file__)["MODELS_DIR"] == Path(simple_backend.__file__).resolve().parent / "models"
+    assert runpy.run_path(simple_backend.__file__)["MODELS_DIR"] == Path(simple_backend.__file__).resolve().parents[2] / "models"
     monkeypatch.setenv("AGENT_LOOP_MODELS", str(tmp_path / "elsewhere"))
     assert runpy.run_path(simple_backend.__file__)["MODELS_DIR"] == tmp_path / "elsewhere"
 

@@ -113,8 +113,8 @@ class Family:
         return re.compile("|".join(re.escape(p) for p in pieces))
 
 
-from families.gemma4 import GEMMA4  # noqa: E402  (the family modules import Family from here)
-from families.qwen3_5 import QWEN3_5  # noqa: E402
+from harness.families.gemma4 import GEMMA4  # noqa: E402  (the family modules import Family from here)
+from harness.families.qwen3_5 import QWEN3_5  # noqa: E402
 
 FAMILIES = {f.key: f for f in (GEMMA4, QWEN3_5)}
 
