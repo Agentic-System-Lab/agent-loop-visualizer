@@ -1099,8 +1099,10 @@ SECTIONS = [
                "and whether it takes each kind of media the checkpoint reads, writing down why not for those it refuses ([[harness/backends/vllm_backend.py|def _probe(]]). "
                "What that route brings:"},
         (
-            {"zh": "**每個 token 的排名**，就算不在前 5 名也有。它的清單把選中的 token 放第一個，所以多要一個，再照排名排出前 5 名。",
-             "en": "**Every token's rank**, outside the top 5 as well. Its list puts the chosen token first, so the backend asks for one more and sorts the top 5 by rank."},
+            {"zh": "**每個 token 的排名**，就算不在前 5 名也有。它的清單把選中的 token 放第一個，所以多要一個，再照排名排出前 5 名。"
+                   "vLLM 的排名把和選中的 token 同分的也算在前面，所以 backend 扣掉清單上同分的，同分第一就是 #1，和 `LocalLLM` 一樣。",
+             "en": "**Every token's rank**, outside the top 5 as well. Its list puts the chosen token first, so the backend asks for one more and sorts the top 5 by rank. "
+                   "vLLM's rank counts the tokens tied with the chosen one as ahead of it, so the backend takes off the ties listed: a token tied for first is #1, as with `LocalLLM`."},
             {"zh": "**`--return-sampling-mask`**：每個位置 top-k、top-p 留下了哪些 token，由此知道剩下幾個候選。vLLM 只在 `--logprobs-mode processed_logprobs` "
                    "下開它，所以有 mask 的伺服器送回的是抽樣分布：看得到取樣時的機率和剩下幾個候選，看不到模型給的機率、前 5 名，也看不到哪幾個被剃掉。"
                    "這時它也不接受 temperature 0 和 top-k 0（mask 的大小要靠 top-k 限制），所以側欄的滑桿從 0.05 和 1 開始。"

@@ -248,7 +248,7 @@ class Server:
         """A token's logprobs as /inference/v1/generate sends them: its own and rank, then the chosen token first and
         the most likely after it, as many as the request's logprobs."""
         values = self.values(token_id, p, params)
-        ranks = {i: r for r, i in enumerate(values, 1)}
+        ranks = {i: sum(v >= values[i] for v in values.values()) for i in values}  # vLLM counts ties as more likely
         listed = [token_id] + [i for i in values if i != token_id]
         return {"token_id": token_id, "logprob": values[token_id], "rank": ranks[token_id],
                 "top_logprobs": [{"token_id": i, "logprob": values[i], "rank": ranks[i]} for i in listed[: max(params.get("logprobs") or 0, 1)]]}
@@ -517,6 +517,15 @@ def test_equally_likely_candidates_go_lowest_id_first_as_with_local_inference(hu
     a, b = server.tokenizer.id("▁a"), server.tokenizer.id("▁b")
     details = llm._details(b, {"token_logprobs": [math.log(0.4)], "top_logprobs": [{f"token_id:{b}": math.log(0.4), f"token_id:{a}": math.log(0.4)}]}, 0, Sampling())
     assert [c["id"] for c in details["top"]] == [a, b] and details["rank"] == 1
+
+
+@pytest.mark.parametrize("scale_out", [False, True])
+def test_a_token_tied_for_first_is_ranked_first_on_either_route_though_vllm_counts_the_tie(hub, scale_out):
+    server = Server([ANSWER], scale_out=scale_out)
+    server.p = {1: 0.05, 2: 0.02}  # each as likely as one of the others: the first is tied for first, the second for second
+    _, tokens, _ = generate(connect(server))
+    assert [t["rank"] for t in tokens[1:3]] == [1, 2]
+    assert [c["p"] for c in tokens[1]["top"][:2]] == pytest.approx([0.05, 0.05]) and tokens[1]["id"] in [c["id"] for c in tokens[1]["top"]]
 
 
 def test_a_token_the_server_sent_no_log_probability_for_carries_no_details(hub):
