@@ -424,8 +424,9 @@ def vllm(monkeypatch, models, outputs):
     """The page with VLLM_URL set. The server serves Qwen3.5 under the name "qwen", and a fake model with what a
     VLLMBackend has (the server in its info, nothing about weights loaded here) stands in for the backend; the server
     takes images but refused video, and sends sampling masks. `made` holds each one the page makes; set `down` and the
-    server cannot be reached, or `defaults` for the decoding the checkpoint recommends."""
-    state = {"made": [], "down": False}
+    server cannot be reached, `defaults` for the decoding the checkpoint recommends, or `adapters` for the LoRA
+    adapters it serves too."""
+    state = {"made": [], "down": False, "adapters": []}
 
     class ServedLLM(FakeLLM):
         def __init__(self, model_id, url):
@@ -437,14 +438,14 @@ def vllm(monkeypatch, models, outputs):
                                  "en": "the server refused it: At most 0 video(s) may be provided in one prompt."}}
             self.info = {k: v for k, v in self.info.items() if k not in unknown} | {"modalities": ["image"], "drafter_id": None, "server": {
                 "engine": "vLLM", "version": "0.32.0", "url": url, "served_as": "qwen", "logprobs_mode": "processed_logprobs", "generate_api": True,
-                "sampling_mask": True, "refused": refused}}
+                "sampling_mask": True, "refuses_greedy": True, "refused": refused}}
             self.info["defaults"] = state.get("defaults", self.info["defaults"])
             state["made"].append(self)
 
     def served_models(url, transport=None):
         if state["down"]:
             raise vllm_backend.ServerError(f"連不上 {url} 的 vLLM 伺服器。", f"Could not reach the vLLM server at {url}.")
-        return [{"id": "qwen", "root": "Qwen/Qwen3.5-0.8B", "max_model_len": 8192}]
+        return [{"id": "qwen", "root": "Qwen/Qwen3.5-0.8B", "max_model_len": 8192}, *state["adapters"]]
 
     monkeypatch.setenv("VLLM_URL", "http://localhost:8000")
     monkeypatch.setattr(vllm_backend, "VLLMBackend", ServedLLM)
@@ -460,6 +461,23 @@ def test_with_vllm_url_the_page_runs_what_the_server_serves(vllm, at, models, ou
     outputs.append("答案是 42。<|im_end|>")
     ask(at)
     assert "答案是 42。" in drawn_text(at) and vllm["made"][0].prompts
+
+
+def test_the_menu_leaves_out_the_lora_adapters_the_server_serves(vllm, new_tab):
+    vllm["adapters"] = [{"id": "sql-lora", "root": "/adapters/sql", "parent": "qwen", "max_model_len": None}]
+    st.cache_data.clear()
+    at = new_tab()
+    assert next(s for s in at.selectbox if s.label == "模型").options == ["Qwen3.5 0.8B (Alibaba)"]
+
+
+@pytest.mark.parametrize(("locale", "message"), [("zh-TW", "ServerError: vLLM 伺服器在生成時出錯：out of memory"),
+                                                 ("en-US", "ServerError: The vLLM server failed while generating: out of memory")])
+def test_a_vllm_error_mid_run_is_shown_in_the_pages_language(vllm, browser, new_tab, outputs, locale, message):
+    browser["locale"] = locale
+    at = new_tab()
+    outputs.append(vllm_backend.ServerError("vLLM 伺服器在生成時出錯：out of memory", "The vLLM server failed while generating: out of memory"))
+    ask(at, "Hi")
+    assert [e.value for e in at.error] == [message] and message in page_html(at)
 
 
 def test_with_vllm_the_sidebar_says_the_server_decides_speculative_decoding(vllm, at):
@@ -478,7 +496,7 @@ def test_with_vllm_the_model_reads_what_the_server_takes_and_the_page_says_what_
     tab(at).set_value("model").run()
     html = page_html(at)
     assert "這個 checkpoint 讀得懂、但這台伺服器不收的媒體" in html and "<b>影片</b>：伺服器不收：At most 0 video(s)" in html
-    assert "看得到剩下幾個候選；這時它不接受 temperature 0 和 top-k 0" in html
+    assert "它也送回 sampling mask，所以看得到剩下幾個候選。" in html and "所以不接受 temperature 0 和 top-k 0，側欄就從 0.05 和 1 開始" in html
 
 
 def test_a_vllm_server_that_sends_sampling_masks_gets_no_greedy_or_unlimited_top_k_from_the_sidebar(vllm, browser, new_tab, outputs):

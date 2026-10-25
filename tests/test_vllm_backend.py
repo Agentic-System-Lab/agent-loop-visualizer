@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from huggingface_hub import try_to_load_from_cache
+from huggingface_hub.utils import validate_repo_id
 from transformers import AutoProcessor
 
 import families
@@ -318,6 +319,8 @@ class Server:
                 break
             if len(out) == max_tokens:
                 break
+        if not out:  # vLLM still sends the finish reason, in a chunk without tokens
+            yield [], [], self.finish or finish, None
         for start in range(0, len(out), self.per_chunk):
             chunk_ids = out[start : start + self.per_chunk]
             last = start + self.per_chunk >= len(out)
@@ -367,6 +370,7 @@ def hub(monkeypatch):
         return "qwen3_5" if "qwen" in folder.lower() else "gemma4"
 
     def snapshot_download(model_id, revision=None, cache_dir=None, ignore_patterns=None):
+        validate_repo_id(model_id)  # as the real one does first: a folder on the server is no Hugging Face id
         seen["downloads"].append({"model_id": model_id, "revision": revision, "cache_dir": cache_dir, "ignore": ignore_patterns})
         return f"/hub/{model_id}"
 
@@ -520,6 +524,20 @@ def test_equally_likely_candidates_go_lowest_id_first_as_with_local_inference(hu
 def test_a_token_the_server_sent_no_log_probability_for_carries_no_details(hub):
     llm = connect(Server([]))
     assert llm._details(5, {}, 0, Sampling()) == {} and llm._details(5, {"token_logprobs": [None], "top_logprobs": [None]}, 0, Sampling()) == {}
+    # /inference/v1/generate's mark for a token it has no log probability for
+    assert llm._generate_details(5, {"token_id": 5, "logprob": UNREPORTED}, None, Sampling()) == {}
+    assert llm._generate_details(5, None, None, Sampling()) == {}
+
+
+def test_a_step_that_ends_before_its_first_token_is_a_prefill_and_an_empty_done(hub):
+    _, tokens, done = generate(connect(Server([""])))
+    assert tokens == [] and (done["n_tokens"], done["finish"], done["raw"]) == (0, "max_new_tokens", "")
+
+
+def test_warming_up_asks_the_server_for_two_tokens(hub):
+    server = Server([ANSWER])
+    connect(server).warmup()
+    assert len(server.requests) == 1 and server.requests[0]["max_tokens"] == 2
 
 
 def test_reaching_max_tokens_is_the_token_limit(hub):
@@ -583,6 +601,19 @@ def test_an_error_in_the_middle_of_the_stream_is_raised(hub):
         generate(llm)
 
 
+@pytest.mark.parametrize("lang", LANGS)
+def test_an_error_the_server_sends_mid_run_is_shown_in_the_pages_language(hub, lang):
+    server = Server([ANSWER])
+    llm = connect(server)
+    server.stream_error = {"message": "out of memory", "type": "InternalServerError", "code": 500}
+    events = []
+    Run(llm, [], "Hi", RunSettings(lang="zh"), events.append).run()  # a turn started on the Chinese page
+    [error] = [e for e in events if e["type"] == "error"]
+    assert error["text"] == {"zh": "ServerError: vLLM 伺服器在生成時出錯：out of memory", "en": "ServerError: The vLLM server failed while generating: out of memory"}
+    data = render.build(events)
+    assert render.error_text(data, lang) == error["text"][lang] and error["text"][lang] in render.stop_html(data, lang)
+
+
 def test_a_step_the_server_ends_some_other_way_is_an_error(hub):
     server = Server([ANSWER])
     llm = connect(server)
@@ -592,6 +623,21 @@ def test_a_step_the_server_ends_some_other_way_is_an_error(hub):
 
 
 # ---------- the model card ----------
+
+def test_a_server_started_from_a_folder_of_its_own_is_said_in_both_languages_not_a_traceback(hub):
+    with pytest.raises(ServerError) as refused:
+        connect(Server([], root="/data/gemma"), "/data/gemma")
+    assert "vllm serve Qwen/Qwen3.5-0.8B" in refused.value.text["zh"] and "same path on this machine" in refused.value.text["en"]
+    assert "拿不到 /data/gemma 的 tokenizer" in refused.value.text["zh"]
+
+
+def test_a_model_of_a_family_the_page_does_not_know_is_said_in_both_languages(hub, monkeypatch):
+    monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=lambda folder: SimpleNamespace(model_type="llama")))
+    with pytest.raises(ServerError) as refused:
+        connect(Server([]))
+    assert refused.value.text == {"zh": "google/gemma-4-E2B-it 是 model_type 'llama' 的模型，這個網頁還不支援；目前支援 Gemma 4、Qwen3.5。",
+                                  "en": "google/gemma-4-E2B-it is a model of model_type 'llama', which this page does not support yet; it supports Gemma 4, Qwen3.5."}
+
 
 def test_the_context_limit_and_the_specs_come_from_the_server_and_the_config(hub):
     llm = connect(Server([], max_model_len=8192))
@@ -634,9 +680,17 @@ def test_the_model_card_says_what_a_server_with_scale_out_and_masks_shows_and_wh
     card = render.model_html(info, lang)
     assert_balanced(card)
     assert pick(lang, "不是模型原本的機率，所以看不到模型給的機率和前 5 名", "so the model probability and the top 5 do not show") in card
-    assert pick(lang, "看得到剩下幾個候選；這時它不接受 temperature 0 和 top-k 0", "how many candidates were left shows too; it then refuses temperature 0 and top-k 0") in card
+    assert pick(lang, "它也送回 sampling mask，所以看得到剩下幾個候選。", "It also sends sampling masks, so how many candidates were left shows too.") in card
+    assert pick(lang, "所以不接受 temperature 0 和 top-k 0，側欄就從 0.05 和 1 開始", "so it refuses temperature 0 and top-k 0, and the sidebar starts at 0.05 and 1") in card
     assert card.count("<li><b>") == 1 and pick(lang, "<b>聲音</b>", "<b>audio</b>") in card and "At most 0 audio(s)" in card
     assert pick(lang, "圖片 · 影片", "image · video") in card  # what the model reads here
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_the_model_card_says_a_server_with_masks_but_no_scale_out_refuses_greedy(hub, lang):
+    card = render.model_html(connect(Server([], masks=True)).info, lang)
+    assert pick(lang, "所以不接受 temperature 0 和 top-k 0", "so it refuses temperature 0 and top-k 0") in card
+    assert pick(lang, "它也送回 sampling mask", "It also sends sampling masks") not in card  # no route here shows them
 
 
 @pytest.mark.parametrize("lang", LANGS)
@@ -686,6 +740,22 @@ def test_a_server_that_drafts_shows_its_counts_in_the_step_without_underlines(hu
 
 
 # ---------- what the server can do: /inference/v1/generate ----------
+
+@pytest.mark.parametrize(("status", "says"), [
+    (404, ("這個版本的 vLLM 沒有 /inference/v1/generate", "this vLLM has no /inference/v1/generate")),
+    (500, ("伺服器的 /inference/v1/generate 拒絕了請求", "the server's /inference/v1/generate refused a request")),
+])
+def test_a_server_whose_generate_route_is_missing_or_fails_runs_on_completions_and_says_why(hub, status, says):
+    server = Server([ANSWER], scale_out=True)
+    server.generate = lambda body: httpx.Response(status, json={"detail": "Not Found"} if status == 404 else {"error": {"message": "boom"}})
+    llm = connect(server)
+    assert not llm.generate_api and llm.modalities == ()
+    refused = llm.info["server"]["refused"]
+    assert set(refused) == {"image", "audio", "video"}
+    assert all(says[0] in why["zh"] and says[1] in why["en"] for why in refused.values())
+    generate(llm)
+    assert len(server.requests) == 1
+
 
 def test_without_scale_out_steps_go_to_completions_and_no_media_can_go(hub):
     server = Server([ANSWER])
@@ -744,10 +814,11 @@ def test_sampling_masks_give_the_candidates_left_and_the_sampling_probability_bu
 
 @pytest.mark.parametrize("scale_out", [False, True])
 def test_a_server_with_masks_refuses_greedy_and_no_top_k_as_vllm_does(hub, scale_out):
-    server = Server([ANSWER] * 2, scale_out=True, masks=True)
+    server = Server([ANSWER] * 2, scale_out=scale_out, masks=True)
     llm = connect(server)
-    if not scale_out:  # what /v1/completions would answer too: the check is vLLM's engine's, not the route's
-        llm.generate_api = False
+    # Without --enable-scale-out no response shows a mask, yet the engine refuses all the same, on /v1/completions too.
+    assert (llm.generate_api, llm.masks, llm.refuses_greedy) == (scale_out, scale_out, True)
+    assert llm.info["server"]["refuses_greedy"] and llm.info["server"]["sampling_mask"] == scale_out
     with pytest.raises(ServerError, match="requires temperature > 0") as refused:
         generate(llm, sampling=Sampling(temperature=0))
     assert refused.value.status == 400
@@ -763,6 +834,7 @@ def test_a_server_with_processed_logprobs_but_no_masks_shows_how_many_were_left_
     _, tokens, _ = generate(llm, sampling=Sampling(temperature=1.0, top_k=64, top_p=0.95))
     assert tokens[0]["kept"] == 3 and tokens[0]["p_sampled"] == pytest.approx(0.9 / 0.97) and tokens[0]["rank"] == 1
     assert "kept" not in tokens[1] and "rank" not in tokens[1]  # outside the top 5, where /v1/completions gives no rank
+    assert not llm.refuses_greedy and server.probes[-1]["temperature"] == 0.0  # asked, as a server with masks would refuse
     assert not {"p", "logprob", "top"} & set(tokens[0])
     _, tokens, _ = generate(connect(Server([ANSWER], logprobs_mode="processed_logprobs")), sampling=Sampling(temperature=0))
     assert tokens[0]["kept"] == 1 and tokens[0]["p_sampled"] == 1.0  # greedy, which such a server takes
@@ -783,7 +855,8 @@ def test_the_servers_logprobs_mode_is_worked_out_at_load_with_one_token(hub, mod
     llm = connect(server)
     assert llm.logprobs_mode == llm.info["server"]["logprobs_mode"] == mode
     probe = server.probes[0]
-    assert len(server.probes) == 1 and (probe["max_tokens"], probe["temperature"], probe["top_k"], probe["logprobs"]) == (1, 1.0, 2, 5)
+    assert (probe["max_tokens"], probe["temperature"], probe["top_k"], probe["logprobs"]) == (1, 1.0, 2, 5)
+    assert len(server.probes) == (2 if mode == "processed_logprobs" else 1)  # the second asks whether greedy decoding is refused
 
 
 def test_logits_too_large_to_be_probabilities_do_not_overflow():
@@ -905,6 +978,20 @@ def test_per_step_counts_mark_the_guesses_once_the_step_is_done(hub):
     assert "MTP kept <b>5</b> / 9 guesses" in html
     live = render.build(events[: next(i for i, e in enumerate(events) if e["type"] == "model_end")])
     assert ' drafted"' not in render.step_html(live["steps"][0], live, lang="en", live=True)  # nobody knows while it generates
+
+
+def test_inference_generate_carries_the_speculative_decoding_counts_too(hub):
+    server = Server([ANSWER], scale_out=True)
+    server.spec = DETAILED
+    _, _, done = generate(connect(server))
+    assert server.requests == [] and done["mtp"] == {"drafted": 9, "accepted": 5, "forwards": 3, "kept_at": [1, 2, 5, 6, 7], "turned_down_at": [3, 4]}
+
+
+def test_guesses_after_the_stop_token_do_not_count_as_kept(hub):
+    # The last verify step kept 3 guesses, and the first of them was the stop token: vLLM still counts all 3.
+    assert vllm_backend.mtp_counts(DETAILED, 6) == {"drafted": 9, "accepted": 3, "forwards": 3, "kept_at": [1, 2, 5], "turned_down_at": [3, 4]}
+    summary = {k: v for k, v in DETAILED.items() if not k.startswith("per_step")}
+    assert vllm_backend.mtp_counts(summary, 6)["accepted"] == 5  # without the steps, nobody can tell
 
 
 def test_per_step_counts_that_do_not_add_up_mark_no_token(hub):

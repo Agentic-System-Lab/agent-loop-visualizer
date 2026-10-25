@@ -1056,12 +1056,14 @@ SECTIONS = [
             {"zh": "**`--return-sampling-mask`**：每個位置 top-k、top-p 留下了哪些 token，由此知道剩下幾個候選。vLLM 只在 `--logprobs-mode processed_logprobs` "
                    "下開它，所以有 mask 的伺服器送回的是抽樣分布：看得到取樣時的機率和剩下幾個候選，看不到模型給的機率、前 5 名，也看不到哪幾個被剃掉。"
                    "這時它也不接受 temperature 0 和 top-k 0（mask 的大小要靠 top-k 限制），所以側欄的滑桿從 0.05 和 1 開始。"
+                   "沒有 `--enable-scale-out` 的伺服器看不到 mask，所以載入時也要一個 greedy 的 token，被拒絕就知道它開了 mask（[[vllm_backend.py|def _refuses_greedy(]]）。"
                    "greedy 不用問伺服器：只剩一個候選，抽中的機率是 1（[[vllm_backend.py|def _greedy(]]）。",
              "en": "**`--return-sampling-mask`**: the tokens top-k and top-p left at each position, from which comes how many candidates were left. vLLM allows it "
                    "only with `--logprobs-mode processed_logprobs`, so a server with masks sends the sampling distribution: the sampling probability and the "
                    "candidates left show, and the model probability, the top 5 and which of them were cut do not. Such a server also refuses temperature 0 and "
-                   "top-k 0 (top-k bounds the mask), so the sidebar's sliders start at 0.05 and 1. Greedy decoding needs no server: one candidate left, drawn "
-                   "with probability 1 ([[vllm_backend.py|def _greedy(]])."},
+                   "top-k 0 (top-k bounds the mask), so the sidebar's sliders start at 0.05 and 1. A server without `--enable-scale-out` shows no mask, so at "
+                   "load it is also asked for a greedy token, and a refusal says it has masks on ([[vllm_backend.py|def _refuses_greedy(]]). Greedy decoding "
+                   "needs no server: one candidate left, drawn with probability 1 ([[vllm_backend.py|def _greedy(]])."},
             {"zh": "**圖片、聲音和影片**：跟著 chat template 寫的佔位 token 一起送過去（圖片轉正存成 PNG、聲音解碼成 WAV、影片送原檔，"
                    "[[vllm_backend.py|def content_part(]]），伺服器把每個佔位 token 展開成那個檔案的 token。`encode()` 先用一個只生成一個 token 的請求"
                    "問伺服器怎麼展開，所以脈絡分頁上是伺服器讀到的 prompt（{{media}}）；生成時伺服器若展開得不一樣，就當成錯誤。",
@@ -1071,17 +1073,18 @@ SECTIONS = [
                    "expansion at generation time is an error."},
         ),
         Code("vllm_backend.py", "def encode(self, prompt"),
-        {"zh": "推測解碼是伺服器啟動時決定的（`--speculative-config`），側欄的 MTP 開關不能按。伺服器加上 `--per-request-spec-decode-metrics` 時，"
+        {"zh": "推測解碼是伺服器啟動時決定的（`--speculative-config`），側欄的 MTP 開關不能按。伺服器加上 `--per-request-spec-decode-metrics summary`（要和 `--speculative-config` 一起用）時，"
                "最後一段回應帶著這一步的統計，變成 step 卡片上的「草稿收下幾個、forward 幾次」。設成 `detailed` 還有每一次驗證收下幾個猜測："
                "第一個 token 來自 prefill，之後每次驗證是收下的猜測，再加一個主模型自己的 token；收下的比猜的少，那個 token 就取代了被退回的猜測。"
-               "伺服器不記沒有猜測的那幾步，所以只有這些數字剛好對得上每個 token 時，才標得出哪些是猜中的；對不上就只顯示統計。"
+               "伺服器不記沒有猜測的那幾步，所以只有這些數字剛好對得上每個 token 時，才標得出哪些是猜中的；對不上就只顯示統計。對得上時，收下的猜測只算到停止 token 為止：vLLM 是在停止 token 截斷那次驗證之前算的，停止 token 後面的猜測也會算進去。"
                "這要等這一步結束才知道，所以底線在 step 結束時才出現（[[render.py|def with_drafts(]]），而被退回的猜測原本是什麼，伺服器不說。",
          "en": "Speculative decoding is decided when the server starts (`--speculative-config`), so the sidebar's MTP switch is disabled. With "
-               "`--per-request-spec-decode-metrics`, the last part of the response carries the step's counts, which become the step card's guesses kept and "
+               "`--per-request-spec-decode-metrics summary` (which needs `--speculative-config`), the last part of the response carries the step's counts, which become the step card's guesses kept and "
                "forward passes. Set to `detailed`, it also says how many guesses each verify step kept: the first token comes from the prefill, and each verify "
                "step after it gives the guesses it kept and then one token of the model's own, which replaced a guess turned down when fewer were kept than "
                "guessed. The server does not count a step without guesses, so only when these numbers account for every token can the page mark which were "
-               "guesses; otherwise it shows the counts alone. That is known only once the step ends, so the underlines appear then ([[render.py|def with_drafts(]]), "
+               "guesses; otherwise it shows the counts alone. When they do, only the guesses up to the stop token count as kept: vLLM counts them before it "
+               "cuts the step at the stop token, so the guesses after it would count too. That is known only once the step ends, so the underlines appear then ([[render.py|def with_drafts(]]), "
                "and what a turned-down guess was, the server does not say."},
         Code("vllm_backend.py", "def drafted_tokens("),
         {"zh": "畫面上還有這些不同：", "en": "What else differs on the page:"},
@@ -1168,8 +1171,9 @@ SECTIONS = [
                    "([[agent.py|stop_reason = \"approval_timeout\" if self._timed_out]])."},
             {"zh": "連續 `MAX_FORMAT_ERRORS`（3）次寫出無法解析的工具呼叫 → `format_errors`。",
              "en": "`MAX_FORMAT_ERRORS` (3) tool calls in a row that cannot be parsed → `format_errors`."},
-            {"zh": "模型或工具丟出任何例外 → `error`，錯誤訊息會顯示在畫面上，而不是讓 thread 默默死掉。",
-             "en": "Any exception from the model or a tool → `error`; the message shows on the page instead of the thread dying silently."},
+            {"zh": "模型或工具丟出任何例外 → `error`，錯誤訊息會顯示在畫面上，而不是讓 thread 默默死掉；backend 的錯誤（例如 vLLM 伺服器的）兩種語言都有，畫面顯示目前語言的那一個。",
+             "en": "Any exception from the model or a tool → `error`; the message shows on the page instead of the thread dying silently, and a backend's error "
+                   "(a vLLM server's, say) comes in both languages, of which the page shows the one it is in."},
         ),
         Code("agent.py", "if format_errors >= MAX_FORMAT_ERRORS:", end='self.emit("run_end"',
              caption={"zh": "不管怎麼停，最後一定送出 `run_end`，帶著停止原因、最終回覆和整份訊息列表。",
@@ -1414,7 +1418,7 @@ EVENTS = [
      {"zh": "結果字串、成功與否、是否截斷、耗時、給你看的圖", "en": "the result string, whether it succeeded, whether it was cut, the time it took, the images for you"},
      {"zh": "環境段的結果、聊天區的工具標籤；圖畫在兩邊", "en": "the result in the Environment section, the tool chip in the chat; the charts in both"}),
     ("error", "agent.py", 'self.emit("error"',
-     {"zh": "例外的類型和訊息", "en": "the exception's type and message"},
+     {"zh": "例外的類型和訊息；backend 的錯誤兩種語言都有（`text`）", "en": "the exception's type and message, and both languages of a backend's error (`text`)"},
      {"zh": "聊天區和停止卡片的錯誤訊息", "en": "the error message in the chat and on the stop card"}),
     ("run_end", "agent.py", 'self.emit("run_end"',
      {"zh": "停止原因、最終回覆、整份訊息列表", "en": "the stop reason, the final reply, the whole message list"},

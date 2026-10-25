@@ -114,7 +114,8 @@ def model_menu() -> dict[str, str]:
     loaded from, which is the Hugging Face id its tokenizer is downloaded by."""
     if not VLLM_URL:
         return MODELS
-    served = (card.get("root") or card["id"] for card in vllm_backend.served_models(VLLM_URL))
+    # A LoRA adapter (a card with a parent) is left out: its root is the adapter's folder on the server.
+    served = (card.get("root") or card["id"] for card in vllm_backend.served_models(VLLM_URL) if not card.get("parent"))
     return {model_id: families.MODELS.get(model_id, model_id) for model_id in served}
 
 
@@ -335,18 +336,18 @@ def sidebar(llm: Backend, menu: dict[str, str], live: bool, busy: bool):
                           "The harness holds the call until you confirm it, instead of a line in the prompt asking the model to check first."))
 
         st.markdown(tr("##### 解碼與上限", "##### Decoding and limits"))
-        if (info.get("server") or {}).get("sampling_mask"):
-            # vLLM refuses greedy decoding and an unlimited top-k once it sends sampling masks, so the sliders stop short
-            # of them, and a setting from before moves to the nearest one it takes.
+        if (info.get("server") or {}).get("refuses_greedy"):
+            # vLLM refuses greedy decoding and an unlimited top-k once it was started with --return-sampling-mask, so the
+            # sliders stop short of them, and a setting from before moves to the nearest one it takes.
             st.session_state.temperature = max(st.session_state.temperature, 0.05)
             st.session_state.top_k = st.session_state.top_k or 128
             st.slider("temperature", 0.05, 2.0, step=0.05, key="temperature",
-                      help=tr("這台 vLLM 伺服器會送回 sampling mask（`--return-sampling-mask`），這時它不接受 greedy（temperature 0），所以最低是 0.05。",
-                              "This vLLM server sends sampling masks (`--return-sampling-mask`), and then it refuses greedy decoding (temperature 0), so the lowest is 0.05."))
+                      help=tr("這台 vLLM 伺服器啟動時加了 `--return-sampling-mask`，所以不接受 greedy（temperature 0），最低是 0.05。",
+                              "This vLLM server was started with `--return-sampling-mask`, so it refuses greedy decoding (temperature 0), and the lowest is 0.05."))
             st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
             st.slider("top-k", 1, 128, key="top_k",
-                      help=tr("這台 vLLM 伺服器會送回 sampling mask，要靠 top-k 限制它的大小，所以不能設 0（不限）。",
-                              "This vLLM server sends sampling masks, and needs top-k to bound them, so 0 (no limit) is not allowed."))
+                      help=tr("這台 vLLM 伺服器啟動時加了 `--return-sampling-mask`，要靠 top-k 限制 sampling mask 的大小，所以不能設 0（不限）。",
+                              "This vLLM server was started with `--return-sampling-mask` and needs top-k to bound its sampling masks, so 0 (no limit) is not allowed."))
         else:
             st.slider("temperature", 0.0, 2.0, step=0.05, key="temperature", help=tr("0 = greedy，永遠選機率最高的 token。", "0 = greedy: always the most likely token."))
             st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
@@ -528,8 +529,8 @@ def assistant_message(i: int, run: LiveRun):
     text = data["end"]["final"] if data["end"] else render.draft(data)
     if text:
         st.markdown(text)
-    if data["error"]:
-        st.error(data["error"])
+    if error := render.error_text(data, lang):
+        st.error(error)
     if data["end"]:
         if not text:
             st.caption(tr("（這一輪沒有最終回覆，看右邊的停止原因。）", "(No final reply in this turn; the right side says why it stopped.)"))

@@ -190,7 +190,11 @@ class Run:
                     stop_reason = "format_errors"
                     break
         except Exception as e:  # surface model or tool crashes in the UI instead of a silent hang
-            self.emit("error", message=f"{type(e).__name__}: {e}")
+            # A backend's error says what went wrong in both languages (vllm_backend.ServerError), and the page shows
+            # the one it is in; other errors are Python's own, in English.
+            both = getattr(e, "text", None)
+            texts = {"text": {lang: f"{type(e).__name__}: {t}" for lang, t in both.items()}} if isinstance(both, dict) else {}
+            self.emit("error", message=f"{type(e).__name__}: {e}", **texts)
             stop_reason = "error"
 
         self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)

@@ -319,7 +319,7 @@ def build(events: list[dict]) -> dict:
         elif kind == "run_end":
             data["end"] = ev
         elif kind == "error":
-            data["error"] = ev["message"]
+            data["error"] = ev.get("text") or ev["message"]
         elif data["steps"]:
             step = data["steps"][-1]
             step["t1"] = ev["t"]
@@ -916,6 +916,12 @@ def call_html(name: str, arguments: dict | None) -> str:
     return out + "".join(f'<p class="snippet-label">{esc(k)}</p><pre class="snippet arg">{esc(v)}</pre>' for k, v in blocks.items())
 
 
+def error_text(data: dict, lang: str) -> str | None:
+    """The run's error, in the page's language when the error said it in both (a backend's)."""
+    error = data["error"]
+    return error[lang] if isinstance(error, dict) else error
+
+
 def stop_html(data: dict, lang: str) -> str:
     end = data["end"]
     title, desc = STOP_REASONS[lang].get(end["stop_reason"], (end["stop_reason"], ""))
@@ -925,7 +931,7 @@ def stop_html(data: dict, lang: str) -> str:
         stop_chip, meaning = chip(piece, data["family"], lang), stop_meaning(piece, data["family"], lang)
         desc += pick(lang, f" 最後停在 {stop_chip}（{meaning}）。", f" It stopped at {stop_chip} ({meaning}).")
     gen = sum(len(s["tokens"]) for s in data["steps"])
-    error = f'<p class="check bad">{esc(data["error"])}</p>' if data["error"] else ""
+    error = f'<p class="check bad">{esc(error_text(data, lang))}</p>' if data["error"] else ""
     cls = "stop-card is-error" if end["stop_reason"] == "error" else "stop-card"
     totals = pick(lang, f'共 {len(data["steps"])} 步 · 生成 {gen:,} tokens', f'{n_steps(len(data["steps"]), lang)} · {gen:,} tokens generated')
     return (
@@ -1003,9 +1009,10 @@ def model_html(info: dict, lang: str) -> str:
                         "The server was started with `--logprobs-mode processed_logprobs`: each token comes back with its probability in the distribution "
                         "it was drawn from (after temperature, top-k and top-p), not the model's own, so the model probability and the top 5 do not show. ")
             if server.get("sampling_mask"):
-                back += pick(lang, "它也送回 sampling mask，所以看得到剩下幾個候選；這時它不接受 temperature 0 和 top-k 0，側欄就從 0.05 和 1 開始。",
-                             "It also sends sampling masks, so how many candidates were left shows too; it then refuses temperature 0 and top-k 0, "
-                             "so the sidebar starts at 0.05 and 1. ")
+                back += pick(lang, "它也送回 sampling mask，所以看得到剩下幾個候選。", "It also sends sampling masks, so how many candidates were left shows too. ")
+            if server.get("refuses_greedy"):
+                back += pick(lang, "它啟動時加了 `--return-sampling-mask`，所以不接受 temperature 0 和 top-k 0，側欄就從 0.05 和 1 開始。",
+                             "It was started with `--return-sampling-mask`, so it refuses temperature 0 and top-k 0, and the sidebar starts at 0.05 and 1. ")
         else:
             back = pick(lang, f"伺服器用 `--logprobs-mode {mode}` 啟動，回來的是 logits 而不是機率，所以都不會當成機率顯示。",
                         f"The server was started with `--logprobs-mode {mode}`, so what comes back is logits, not probabilities, and none of them shows as one. ")

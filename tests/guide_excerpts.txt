@@ -888,6 +888,9 @@ vllm_backend.py: def _token_details(
 [[vllm_backend.py|def _probe(]]
     def _probe(self, hi: list[int], kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
 
+[[vllm_backend.py|def _refuses_greedy(]]
+    def _refuses_greedy(self, ids: list[int]) -> bool:
+
 [[vllm_backend.py|def _greedy(]]
     def _greedy(self, details: dict, token_id: int, s: Sampling) -> dict:
 
@@ -1057,7 +1060,11 @@ agent.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
                 stop_reason = "format_errors"
                 break
     except Exception as e:  # surface model or tool crashes in the UI instead of a silent hang
-        self.emit("error", message=f"{type(e).__name__}: {e}")
+        # A backend's error says what went wrong in both languages (vllm_backend.ServerError), and the page shows
+        # the one it is in; other errors are Python's own, in English.
+        both = getattr(e, "text", None)
+        texts = {"text": {lang: f"{type(e).__name__}: {t}" for lang, t in both.items()}} if isinstance(both, dict) else {}
+        self.emit("error", message=f"{type(e).__name__}: {e}", **texts)
         stop_reason = "error"
 
     self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)
@@ -1319,7 +1326,7 @@ render.py: def build(events: list[dict])
             elif kind == "run_end":
                 data["end"] = ev
             elif kind == "error":
-                data["error"] = ev["message"]
+                data["error"] = ev.get("text") or ev["message"]
             elif data["steps"]:
                 step = data["steps"][-1]
                 step["t1"] = ev["t"]
@@ -1427,7 +1434,7 @@ agent.py: def stop(self): … def decide(self, call_id
     self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1), images=images)
 
 [[agent.py|self.emit("error"]]
-    self.emit("error", message=f"{type(e).__name__}: {e}")
+    self.emit("error", message=f"{type(e).__name__}: {e}", **texts)
 
 [[agent.py|self.emit("run_end"]]
     self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)

@@ -28,9 +28,9 @@ takes; a kind it does not take is a plain file for run_python, and the Model tab
 vLLM runs the model its own way (batches, its own kernels, a KV cache that keeps what one step's prompt shares
 with the last), so greedy decoding need not match transformers' generate() token for token, and prefill is the
 time to the first token, the network included. Speculative decoding is set when the server starts
-(--speculative-config), not in the sidebar. With --per-request-spec-decode-metrics, each step says how many
-guesses were kept; with `detailed`, it says how many in each verify step, from which the page underlines the
-guesses once the step is done (drafted_tokens).
+(--speculative-config), not in the sidebar. With --per-request-spec-decode-metrics summary (which vLLM takes only
+with --speculative-config), each step says how many guesses were kept; with `detailed`, it says how many in each
+verify step, from which the page underlines the guesses once the step is done (drafted_tokens).
 """
 
 import base64
@@ -245,13 +245,16 @@ def drafted_tokens(accepted: list[int], drafted: list[int], n_tokens: int) -> di
 
 def mtp_counts(spec: dict | None, n_tokens: int) -> dict | None:
     """A step's speculative decoding counts as the page shows MTP's (drafted, accepted, forwards), plus which tokens
-    were guesses when the server counted each verify step."""
+    were guesses when the server counted each verify step. vLLM counts a verify step's kept guesses before it cuts the
+    step at a stop token, so when the stop token is one of them, the guesses after it count too; once the guesses are
+    known, only those up to the stop token count as kept, as in LocalLLM."""
     if not spec:
         return None
     counts = {"drafted": spec["num_draft_tokens"], "accepted": spec["num_accepted_draft_tokens"], "forwards": spec["num_spec_steps"]}
     accepted, drafted = spec.get("per_step_accepted"), spec.get("per_step_drafted")
     if accepted is not None and drafted is not None and len(accepted) == len(drafted):
-        counts.update(drafted_tokens(accepted, drafted, n_tokens) or {})
+        if marks := drafted_tokens(accepted, drafted, n_tokens):
+            counts.update(marks, accepted=len(marks["kept_at"]))
     return counts
 
 
@@ -267,8 +270,21 @@ class VLLMBackend:
             raise ServerError(f"{self.url} 的 vLLM 伺服器沒有提供 {model_id}，它提供的是：{served}。",
                               f"The vLLM server at {self.url} does not serve {model_id}; it serves {served}.")
         self.served_as = card["id"]  # what requests name the model, which --served-model-name may have changed
-        files = self.folder = _checkpoint_files(model_id)
+        try:
+            files = self.folder = _checkpoint_files(model_id)
+        except (ValueError, OSError) as e:  # a folder on the server (vllm serve /data/gemma), or no way to the Hub
+            raise ServerError(
+                f"拿不到 {model_id} 的 tokenizer 和 chat template（{e}）。網頁照伺服器啟動時的名字去 Hugging Face 下載它們，"
+                "所以伺服器要用 Hugging Face id 啟動（例如 `vllm serve Qwen/Qwen3.5-0.8B`），或把同一個資料夾放在這台電腦的同一個路徑。",
+                f"Could not get {model_id}'s tokenizer and chat template ({e}). The page downloads them from Hugging Face by the name the "
+                "server was started with, so start it with a Hugging Face id (`vllm serve Qwen/Qwen3.5-0.8B`, say), or put the same folder "
+                "at the same path on this machine.",
+            ) from e
         config = AutoConfig.from_pretrained(files)
+        if not any(config.model_type in f.model_types for f in families.FAMILIES.values()):
+            names = [f.name for f in families.FAMILIES.values()]
+            raise ServerError(f"{model_id} 是 model_type {config.model_type!r} 的模型，這個網頁還不支援；目前支援 {'、'.join(names)}。",
+                              f"{model_id} is a model of model_type {config.model_type!r}, which this page does not support yet; it supports {', '.join(names)}.")
         self.family = families.for_model_type(config.model_type)
         # The same tokenizer and chat template LocalLLM loads, so the prompt is the same string and the same tokens.
         self.processor = AutoProcessor.from_pretrained(files)
@@ -288,6 +304,9 @@ class VLLMBackend:
         hi = self.encode(self.render([{"role": "user", "content": "Hi"}], None, False), []).ids
         self.logprobs_mode = self._logprobs_mode(hi)
         self.generate_api, self.masks, refused = self._probe(hi, readable)
+        # A server started with --return-sampling-mask refuses greedy decoding and an unlimited top-k on every route.
+        # Without --enable-scale-out it shows no mask, so only asking tells.
+        self.refuses_greedy = self.masks or (self.logprobs_mode == "processed_logprobs" and self._refuses_greedy(hi))
         self.modalities = tuple(kind for kind in readable if kind not in refused)
         self.info = {
             "model_id": model_id,
@@ -310,7 +329,7 @@ class VLLMBackend:
             "folder": describe_folder(files, self.family.file_notes),
             "server": {"engine": "vLLM", "version": self._version(), "url": self.url, "served_as": self.served_as,
                        "logprobs_mode": self.logprobs_mode, "generate_api": self.generate_api, "sampling_mask": self.masks,
-                       "refused": refused},
+                       "refuses_greedy": self.refuses_greedy, "refused": refused},
         }
 
     def _version(self) -> str | None:
@@ -333,6 +352,18 @@ class VLLMBackend:
                 "min_p": 0.0, "logprobs": TOP_N, "return_tokens_as_token_ids": True, "stream": False}
         top = (_post(self.client, "/v1/completions", body)["choices"][0].get("logprobs") or {}).get("top_logprobs") or [{}]
         return logprobs_mode(list((top[0] or {}).values()))
+
+    def _refuses_greedy(self, ids: list[int]) -> bool:
+        """Whether the server refuses a greedy one-token request, as vLLM's engine does (with a 400) once it was started
+        with --return-sampling-mask, whichever route the request takes."""
+        body = {"model": self.served_as, "prompt": ids, "max_tokens": 1, "temperature": 0.0, "stream": False}
+        try:
+            _post(self.client, "/v1/completions", body)
+        except ServerError as e:
+            if e.status == 400:
+                return True
+            raise
+        return False
 
     def _probe(self, hi: list[int], kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
         """Ask the server, with one-token requests that start from `hi` (a short prompt's ids), whether it has
@@ -534,7 +565,7 @@ class VLLMBackend:
 
     def _stream(self, body: dict, s: Sampling, end: dict) -> Iterator[tuple[int, dict]]:
         """Each token /v1/completions sends, with what it says about the token. `end` gets the finish reason and, from a
-        server started with --per-request-spec-decode-metrics, the speculative decoding counts."""
+        server started with --per-request-spec-decode-metrics summary or detailed, the speculative decoding counts."""
         for chunk in self._lines("/v1/completions", body):
             for choice in chunk.get("choices") or []:
                 logprobs = choice.get("logprobs") or {}
