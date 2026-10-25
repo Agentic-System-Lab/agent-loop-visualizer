@@ -412,15 +412,15 @@ def attachments_view(attachments: list[media.Attachment]):
         elif a.kind == "video" and media.mime(a.name):
             st.video(a.path, format=media.mime(a.name))
         elif a.kind == "video":  # a video some browsers cannot play: the frames the model reads instead
-            st.image(frame_strip(a.path), caption=tr("瀏覽器不一定播得了這種影片；這是模型讀到的其中幾張畫格",
+            st.image(frame_grid(a.path), width=320, caption=tr("瀏覽器不一定播得了這種影片；這是模型讀到的其中幾張畫格",
                                                      "Browsers may not play this kind of video; here are some of the frames the model reads"))
         st.caption(f"📎 {a.name} · {media.fmt_size(a.size)}")
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
-def frame_strip(path: str):
+def frame_grid(path: str):
     """Made once per video, not on every redraw of a live run."""
-    return media.frame_strip(path)
+    return media.frame_grid(path)
 
 
 def assistant_message(i: int, run: LiveRun):

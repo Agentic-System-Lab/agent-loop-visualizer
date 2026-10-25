@@ -73,7 +73,7 @@ def save(folder: Path, name: str, data: bytes, modalities: tuple[str, ...]) -> A
 
 
 def mime(name: str) -> str | None:
-    """The type the chat plays a clip back as, or None for a video browsers may not play (then: frame_strip)."""
+    """The type the chat plays a clip back as, or None for a video browsers may not play (then: frame_grid)."""
     return MIME.get(Path(name).suffix.lower().lstrip("."))
 
 
@@ -157,10 +157,15 @@ def load_video(path: str) -> tuple[np.ndarray, dict]:
     return np.stack(frames), {"fps": len(frames) / duration, "total_num_frames": len(frames), "duration": duration}
 
 
-def frame_strip(path: str, n: int = 4, height: int = 120) -> np.ndarray:
-    """`n` of the frames load_video keeps for the model, side by side and `height` pixels tall: the chat's preview of a
-    video the browser may not play."""
+def frame_grid(path: str, n: int = 4, columns: int = 2, height: int = 120, gap: int = 6) -> np.ndarray:
+    """`n` of the frames load_video keeps for the model, in a grid `columns` wide with see-through gaps, each frame
+    `height` pixels tall: the chat's preview of a video the browser may not play."""
     frames, _ = load_video(path)
-    picked = [Image.fromarray(frames[i]) for i in np.linspace(0, len(frames) - 1, min(n, len(frames))).round().astype(int)]
-    size = (max(1, round(picked[0].width * height / picked[0].height)), height)
-    return np.concatenate([np.asarray(frame.resize(size)) for frame in picked], axis=1)
+    picked = [Image.fromarray(frames[i]).convert("RGBA") for i in np.linspace(0, len(frames) - 1, min(n, len(frames))).round().astype(int)]
+    w, h = max(1, round(picked[0].width * height / picked[0].height)), height
+    rows = -(-len(picked) // columns)
+    grid = np.zeros((rows * h + (rows - 1) * gap, columns * w + (columns - 1) * gap, 4), dtype=np.uint8)
+    for k, frame in enumerate(picked):
+        y, x = (k // columns) * (h + gap), (k % columns) * (w + gap)
+        grid[y:y + h, x:x + w] = np.asarray(frame.resize((w, h)))
+    return grid

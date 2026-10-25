@@ -167,7 +167,8 @@ def test_the_chat_plays_back_what_browsers_play_and_shows_frames_of_the_rest(tmp
     assert media.mime("a.MP3") == "audio/mpeg" and media.mime("b.m4a") == "audio/mp4" and media.mime("c.mov") == "video/quicktime"
     assert media.mime("d.mkv") is None  # Safari cannot play Matroska
     assert all(media.mime(f"x.{ext}") for ext, kind in media.KINDS.items() if kind == "audio")
-    strip = media.frame_strip(str(samples.make(tmp_path, "mkv")))
-    assert strip.shape == (120, 4 * 160, 3)  # four 320×240 frames at 120 pixels tall, side by side
+    grid = media.frame_grid(str(samples.make(tmp_path, "mkv")))
+    assert grid.shape == (2 * 120 + 6, 2 * 160 + 6, 4)  # four 320×240 frames at 120 pixels tall, two by two
+    assert grid[120:126, :, 3].max() == 0 and grid[:, 160:166, 3].max() == 0  # see-through gaps between them
     red = lambda pixel: pixel[0] > 150 and pixel[1] < 100  # the ball's center, at half size: (15, 84) in the first frame
-    assert red(strip[84, 15]) and not red(strip[84, 3 * 160 + 15])  # by the last frame it has rolled away from the left
+    assert red(grid[84, 15]) and not red(grid[126 + 84, 166 + 15])  # by the last frame it has rolled away from the left
