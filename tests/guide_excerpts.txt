@@ -169,7 +169,7 @@ harness/families/qwen3_5.py: QWEN3_5 = Family(
 == files ==
 
 [[harness/backends/simple_backend.py|MODELS_DIR = Path(]]
-    MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser()
+    MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser().absolute()
 
 [[harness/families/__init__.py|REVISIONS = {]]
     REVISIONS = {

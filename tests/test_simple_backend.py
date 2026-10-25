@@ -631,6 +631,13 @@ def test_only_agent_loop_models_moves_the_models_folder_not_a_machine_wide_hf_hu
     assert runpy.run_path(simple_backend.__file__)["MODELS_DIR"] == tmp_path / "elsewhere"
 
 
+def test_a_relative_agent_loop_models_is_the_folder_under_where_the_app_started(monkeypatch, tmp_path):
+    # Docker Compose would take a relative path from docker-compose/, so the folder is named in full from the start.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_LOOP_MODELS", "elsewhere")
+    assert runpy.run_path(simple_backend.__file__)["MODELS_DIR"] == tmp_path / "elsewhere"
+
+
 def test_a_model_folder_lists_its_files_their_sizes_and_the_fields_its_notes_name(monkeypatch, tmp_path):
     repo = tmp_path / "models--fake--gemma-test"
     blob = repo / "blobs" / "3a5f"

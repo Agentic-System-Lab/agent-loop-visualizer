@@ -41,8 +41,10 @@ TOP_N = 5
 ROOT = Path(__file__).resolve().parents[2]  # the project's folder
 # Models download into the project's models/, which git ignores, rather than into the shared
 # ~/.cache/huggingface/hub, so they are easy to find and leave with the project. AGENT_LOOP_MODELS puts them
-# elsewhere; HF_HUB_CACHE does not, because it is often set once for every project on a machine.
-MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser()
+# elsewhere; HF_HUB_CACHE does not, because it is often set once for every project on a machine. A relative
+# AGENT_LOOP_MODELS is named in full from where the app started, because vLLM's container mounts the folder too, and
+# Docker Compose would take it from docker-compose/ (or, without a slash, as the name of a Docker volume).
+MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser().absolute()
 
 
 def _download(model_id: str, only: str | None = None) -> str:

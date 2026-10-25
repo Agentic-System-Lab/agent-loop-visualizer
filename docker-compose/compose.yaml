@@ -34,7 +34,7 @@ services:
     ports:
       - 127.0.0.1:${VLLM_PORT:-8000}:8000  # this machine only, like the page itself
     volumes:
-      - ${AGENT_LOOP_MODELS:-../models}:/models:ro  # the project's models/
+      - ${AGENT_LOOP_MODELS:-../models}:/models:ro  # the project's models/; by hand, a full path, since Compose takes a relative one from here
       # What vLLM compiles for a model, the first start's longest wait, kept for the next container that loads it.
       - compile-cache:/root/.cache/vllm
     environment:

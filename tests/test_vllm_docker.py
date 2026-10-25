@@ -13,6 +13,7 @@ Docker has one), asks it a question through VLLMBackend and stops it:
 import json
 import os
 import re
+import runpy
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,7 +22,7 @@ import pytest
 import yaml
 
 from harness import families
-from harness.backends import vllm_docker
+from harness.backends import simple_backend, vllm_docker
 from harness.backends.backend import Sampling
 from harness.backends.simple_backend import MODELS_DIR
 from harness.tools import DOCKER_INSTALL
@@ -342,6 +343,20 @@ def test_docker_compose_reads_the_files_as_the_page_runs_them(files):
     assert found.returncode == 0, found.stderr
     vllm = json.loads(found.stdout)["services"]["vllm"]
     assert vllm["ports"][0]["host_ip"] == "127.0.0.1" and ("build" in vllm) == (files == ["compose.yaml"])
+
+
+@compose
+def test_a_relative_agent_loop_models_mounts_the_folder_the_weights_went_to(monkeypatch, tmp_path):
+    # Compose takes a relative path in a volume from the compose file's folder, docker-compose/, not from where the
+    # page started, and a name without a slash as a Docker volume; the server has to read the folder the page
+    # downloaded the weights into.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_LOOP_MODELS", "elsewhere")
+    monkeypatch.setattr(vllm_docker, "MODELS_DIR", runpy.run_path(simple_backend.__file__)["MODELS_DIR"])
+    found = subprocess.run(["docker", *vllm_docker._compose("cpu", "config", "--format", "json")], capture_output=True, text=True, env=vllm_docker._env(QWEN))
+    assert found.returncode == 0, found.stderr
+    (models,) = [v for v in json.loads(found.stdout)["services"]["vllm"]["volumes"] if v["target"] == "/models"]
+    assert models["source"] == str(tmp_path / "elsewhere") and models["read_only"]
 
 
 # ---------- the real server ----------
