@@ -121,9 +121,18 @@ def _check(response: httpx.Response):
     except ValueError:
         body = {}
     error = body.get("error") if isinstance(body.get("error"), dict) else body  # {"error": {"message": …}}, or older {"message": …}
-    message = (error.get("message") or error.get("detail") if isinstance(error, dict) else None) or response.text or response.reason_phrase
+    message = (_reason(error) if isinstance(error, dict) else None) or response.text or response.reason_phrase
     code = response.status_code
     raise ServerError(f"vLLM 伺服器拒絕了這個請求（HTTP {code}）：{message}", f"The vLLM server refused the request (HTTP {code}): {message}", code)
+
+
+def _reason(error: dict) -> str | None:
+    """What a vLLM error says went wrong: its message, or, for one without (vLLM 0.32 wraps an error the engine raises
+    in an EngineGenerateError, which has none), its type and code."""
+    if message := error.get("message") or error.get("detail"):
+        return str(message)
+    kind, code = error.get("type"), error.get("code")
+    return f"{kind} ({code})" if kind and code else (kind or (str(code) if code else None))
 
 
 def _unreachable(client: httpx.Client, error: Exception) -> ServerError:
@@ -568,7 +577,7 @@ class VLLMBackend:
                         return
                     chunk = json.loads(data)
                     if "error" in chunk:
-                        message = chunk["error"].get("message") if isinstance(chunk["error"], dict) else chunk["error"]
+                        message = _reason(chunk["error"]) if isinstance(chunk["error"], dict) else chunk["error"]
                         raise ServerError(f"vLLM 伺服器在生成時出錯：{message}", f"The vLLM server failed while generating: {message}")
                     yield chunk
         except httpx.HTTPError as e:

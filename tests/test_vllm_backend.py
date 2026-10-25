@@ -592,6 +592,15 @@ def test_the_servers_own_message_is_kept_when_it_refuses_a_request(hub):
     assert "HTTP 400" in error.value.text["zh"]
 
 
+def test_an_error_without_a_message_is_said_by_its_type_and_code(hub):
+    server = Server([ANSWER])
+    llm = connect(server)
+    server.fail = (500, {"error": {"message": "", "type": "InternalServerError", "param": None, "code": 500}})  # vLLM's EngineGenerateError
+    with pytest.raises(ServerError) as error:
+        generate(llm)
+    assert error.value.text["en"] == "The vLLM server refused the request (HTTP 500): InternalServerError (500)"
+
+
 def test_an_error_in_the_middle_of_the_stream_is_raised(hub):
     server = Server([ANSWER])
     llm = connect(server)
@@ -838,7 +847,7 @@ def test_a_server_with_masks_refuses_greedy_and_no_top_k_as_vllm_does(hub, scale
     assert llm.info["server"]["refuses_greedy"] and llm.info["server"]["sampling_mask"] == scale_out
     # The step's stream has begun by the time the engine refuses, so the refusal is an error chunk without a message.
     for sampling in (Sampling(temperature=0), Sampling(top_k=0)):
-        with pytest.raises(ServerError, match="failed while generating: $"):
+        with pytest.raises(ServerError, match=r"failed while generating: InternalServerError \(500\)$"):
             generate(llm, sampling=sampling)
     if not scale_out:  # asked at load, and refused with a 500
         assert server.probes[-1]["temperature"] == 0.0
