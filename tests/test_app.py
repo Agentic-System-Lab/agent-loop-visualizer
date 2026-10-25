@@ -6,9 +6,11 @@ is a Chinese one unless a test says otherwise, so the page is in Chinese.
 """
 
 import base64
+import gc
 import io
 import re
 import time
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,7 +21,7 @@ from streamlit.testing.v1 import AppTest
 from app import page, render
 from fakes import MEDIA_TOKENS, FakeLLM, tool_call
 from harness import agent, tools
-from harness.backends import vllm_backend
+from harness.backends import vllm_backend, vllm_docker
 from harness.backends.backend import Sampling
 from harness.families import GEMMA4, QWEN3_5
 
@@ -537,6 +539,120 @@ def test_a_vllm_server_that_cannot_be_reached_is_said_in_the_page_language(vllm,
     st.cache_data.clear()  # the menu is not cached while the server is down; this only makes sure of it
     at.run()
     assert not at.exception and not at.error and at.chat_input
+
+
+# ---------- vLLM in Docker, picked in the sidebar ----------
+
+@pytest.fixture
+def docker_vllm(monkeypatch, models, outputs):
+    """The page without VLLM_URL, with vllm_docker faked: start() records the models it was asked for and returns a
+    server on the CPU (or raises `fail`, a DockerError), serving() knows what was started, stop() counts. A fake model
+    stands in for the VLLMBackend the page makes for the server; `made` holds each, with the URL it was given."""
+    state = {"started": [], "stopped": 0, "fail": None, "made": [], "up": None}
+
+    class DockerLLM(FakeLLM):
+        def __init__(self, model_id, url):
+            super().__init__(outputs, model_id)
+            self.url, self.drafter_id = url, None
+            unknown = ("device", "dtype", "parameters", "parameter_parts", "load_seconds")
+            self.info = {k: v for k, v in self.info.items() if k not in unknown} | {"drafter_id": None, "server": {
+                "engine": "vLLM", "version": "0.32.0", "url": url, "served_as": model_id, "logprobs_mode": "raw_logprobs",
+                "generate_api": True, "sampling_mask": False, "refused": {}}}
+            state["made"].append(self)
+
+    def start(model_id, say):
+        state["started"].append(model_id)
+        say("download", "")
+        say("up", "Container agent-loop-vllm-vllm-1  Started")
+        say("load", "(APIServer pid=1) INFO Application startup complete.")
+        if state["fail"]:
+            raise state["fail"]
+        state["up"] = {"model": model_id, "url": "http://127.0.0.1:8000", "device": "cpu"}
+        return dict(state["up"])
+
+    def serving(model_id):
+        return dict(state["up"]) if state["up"] and state["up"]["model"] == model_id else None
+
+    def stop():
+        state["stopped"] += 1
+        state["up"] = None
+
+    monkeypatch.setattr(page, "VLLM_URL", None)
+    monkeypatch.setattr(vllm_backend, "VLLMBackend", DockerLLM)
+    monkeypatch.setattr(vllm_docker, "start", start)
+    monkeypatch.setattr(vllm_docker, "serving", serving)
+    monkeypatch.setattr(vllm_docker, "stop", stop)
+    return state
+
+
+def engine(at):
+    return next(b for b in at.button_group if b.key == "engine")
+
+
+def pick_engine(at, value):
+    engine(at).set_value(value).run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_without_vllm_url_transformers_runs_the_model_and_docker_is_left_alone(docker_vllm, at, models):
+    assert engine(at).value == "local" and engine(at).options == ["transformers", "vLLM（Docker）"]
+    assert [m.model_id for m in models] == ["google/gemma-4-E2B-it"] and docker_vllm["started"] == [] and docker_vllm["stopped"] == 0
+
+
+def test_picking_vllm_starts_it_in_docker_after_letting_the_local_model_go(docker_vllm, at, models, outputs):
+    local = weakref.ref(models.pop())
+    pick_engine(at, "vllm")
+    gc.collect()
+    assert local() is None  # nothing keeps the weights here once vLLM holds the model
+    assert docker_vllm["started"] == ["google/gemma-4-E2B-it"] and [m.url for m in docker_vllm["made"]] == ["http://127.0.0.1:8000"]
+    assert models == [] and "`google/gemma-4-E2B-it` · Gemma 4 · vLLM 0.32.0 · http://127.0.0.1:8000 · Docker（CPU）" in captions(at)
+    assert mtp_toggle(at).disabled and mtp_toggle(at).value is False
+    outputs.append(ANSWER)
+    ask(at)
+    assert "答案是 42。" in drawn_text(at) and docker_vllm["made"][0].prompts
+    at.run()
+    assert docker_vllm["started"] == ["google/gemma-4-E2B-it"]  # a rerun finds the server up and starts nothing
+
+
+def test_picking_transformers_again_stops_vllms_container_and_loads_the_model_here(docker_vllm, at, models):
+    pick_engine(at, "vllm")
+    pick_engine(at, "local")
+    assert docker_vllm["stopped"] == 1 and [m.model_id for m in models] == ["google/gemma-4-E2B-it"] * 2
+    assert not any("Docker" in c for c in captions(at))
+
+
+def test_another_model_on_vllm_starts_the_server_with_it(docker_vllm, at):
+    pick_engine(at, "vllm")
+    next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    assert not at.exception and docker_vllm["started"] == ["google/gemma-4-E2B-it", "Qwen/Qwen3.5-0.8B"]
+    assert docker_vllm["made"][-1].model_id == "Qwen/Qwen3.5-0.8B"
+
+
+@pytest.mark.parametrize(("locale", "message", "again"), [("zh-TW", "vLLM 載入時用完了記憶體。", "再試一次"),
+                                                          ("en-US", "vLLM ran out of memory while loading.", "Try again")])
+def test_a_vllm_that_did_not_start_is_said_in_the_page_language_and_tried_again_only_when_asked(docker_vllm, browser, new_tab, locale, message, again):
+    browser["locale"] = locale
+    docker_vllm["fail"] = vllm_docker.DockerError("vLLM 載入時用完了記憶體。", "vLLM ran out of memory while loading.")
+    at = pick_engine(new_tab(), "vllm")
+    assert [e.value for e in at.error] == [message] and not at.chat_input and buttons(at, again)
+    at.run()
+    assert docker_vllm["started"] == ["google/gemma-4-E2B-it"]  # not again on every rerun
+    docker_vllm["fail"] = None
+    click(at, again)
+    assert docker_vllm["started"] == ["google/gemma-4-E2B-it"] * 2 and not at.error and at.chat_input
+
+
+def test_after_vllm_failed_transformers_can_be_picked_again(docker_vllm, at, models):
+    docker_vllm["fail"] = vllm_docker.DockerError("Docker 沒有回應，確認它已經啟動。", "Docker does not respond; make sure it is running.")
+    pick_engine(at, "vllm")
+    assert at.error and engine(at).value == "vllm"  # the switch is still there
+    pick_engine(at, "local")
+    assert not at.error and at.chat_input and models[-1].model_id == "google/gemma-4-E2B-it"
+
+
+def test_with_vllm_url_the_server_is_given_and_there_is_nothing_to_switch(vllm, at):
+    assert not any(b.key == "engine" for b in at.button_group)
 
 
 # ---------- the guide ----------

@@ -385,11 +385,18 @@ SECTIONS = [
                    "打開 MTP 時再加上一個草稿模型（{{mtp}}）。",
              "en": "`harness/backends/simple_backend.py`: local inference, with a hand-written decoding loop, `generate()` ([[harness/backends/simple_backend.py|def generate(self, prompt]]), "
                    "and sampling, `_sample()`; with MTP on, a drafter joins in ({{mtp}})."},
-            {"zh": "`harness/backends/vllm_backend.py`：設了 `VLLM_URL` 時用的 `Backend`（[[harness/backends/vllm_backend.py|class VLLMBackend:]]）。prompt 照樣在這裡 render、切成 token，"
+            {"zh": "`harness/backends/vllm_backend.py`：模型在 vLLM 伺服器上跑時用的 `Backend`（[[harness/backends/vllm_backend.py|class VLLMBackend:]]），"
+                   "伺服器是 `VLLM_URL` 指的那台，或是畫面在 Docker 裡啟動的那台。prompt 照樣在這裡 render、切成 token，"
                    "token id 送到 vLLM 伺服器，每個 token 帶著它的 log 機率和前 5 名候選回來；取樣時剃掉了哪些候選，留在伺服器上。",
-             "en": "`harness/backends/vllm_backend.py`: the `Backend` used when `VLLM_URL` is set ([[harness/backends/vllm_backend.py|class VLLMBackend:]]). The prompt is still rendered "
+             "en": "`harness/backends/vllm_backend.py`: the `Backend` for a model on a vLLM server ([[harness/backends/vllm_backend.py|class VLLMBackend:]]), "
+                   "the one at `VLLM_URL` or the one the page starts in Docker. The prompt is still rendered "
                    "and tokenized here, the token ids go to a vLLM server, and each token comes back with its log probability and the top 5 candidates; "
                    "which candidates the sampling cut stays on the server."},
+            {"zh": "`harness/backends/vllm_docker.py`：沒設 `VLLM_URL`、側欄又選了 vLLM 時，照 `docker-compose/compose.yaml` 用 Docker Compose 啟動 vLLM 伺服器，"
+                   "等到它能回應（[[harness/backends/vllm_docker.py|def start(model_id]]）；換回 transformers 時停掉它（{{backends}}）。",
+             "en": "`harness/backends/vllm_docker.py`: without `VLLM_URL`, when the sidebar picks vLLM, it starts a vLLM server with Docker Compose from "
+                   "`docker-compose/compose.yaml` and waits until it answers ([[harness/backends/vllm_docker.py|def start(model_id]]); picking transformers "
+                   "again stops it ({{backends}})."},
             {"zh": "`harness/families/`：跟著模型走的東西。`gemma4.py`、`qwen3_5.py` 各自負責讀懂自己模型的輸出，並說明它的特殊 token（{{families}}）。",
              "en": "`harness/families/`: everything that goes with the model. `gemma4.py` and `qwen3_5.py` each read their own model's output "
                    "and explain its special tokens ({{families}})."},
@@ -415,8 +422,9 @@ SECTIONS = [
             {"zh": "`app/guide.py`：這一頁，從它引用的程式產生出來。",
              "en": "`app/guide.py`: this page, built from the code it quotes."},
         ),
-        {"zh": "兩塊之外，`models/` 放下載的模型，每個模型一個資料夾，git 不追蹤（{{files}}）。",
-         "en": "Beside the two, `models/` holds the downloaded models, one folder each, which git ignores ({{files}})."},
+        {"zh": "兩塊之外，`models/` 放下載的模型，每個模型一個資料夾，git 不追蹤（{{files}}）；`docker-compose/` 放畫面在 Docker 裡啟動 vLLM 用的設定（{{backends}}）。",
+         "en": "Beside the two, `models/` holds the downloaded models, one folder each, which git ignores ({{files}}), and `docker-compose/` what the page "
+               "starts vLLM in Docker from ({{backends}})."},
     )),
     Section("families", "model",
             {"zh": "模型家族：換模型只換這一層", "en": "Model families: switching models changes only this layer"},
@@ -638,21 +646,27 @@ SECTIONS = [
             {"zh": "送出問題：載入模型、開一條 thread 跑 agent", "en": "Sending a question: load the model, start a thread for the agent"},
             {"zh": "輸入框和範例按鈕都走 `start_run()`：拿鎖、凍結設定、開 thread。",
              "en": "The input box and the example buttons both go through `start_run()`: take the lock, freeze the settings, start a thread."}, (
-        {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`（設了 `VLLM_URL` 時是 `VLLMBackend`）；畫面的其他地方只把它當成一個 `Backend`（{{backends}}）。"
-               "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，"
-               "記憶體裡同時只留一個模型，換模型時舊的就會被放掉。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
+        {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`（模型在 vLLM 伺服器上跑時是 `VLLMBackend`）；畫面的其他地方只把它當成一個 `Backend`（{{backends}}）。"
+               "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，記憶體裡同時只留一個模型。換模型或換「用什麼跑模型」時，"
+               "`release_model()` 先清掉快取、把記憶體還給系統，下一個模型才載入，兩個不會同時佔著記憶體。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
                "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[harness/backends/simple_backend.py|def _sampling_defaults(self)]]）。"
-               "側欄的模型選單換了之後會開新對話（[[app/page.py|key=\"model_id\", on_change=new_chat]]），MTP 也回到關閉；"
+               "側欄的模型選單換了之後會開新對話（[[app/page.py|key=\"model_id\", on_change=switch_model]]），MTP 也回到關閉；"
                "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[harness/backends/simple_backend.py|def load_drafter(self):]]）。",
-         "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar (a `VLLMBackend` when `VLLM_URL` is set); the rest of the page "
-               "takes it for just a `Backend` ({{backends}}). `load_llm()` is cached with "
-               "`st.cache_resource(max_entries=1)`, so only one model stays in memory, and switching models lets the old one go. The first time "
+         "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar (a `VLLMBackend` when the model runs on a vLLM server); "
+               "the rest of the page takes it for just a `Backend` ({{backends}}). `load_llm()` is cached with "
+               "`st.cache_resource(max_entries=1)`, so only one model stays in memory. Switching models, or what runs them, first has `release_model()` clear "
+               "that cache and hand the memory back, and only then does the next model load, so the two never hold memory at once. The first time "
                "a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "
                "generation_config.json, so its recommendations come from the family ([[harness/backends/simple_backend.py|def _sampling_defaults(self)]]). "
-               "Switching models in the sidebar's menu starts a new conversation ([[app/page.py|key=\"model_id\", on_change=new_chat]]) "
+               "Switching models in the sidebar's menu starts a new conversation ([[app/page.py|key=\"model_id\", on_change=switch_model]]) "
                "and turns MTP back off; the first time MTP speculative decoding is switched on, `current_llm()` also loads the drafter "
                "([[harness/backends/simple_backend.py|def load_drafter(self):]])."},
-        Code("app/page.py", "@st.cache_resource(max_entries=1", end="def current_llm() -> Backend:"),
+        Code("app/page.py", "@st.cache_resource(max_entries=1", end="def release_model():"),
+        {"zh": "`current_llm()` 在載入之前還做兩件事：剛換回 transformers 時先停掉 vLLM 的容器；側欄選了 vLLM（又沒設 `VLLM_URL`）時，"
+               "先確定 Docker 裡的 vLLM 伺服器已經啟動，拿到它的網址（{{backends}}）。",
+         "en": "Before it loads anything, `current_llm()` does two more things: right after transformers is picked again, it stops vLLM's container; "
+               "when the sidebar picked vLLM (and `VLLM_URL` is not set), it first makes sure the vLLM server in Docker is up, and takes its URL ({{backends}})."},
+        Code("app/page.py", "def current_llm() -> Backend:"),
         {"zh": "輸入框（[[app/page.py|sent = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。輸入框可以附上檔案，模型讀得懂聲音時還能錄音；"
                "有些範例也會附上 `app/assets/examples/` 裡的範例檔，輸入框上方也列出這些檔案，選了的會附在你自己打的問題裡。`start_run()` 先用不等待的方式拿一把全域的鎖"
                "（[[app/page.py|if not slot.lock.acquire(blocking=False):]]）："
@@ -993,12 +1007,13 @@ SECTIONS = [
              caption={"zh": "`Protocol` 只是一個型別：`LocalLLM` 不必繼承它，有這些方法和屬性就算數。測試檢查 `LocalLLM`、`VLLMBackend` 和測試用的 `FakeLLM` 都是 `Backend`。",
                       "en": "A `Protocol` is only a type: `LocalLLM` need not inherit from it, and having these methods and attributes is enough. "
                             "The tests check that `LocalLLM`, `VLLMBackend` and the tests' `FakeLLM` are each a `Backend`."}),
-        {"zh": "畫面只在一個地方決定用哪一個：`load_llm()` 看有沒有設 `VLLM_URL`"
-               "（[[app/page.py|llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)]]）。"
-               "之後 `current_llm()`、側欄和 `Run`（{{prepare}}）拿到的都只是一個 `Backend`；它放在 `st.cache_resource` 裡，換模型才換掉（{{submit}}）。",
-         "en": "The page decides which one in a single place: `load_llm()` looks for `VLLM_URL` "
-               "([[app/page.py|llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)]]). "
-               "From then on `current_llm()`, the sidebar and `Run` ({{prepare}}) get just a `Backend`; it stays in `st.cache_resource` until the model changes ({{submit}})."},
+        {"zh": "畫面只在一個地方決定用哪一個：`load_llm()` 拿到伺服器的網址（`VLLM_URL`，或畫面在 Docker 裡啟動的伺服器）就用 vLLM，沒有就在這台電腦上跑"
+               "（[[app/page.py|llm = vllm_backend.VLLMBackend(model_id, url) if url else LocalLLM(model_id)]]）。"
+               "之後 `current_llm()`、側欄和 `Run`（{{prepare}}）拿到的都只是一個 `Backend`；它放在 `st.cache_resource` 裡，換模型或換「用什麼跑模型」才換掉（{{submit}}）。",
+         "en": "The page decides which one in a single place: given a server's URL (`VLLM_URL`, or that of the server the page started in Docker), `load_llm()` "
+               "uses vLLM, and without one runs the model here ([[app/page.py|llm = vllm_backend.VLLMBackend(model_id, url) if url else LocalLLM(model_id)]]). "
+               "From then on `current_llm()`, the sidebar and `Run` ({{prepare}}) get just a `Backend`; it stays in `st.cache_resource` until the model, or what "
+               "runs it, changes ({{submit}})."},
         {"zh": "兩種 backend 對模型知道的不一樣多，差別全在 `token` 事件裡。`TOKEN_FIELDS` 每個 backend 都要送：位置、token 的 id 和 piece、它加上的文字、"
                "是不是特殊 token、正在寫思考、工具呼叫還是回覆。`TOKEN_DETAILS` 則是知道才送：機率、排名、取樣時的機率、剩下的候選、前 5 名，以及 MTP 草稿猜了什麼。",
          "en": "The two backends know different amounts about the model, and the difference is all in the `token` event. Every backend sends `TOKEN_FIELDS`: "
@@ -1028,6 +1043,20 @@ SECTIONS = [
              "en": "**`FakeLLM` (`tests/fakes.py`)**: replays scripted output token by token and loads no weights; most tests run the whole harness and page "
                    "with it ([[tests/fakes.py|class FakeLLM:]])."},
         ),
+        {"zh": "vLLM 伺服器可以是 `VLLM_URL` 指的任何一台，也可以由畫面自己啟動：沒設 `VLLM_URL` 時，側欄「用什麼跑模型」選 vLLM，"
+               "`harness/backends/vllm_docker.py` 就照 `docker-compose/compose.yaml` 用 Docker Compose 啟動它（[[harness/backends/vllm_docker.py|def start(model_id]]）。"
+               "權重先下載到這台電腦的 `models/`，容器唯讀掛上、自己不下載，所以伺服器載入的正是 `REVISIONS` 固定的那個 commit。"
+               "Docker 有 NVIDIA 的 runtime 時，再疊上 `compose.gpu.yaml` 改在 GPU 上跑，否則在 CPU 上跑（[[harness/backends/vllm_docker.py|def device()]]），"
+               "Mac 也一樣，在 Docker 的 Linux 虛擬機裡；CPU 版的 image 由 `docker-compose/vllm-cpu/` 建，補上 vLLM 0.32.0 在 CPU 上缺的兩個修正。換到 vLLM 之前，畫面先放掉這台電腦上的模型（[[app/page.py|def release_model():]]）；"
+               "換回 transformers 時，停掉容器（[[harness/backends/vllm_docker.py|def stop():]]）。",
+         "en": "A vLLM server can be any one at `VLLM_URL`, or one the page starts itself: without `VLLM_URL`, when the sidebar's What runs the model picks vLLM, "
+               "`harness/backends/vllm_docker.py` starts it with Docker Compose from `docker-compose/compose.yaml` ([[harness/backends/vllm_docker.py|def start(model_id]]). "
+               "The weights are downloaded into this machine's `models/` first, and the container mounts that read-only and downloads nothing itself, so the "
+               "server loads exactly the commit `REVISIONS` pins. Where Docker has NVIDIA's runtime, `compose.gpu.yaml` goes on top and the server runs on the GPU; "
+               "elsewhere it runs on the CPU ([[harness/backends/vllm_docker.py|def device()]]), a Mac's included, in Docker's Linux VM, from an image "
+               "`docker-compose/vllm-cpu/` builds with two fixes vLLM 0.32.0 lacks on a CPU. Before vLLM takes over, the page "
+               "lets go of the model on this machine ([[app/page.py|def release_model():]]); picking transformers again stops the container "
+               "([[harness/backends/vllm_docker.py|def stop():]])."},
         {"zh": "`VLLMBackend` 的 prompt 一樣精確。它把 checkpoint 除了權重以外的檔案下載到 `models/`，用的是 `REVISIONS` 固定的同一個 commit"
                "（[[harness/backends/vllm_backend.py|def _checkpoint_files(]]），所以 `render()` 和 `encode()` 用的 tokenizer 和 chat template 跟 `LocalLLM` 一模一樣。"
                "送到伺服器的是 token id 而不是文字，伺服器讀到的就是脈絡分頁上那一串（{{context}}）。側欄的每個設定都照送，其他取樣設定都設成不起作用，"

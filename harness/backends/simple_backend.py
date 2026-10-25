@@ -112,6 +112,15 @@ def pick_device() -> str:
     return "cpu"
 
 
+def empty_cache():
+    """Hand back to the system the memory PyTorch keeps for reuse after a model was let go (app.page.release_model):
+    a GPU's, or on a Mac the memory MPS shares with everything else."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
 class LocalLLM:
     def __init__(self, model_id: str):
         self.model_id = model_id

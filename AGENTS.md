@@ -1,7 +1,8 @@
 # AGENTS.md
 
 Agent Loop 可視化 is a Streamlit app that runs a small model on the user's machine (Gemma 4 E2B or
-Qwen3.5 0.8B, through Hugging Face `transformers`) and draws every step of its agent loop: context,
+Qwen3.5 0.8B, through Hugging Face `transformers`, or on vLLM: in Docker, started from the sidebar, or a
+server at `VLLM_URL`) and draws every step of its agent loop: context,
 model, harness, environment, stop, down to each token's probability. A question can carry images, sound
 and video for the model, and, when the sidebar lets the model write code, data files for a `run_python`
 tool that runs in a Docker sandbox. It is a teaching project for the
@@ -19,6 +20,8 @@ docker build -t agent-loop-sandbox harness/sandbox         # optional: run_pytho
 uv run streamlit run streamlit_app.py                      # http://localhost:8501; MODEL_ID=Qwen/Qwen3.5-0.8B starts on Qwen
 VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py   # the model on a vLLM server: vllm serve <model> --revision <its REVISIONS commit> [--enable-scale-out [--return-sampling-mask --logprobs-mode processed_logprobs]]
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # vllm_backend.py against that real server
+docker compose -f docker-compose/compose.yaml up -d        # the vLLM server the sidebar's vLLM (Docker) starts, by hand (+ -f docker-compose/compose.gpu.yaml on NVIDIA GPUs)
+RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real   # starts that server with Qwen3.5 and asks it through VLLMBackend, ~2 min
 uv run python -m app.guide _site                           # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
 ```
@@ -44,11 +47,13 @@ harness/                 the agent, the model and what runs it; no Streamlit
     backend.py           Backend: what agent.py and the page ask of whatever runs the model (LocalLLM, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
     simple_backend.py    LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
     vllm_backend.py      VLLMBackend (VLLM_URL): the tokenizer and chat template here, the token ids to a vLLM server (/v1/completions, or /inference/v1/generate with --enable-scale-out: media, sampling masks), what it says about each token back
+    vllm_docker.py       the sidebar's vLLM (Docker): downloads the model, `docker compose up -d` with it, waits until it answers, `docker compose down`; DockerError in both languages
   families/              everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
   tools.py               tools: the schema the model reads plus the Python function the harness runs; run_python's docker run
   media.py               attachments: saved per conversation, written into the user message, decoded for the processor (PyAV)
   i18n.py                the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
   sandbox/               run_python's sandbox image, agent-loop-sandbox: the Dockerfile, and the matplotlib backend (agent_loop_figures.py) and matplotlibrc that send charts back on stdout
+docker-compose/          the vLLM server vllm_docker.py starts: compose.yaml (CPU, any machine), compose.gpu.yaml (on top: NVIDIA GPUs), vllm-cpu/ (vLLM 0.32.0's CPU image + patch_vllm.py's two fixes)
 tests/                   pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
 models/                  downloaded models (simple_backend.MODELS_DIR), which git ignores; AGENT_LOOP_MODELS moves them, HF_HUB_CACHE does not
 ```
@@ -120,19 +125,25 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   pick in localStorage for the root index.html. A widget whose options are formatted per language must
   be a segmented control or similar, never a selectbox: a selectbox sends its label back, and a label
   that changes with the language becomes its value (this is why `MODELS` labels are the same in both).
-- **One model in memory, one run at a time.** `current_llm()` is `st.cache_resource(max_entries=1)` and
-  `generation_slot()` is a lock shared by every tab.
+- **One model in memory, one run at a time.** `load_llm()` is `st.cache_resource(max_entries=1)`, and switching models
+  or what runs them calls `release_model()` first, so the next model never loads beside the last; picking transformers
+  again stops vLLM's container. `generation_slot()` is a lock shared by every tab.
 - The app listens on localhost only (`.streamlit/config.toml`) because it runs a model on the user's
-  machine. Keep it that way. With `VLLM_URL` the prompts go to that server; the page itself stays local.
+  machine. Keep it that way. With `VLLM_URL` the prompts go to that server; the page itself stays local. The vLLM
+  server in Docker publishes its port on 127.0.0.1 only (docker-compose/compose.yaml) and reads models/ read-only and
+  offline, so it loads the commit in `REVISIONS`.
 - **What a model reads comes from the checkpoint and the backend.** `LocalLLM.modalities` is worked out from the config
   and the processor, not the family; `VLLMBackend.modalities` is that minus what the server refused when it was probed at
   load (all of it without `--enable-scale-out`), and the page says which it refused and why. A file of a kind the model does not read is a plain file for
   `run_python`. `encode()` expands the media into their tokens, and the `context` event carries that
   expanded text, because it is what the model reads.
 - **Docker only when asked for.** `run_python` is offered only when Let the model write code is on and
-  `tools.sandbox_problem()` finds Docker and the image. Before the switch is on, the page never runs
-  `docker`, so the app works without it. Keep the sandbox's flags (no network, read-only, limits,
-  unprivileged) in `tools.sandbox_command()`.
+  `tools.sandbox_problem()` finds Docker and the image, and vLLM in Docker starts only once What runs the model is
+  vLLM. Until one of those is on, the page never runs `docker`, so the app works without it. Keep the sandbox's flags
+  (no network, read-only, limits, unprivileged) in `tools.sandbox_command()`. docker-compose/compose.yaml tags the
+  CPU image `agent-loop-vllm-cpu:<vLLM version>-<n>`: bump `n` when vllm-cpu/ changes, so machines with the old
+  image build the new one, and keep compose.gpu.yaml's command the same as compose.yaml's but `--skip-mm-profiling`
+  (tests/test_vllm_docker.py checks it).
 
 ## Tests
 
@@ -149,7 +160,8 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   when the models' tokenizers are in models/ it also runs them through the real chat templates, and with
   `VLLM_TEST_URL` it asks a real server. Read vLLM's source before changing what is sent or read.
 - Wikipedia is faked over HTTP; the default suite never touches the network. Tests that need Docker
-  run only when `tools.sandbox_problem()` finds it, and skip otherwise.
+  run only when `tools.sandbox_problem()` finds it, and skip otherwise. tests/test_vllm_docker.py fakes Docker at the
+  level of `subprocess`; only `RUN_VLLM_DOCKER_TESTS=1` starts a real vLLM container.
 - Every format `harness/media.py` accepts has a sample in tests/samples.py (test_media.py fails otherwise), a
   decoding test, and a real-model test that asks both models about it. A new format needs all three.
 

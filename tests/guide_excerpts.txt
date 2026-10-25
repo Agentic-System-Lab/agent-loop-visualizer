@@ -31,6 +31,9 @@
 [[harness/backends/vllm_backend.py|class VLLMBackend:]]
     class VLLMBackend:
 
+[[harness/backends/vllm_docker.py|def start(model_id]]
+    def start(model_id: str, say: Callable[[str, str], None]) -> dict:
+
 [[harness/tools.py|TOOLS = {]]
     TOOLS = {
 
@@ -233,28 +236,39 @@ harness/families/__init__.py: class FileNote:
 [[harness/backends/simple_backend.py|def _sampling_defaults(self)]]
     def _sampling_defaults(self) -> dict:
 
-[[app/page.py|key="model_id", on_change=new_chat]]
-    tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=new_chat, disabled=busy,
+[[app/page.py|key="model_id", on_change=switch_model]]
+    tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy,
 
 [[harness/backends/simple_backend.py|def load_drafter(self):]]
     def load_drafter(self):
 
-app/page.py: @st.cache_resource(max_entries=1 … def current_llm() -> Backend:
+app/page.py: @st.cache_resource(max_entries=1 … def release_model():
     @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
-    def load_llm(model_id: str) -> Backend:
-        llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)
+    def load_llm(model_id: str, url: str | None) -> Backend:
+        llm = vllm_backend.VLLMBackend(model_id, url) if url else LocalLLM(model_id)
         llm.warmup()
         return llm
 
 
+    def release_model():
+        """Let the model in memory go now, rather than once the next one has loaded beside it."""
+        load_llm.clear()
+        gc.collect()
+        empty_cache()
+
+app/page.py: def current_llm() -> Backend:
     def current_llm() -> Backend:
         model_id = st.session_state.model_id
-        if VLLM_URL:
-            loading = tr(f"連線到 {VLLM_URL} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {VLLM_URL} and loading {model_id}'s tokenizer…")
+        if st.session_state.pop("stop_vllm", False):  # transformers was just picked again: vLLM's memory goes back first
+            with st.spinner(tr("停止 vLLM 的容器…", "Stopping vLLM's container…")):
+                vllm_docker.stop()
+        url = vllm_server(model_id)["url"] if docker_vllm() else VLLM_URL
+        if url:
+            loading = tr(f"連線到 {url} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {url} and loading {model_id}'s tokenizer…")
         else:
             loading = tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")
         with st.spinner(loading):
-            llm = load_llm(model_id)
+            llm = load_llm(model_id, url)
         if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
             for key, value in {**llm.info["defaults"], "mtp": False}.items():
                 st.session_state[key] = value
@@ -794,8 +808,8 @@ harness/backends/backend.py: class Backend(Protocol):
               learns the guesses only then), else None; and `raw` is the whole output, special tokens included, which
               the family parses."""
 
-[[app/page.py|llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)]]
-    llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)
+[[app/page.py|llm = vllm_backend.VLLMBackend(model_id, url) if url else LocalLLM(model_id)]]
+    llm = vllm_backend.VLLMBackend(model_id, url) if url else LocalLLM(model_id)
 
 harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
     TOKEN_FIELDS = ("index", "id", "piece", "text", "special", "channel")
@@ -822,6 +836,18 @@ harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
 
 [[tests/fakes.py|class FakeLLM:]]
     class FakeLLM:
+
+[[harness/backends/vllm_docker.py|def start(model_id]]
+    def start(model_id: str, say: Callable[[str, str], None]) -> dict:
+
+[[harness/backends/vllm_docker.py|def device()]]
+    def device() -> str:
+
+[[app/page.py|def release_model():]]
+    def release_model():
+
+[[harness/backends/vllm_docker.py|def stop():]]
+    def stop():
 
 [[harness/backends/vllm_backend.py|def _checkpoint_files(]]
     def _checkpoint_files(model_id: str) -> str:

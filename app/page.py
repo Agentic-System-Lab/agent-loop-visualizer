@@ -13,7 +13,9 @@ every half second. Clicking stop or approve reruns the script but not the thread
 so the loop keeps going.
 
 With VLLM_URL set, a vLLM server runs the model instead of this machine (harness/backends/vllm_backend.py), and the
-model menu lists what that server serves.
+model menu lists what that server serves. Without it, the sidebar can still pick vLLM: the page then starts a
+vLLM server in Docker from docker-compose/compose.yaml (harness/backends/vllm_docker.py). Either way, the model in
+memory is let go before the next one loads, so switching models or what runs them never holds two.
 
 The top bar also links to 運作說明 (How it works), a walk through the loop with the code behind it:
 a static page that app/guide.py builds and GitHub Pages serves.
@@ -27,6 +29,7 @@ run_python's sandbox needs, and say how to install it when it is missing. The ch
 shown in the chat and in the step that drew them.
 """
 
+import gc
 import json
 import os
 import shutil
@@ -39,9 +42,9 @@ import streamlit as st
 from app import render
 from harness import families, media, tools
 from harness.agent import Run, RunSettings
-from harness.backends import vllm_backend
+from harness.backends import vllm_backend, vllm_docker
 from harness.backends.backend import Backend, Sampling
-from harness.backends.simple_backend import LocalLLM
+from harness.backends.simple_backend import LocalLLM, empty_cache
 from harness.i18n import LANGS, from_locale, pick
 from harness.tools import TOOLS
 
@@ -127,20 +130,71 @@ def default_model() -> str:
 
 
 @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
-def load_llm(model_id: str) -> Backend:
-    llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)
+def load_llm(model_id: str, url: str | None) -> Backend:
+    llm = vllm_backend.VLLMBackend(model_id, url) if url else LocalLLM(model_id)
     llm.warmup()
     return llm
 
 
+def release_model():
+    """Let the model in memory go now, rather than once the next one has loaded beside it."""
+    load_llm.clear()
+    gc.collect()
+    empty_cache()
+
+
+def docker_vllm() -> bool:
+    """Whether the model runs on the vLLM server the page starts in Docker: vLLM picked in the sidebar, no VLLM_URL."""
+    return not VLLM_URL and st.session_state.engine == "vllm"
+
+
+def vllm_server(model_id: str) -> dict:
+    """The vLLM server in Docker for the model (vllm_docker.py), started first if it is not up, with what it is doing
+    shown meanwhile. A start that failed is not tried again on every rerun, only when the user asks to (Try again)."""
+    if failed := st.session_state.get("vllm_failed"):
+        raise failed
+    if server := vllm_docker.serving(model_id):
+        st.session_state.vllm_device = server["device"]
+        return server
+    stages = {
+        "download": tr(f"下載 {model_id} 的權重到 models/（只有第一次）…", f"Downloading {model_id}'s weights into models/ (the first time only)…"),
+        "up": tr("用 Docker Compose 啟動 vLLM 的容器（第一次要下載或建好 image，要幾分鐘）…",
+                 "Starting vLLM's container with Docker Compose (the first time pulls or builds its image, which takes minutes)…"),
+        "load": tr(f"vLLM 正在載入 {model_id}（第一次要編譯，在 CPU 上要幾分鐘）…", f"vLLM is loading {model_id} (the first time it compiles, which takes minutes on a CPU)…"),
+    }
+    with st.status(tr("啟動 vLLM 伺服器", "Starting the vLLM server"), expanded=True) as status:
+        stage, line = st.empty(), st.empty()
+
+        def say(what: str, last: str):
+            stage.markdown(stages[what])
+            if last:
+                line.code(last, language=None, wrap_lines=True)
+            else:
+                line.empty()
+
+        try:
+            server = vllm_docker.start(model_id, say)
+        except vllm_docker.DockerError as e:
+            st.session_state.vllm_failed = e
+            status.update(label=tr("vLLM 伺服器沒有啟動", "The vLLM server did not start"), state="error")
+            raise
+        status.update(label=tr("vLLM 伺服器啟動了", "The vLLM server is up"), state="complete", expanded=False)
+    st.session_state.vllm_device = server["device"]
+    return server
+
+
 def current_llm() -> Backend:
     model_id = st.session_state.model_id
-    if VLLM_URL:
-        loading = tr(f"連線到 {VLLM_URL} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {VLLM_URL} and loading {model_id}'s tokenizer…")
+    if st.session_state.pop("stop_vllm", False):  # transformers was just picked again: vLLM's memory goes back first
+        with st.spinner(tr("停止 vLLM 的容器…", "Stopping vLLM's container…")):
+            vllm_docker.stop()
+    url = vllm_server(model_id)["url"] if docker_vllm() else VLLM_URL
+    if url:
+        loading = tr(f"連線到 {url} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {url} and loading {model_id}'s tokenizer…")
     else:
         loading = tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")
     with st.spinner(loading):
-        llm = load_llm(model_id)
+        llm = load_llm(model_id, url)
     if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
         for key, value in {**llm.info["defaults"], "mtp": False}.items():
             st.session_state[key] = value
@@ -209,6 +263,7 @@ def init_state():
         st.session_state.model_id = default_model()
     st.session_state.setdefault("sampling_for", None)
     st.session_state.setdefault("chat_id", uuid.uuid4().hex[:12])
+    st.session_state.setdefault("engine", "local")  # what runs the model without VLLM_URL: transformers here, or vLLM in Docker
 
 
 def chat_folder() -> Path:
@@ -296,6 +351,25 @@ def new_chat():
     st.session_state.chat_id = uuid.uuid4().hex[:12]
 
 
+def switch_model():
+    """Another model picked in the menu: a new conversation, and the model in memory let go before the next loads."""
+    new_chat()
+    release_model()
+    st.session_state.pop("vllm_failed", None)
+
+
+def switch_engine():
+    """transformers or vLLM picked: the one that held the model lets it go before the other loads it, the weights
+    here now and vLLM's container at the next run, under a spinner. MTP goes off, since on vLLM it is the server's."""
+    switch_model()
+    st.session_state.mtp = False
+    st.session_state.stop_vllm = st.session_state.engine == "local"
+
+
+def retry_vllm():
+    st.session_state.pop("vllm_failed", None)
+
+
 def show_context(run_index: int, step: int):
     st.session_state.viz_tab = "context"
     st.session_state[f"ctx_step_{run_index}"] = step
@@ -307,18 +381,38 @@ def show_run(run_index: int):
 
 # ---------- sidebar ----------
 
-def sidebar(llm: Backend, menu: dict[str, str], live: bool, busy: bool):
-    info, lang = llm.info, st.session_state.lang
+def model_picker(menu: dict[str, str], busy: bool):
+    """The top of the sidebar: the model, and, without VLLM_URL, what runs it. It is drawn before the model loads, so
+    that while vLLM starts, or after it failed to, another model or transformers can still be picked."""
     with st.sidebar:
         st.markdown(tr("### Agent Loop 可視化", "### Agent Loop Visualizer"))
         st.selectbox(
-            tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=new_chat, disabled=busy,
+            tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy,
             help=tr("換模型會開始新的對話，解碼設定也換成新模型的建議值。harness、工具和畫面都不變。",
                     "Switching models starts a new conversation and resets the decoding settings to what the new model recommends. "
                     "The harness, the tools and the page stay the same."),
         )
+        if not VLLM_URL:
+            engines = {"local": "transformers", "vllm": tr("vLLM（Docker）", "vLLM (Docker)")}
+            st.segmented_control(
+                tr("用什麼跑模型", "What runs the model"), list(engines), format_func=engines.get, key="engine", required=True,
+                on_change=switch_engine, disabled=busy,
+                help=tr("transformers：模型載入這個程式，在這台電腦上跑，每個 token 的細節都看得到。"
+                        "vLLM：用專案的 docker-compose/compose.yaml 在 Docker 裡啟動 vLLM 伺服器，有 NVIDIA GPU 就用 GPU，否則用 CPU；"
+                        "第一次要建好 image、載入並編譯模型，要幾分鐘。換過去時，原本那一邊的模型會先釋放，也會開始新的對話。",
+                        "transformers: the model loads into this app and runs on this computer, and every detail of each token shows. "
+                        "vLLM: a vLLM server in Docker, started from the project's docker-compose/compose.yaml, on an NVIDIA GPU if there is one, "
+                        "else on the CPU; the first start builds its image and loads and compiles the model, which takes minutes. "
+                        "Switching lets the other one's model go first, and starts a new conversation."),
+            )
+
+
+def sidebar(llm: Backend, live: bool, busy: bool):
+    info, lang = llm.info, st.session_state.lang
+    with st.sidebar:
         if server := info.get("server"):
-            st.caption(f"`{llm.model_id}` · {llm.family.name} · {server['engine']} {server.get('version') or ''} · {server['url']}")
+            where = tr(f" · Docker（{st.session_state.vllm_device.upper()}）", f" · Docker ({st.session_state.vllm_device.upper()})") if docker_vllm() else ""
+            st.caption(f"`{llm.model_id}` · {llm.family.name} · {server['engine']} {server.get('version') or ''} · {server['url']}{where}")
         else:
             st.caption(f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · "
                        + tr(f"載入 {info['load_seconds']} s", f"loaded in {info['load_seconds']} s"))
@@ -626,14 +720,16 @@ def model_panel(llm: Backend, data: dict | None):
 def agent_page():
     try:
         init_state()
-        menu = model_menu()
+        own_live = any(run.live for run in st.session_state.runs)
+        polling = own_live or other_tab_run() is not None
+        model_picker(model_menu(), polling)
         llm = current_llm()
-    except vllm_backend.ServerError as e:  # the vLLM server is down or refused: say so, rather than show a traceback
+    except (vllm_backend.ServerError, vllm_docker.DockerError) as e:  # the vLLM server is down, refused or did not start
         st.error(e.text[st.session_state.lang], icon=":material/cloud_off:")
+        if isinstance(e, vllm_docker.DockerError):  # the sidebar still has the menu and the switch back to transformers
+            st.button(tr("再試一次", "Try again"), icon=":material/refresh:", on_click=retry_vllm)
         st.stop()
-    own_live = any(run.live for run in st.session_state.runs)
-    polling = own_live or other_tab_run() is not None
-    sidebar(llm, menu, own_live, polling)
+    sidebar(llm, own_live, polling)
 
     @st.fragment(run_every=POLL_SECONDS if polling else None)
     def workspace():

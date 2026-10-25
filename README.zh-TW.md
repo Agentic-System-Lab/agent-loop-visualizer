@@ -59,7 +59,7 @@ docker build -t agent-loop-sandbox harness/sandbox  # 選用：「讓模型寫�
 
 模型下載到專案資料夾裡的 `models/`（git 會忽略它），不是其他專案共用的 `~/.cache/huggingface/hub`；刪掉這個資料夾就能把空間拿回來。每個模型都照固定的 revision 下載，也就是 `harness/families/__init__.py` 裡 `REVISIONS` 的 commit（上面的 `--revision`），所以不管什麼時候下載，拿到的都是這一頁寫作和測試時用的檔案，在每種作業系統上都一樣。想放在別的地方，就把 `AGENT_LOOP_MODELS` 設成那個資料夾（上面的下載指令的 `--cache-dir` 也改成它）；`AGENT_LOOP_MODELS=$HOME/.cache/huggingface/hub` 會用之前已經下載在那裡的模型。`HF_HUB_CACHE` 不會改變位置，因為它常是整台電腦所有專案共用的設定。
 
-想改在 vLLM 伺服器上跑模型，見[在 vLLM 伺服器上跑模型](#在-vllm-伺服器上跑模型)。
+想改用 vLLM 跑模型，可以在側欄的「用什麼跑模型」選 vLLM（Docker），網頁會替你在 Docker 裡啟動一台 vLLM 伺服器（見[由網頁在 Docker 裡啟動 vLLM](#由網頁在-docker-裡啟動-vllm)）；也可以讓網頁連到你自己的伺服器（見[在 vLLM 伺服器上跑模型](#在-vllm-伺服器上跑模型)）。
 
 > 下載時出現 401，可是模型明明是公開的？多半是本機存的 Hugging Face token 過期了。重新登入（`uv run hf auth login`），或加上 `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` 不送 token。
 
@@ -96,6 +96,7 @@ harness/               跑一輪的東西；從不 import Streamlit
     backend.py         harness 和畫面透過它使用模型的 Backend：render、encode、generate，以及 token 事件的欄位
     simple_backend.py  本機推論，自己寫的解碼迴圈；MTP 的草稿與驗證也在這裡
     vllm_backend.py    在 vLLM 伺服器上跑模型（VLLM_URL）：prompt 在這裡 render、切 token，token id 送給伺服器，它對每個 token 說得出的都傳回來；伺服器加了對應的參數時，還有媒體、sampling mask 和 MTP 的猜測
+    vllm_docker.py     側欄選 vLLM（Docker）時在 Docker 裡跑 vLLM：用選的模型 docker compose up、等它能回應；換回時 docker compose down
   families/            跟著模型走的東西：每個模型家族怎麼寫回合、思考、工具呼叫，哪些 token 會停、各是什麼意思
     __init__.py        Family 的定義、模型選單 MODELS、MTP 草稿模型 DRAFTERS、依 config.json 的 model_type 找家族
     gemma4.py          Gemma 4：輸出的 parser 與 24 個特殊 token 的說明
@@ -104,6 +105,10 @@ harness/               跑一輪的東西；從不 import Streamlit
   media.py             附件：存檔、寫進使用者訊息，把圖片、聲音、影片解碼給 processor
   i18n.py              兩種語言：pick() 依語言挑文字，from_locale() 從瀏覽器語言決定預設；模型讀到的錯誤訊息也用它
   sandbox/             run_python 的沙箱：Dockerfile（Python 3.12 加上 numpy、pandas、openpyxl、tabulate、matplotlib），以及把圖送回來的 matplotlib backend 和設定
+docker-compose/        網頁在 Docker 裡啟動的 vLLM 伺服器
+  compose.yaml         在 CPU 上跑 vLLM（任何機器，Mac 也行），只聽 127.0.0.1，models/ 唯讀
+  compose.gpu.yaml     疊在 compose.yaml 上：用 vLLM 的 CUDA image 在 NVIDIA GPU 上跑
+  vllm-cpu/            vLLM 0.32.0 的 CPU image，補上它缺的兩個修正（patch_vllm.py）
 tests/                 pytest 測試，見下面「測試」
 models/                下載的模型（git 會忽略它；AGENT_LOOP_MODELS 可以換位置）
 ```
@@ -166,7 +171,7 @@ image 先用 wheel 加 hash 裝好 pip 26.2.2，再用它裝其他套件：更�
 
 ### 在 vLLM 伺服器上跑模型
 
-模型也可以放在 [vLLM](https://docs.vllm.ai/) 伺服器上跑，伺服器在這台電腦或一台有 GPU 的 Linux 機器都可以，網頁還是在你的電腦上。把 `VLLM_URL` 設成伺服器的位址：
+模型也可以放在 [vLLM](https://docs.vllm.ai/) 伺服器上跑：可以是網頁在 Docker 裡替你啟動的那台（見[下面](#由網頁在-docker-裡啟動-vllm)），也可以是任何一台，在這台電腦或一台有 GPU 的 Linux 機器都可以，網頁還是在你的電腦上。用自己的伺服器時，把 `VLLM_URL` 設成它的位址：
 
 ```bash
 # 跑 vLLM 的地方（vLLM 0.32 以上，Linux 加 GPU）。--revision 是 REVISIONS 裡的 commit，伺服器和網頁讀的就是同一份
@@ -206,6 +211,22 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 - **和 `generate()` 不一定一樣**：vLLM 會把請求合成一批跑，也有自己的 kernel，所以 greedy 的輸出不一定和 `transformers` 逐 token 相同；`simple_backend.py` 的會。
 
 [運作說明](https://cyyeh.github.io/agent-loop-visualizer/zh/)有一段講 `Backend` 介面，把兩個 backend 和它們的程式碼並排說明。
+
+### 由網頁在 Docker 裡啟動 vLLM
+
+沒設 `VLLM_URL` 時，側欄的「用什麼跑模型」可以在 transformers 和 vLLM（Docker）之間切換。選 vLLM 時，網頁先放掉在這裡載入的模型（`release_model()` 清掉快取、把記憶體還給系統），接著 `harness/backends/vllm_docker.py` 把還沒下載的模型下載到 `models/`，用 `docker compose up -d` 啟動 `docker-compose/` 裡的伺服器，等待時顯示 Docker 和 vLLM 印出的內容。換回 transformers 時執行 `docker compose down`，所以兩邊不會同時佔著模型。在 vLLM 上換模型會再跑一次 `docker compose up`，它會換掉容器；伺服器已經在跑時，重跑頁面不會再啟動一次。啟動失敗（沒有 Docker、Docker 沒在執行、記憶體不夠）時，頁面用目前的語言說明原因，要按「再試一次」才會重試；換回 transformers 的切換鈕一直留在側欄。
+
+```bash
+# 自己啟動同一台伺服器（VLLM_MODEL 和 VLLM_REVISION 預設是 Qwen3.5 0.8B 和它固定的 commit）；權重要先在 models/ 裡：
+docker compose -f docker-compose/compose.yaml up -d                                         # 在 CPU 上，任何機器都行
+docker compose -f docker-compose/compose.yaml -f docker-compose/compose.gpu.yaml up -d      # 在 NVIDIA GPU 上（Linux，要有 NVIDIA Container Toolkit）
+VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
+```
+
+- **在哪裡跑。** Docker 有 nvidia runtime 時，再疊上 `compose.gpu.yaml`，用 vLLM 官方的 CUDA image（`vllm/vllm-openai:v0.32.0`）在 GPU 上跑；其他情況（Mac 也是）由 `compose.yaml` 在 Docker 的 Linux 虛擬機裡跑 vLLM 的 CPU image。`AGENT_LOOP_VLLM_DEVICE=cpu` 或 `gpu` 可以直接指定，`VLLM_PORT` 可以換埠號（8000）。
+- **伺服器讀什麼。** 它自己不下載：`models/` 唯讀掛進去、設了 `HF_HUB_OFFLINE=1`，所以載入的正是 `REVISIONS` 裡的那個 commit，和網頁一樣。它跟網頁一樣只聽 127.0.0.1。啟動時加了 `--enable-scale-out`，所以看得到每個 token 的排名，伺服器也收圖片、聲音和影片；`--logprobs-mode` 維持 vLLM 預設的 `raw_logprobs`，浮窗顯示的是模型自己的機率和前 5 名。vLLM 編譯的結果存在一個 Docker volume，所以一個模型只有第一次啟動要編譯。
+- **CPU 版的 image**（`docker-compose/vllm-cpu/`）是 `vllm/vllm-openai-cpu:v0.32.0` 加上兩個修正（`patch_vllm.py`）：vLLM 自己的 #61992，晚了 0.32.0 一天才進去，沒有它的話每個模型在 CPU 上的第一個請求都會失敗；另一個是我們自己的，讓 CPU 上線性層的輸入在記憶體裡是連續的，沒有它的話 Gemma 4 聽的第一段聲音就會讓 engine 當掉。它把 KV cache 設成 2 GiB（`VLLM_CPU_KVCACHE_SPACE`；不設的話 vLLM 要 Docker 記憶體的 92%），啟動時不量圖片編碼器要多少記憶體（在 CPU 上要超過 10 分鐘），並讓一步最多可以跑 30 分鐘，而不是 vLLM 預設的 5 分鐘就放棄 engine。
+- **在 Mac 上**（Apple M5，給 Docker 10 個核心）：Qwen3.5 0.8B 啟動約 1.5 分鐘，佔 Docker 約 9 GB 記憶體，解碼約 10 tok/s。Gemma 4 E2B 要的記憶體比 Docker Desktop 預設的多：16 GB 時載入到一半會被停掉（頁面會說明，也說怎麼給 Docker 更多記憶體），24 GB 時 3 到 5 分鐘啟動、解碼約 4.6 tok/s，但載入時問伺服器收哪些媒體，要在 CPU 上跑它的圖片、聲音和影片編碼器，第一次要花大約 10 分鐘。
 
 ### 支援更多模型
 
@@ -251,6 +272,7 @@ Qwen 不管回答完或要用工具都停在 `<|im_end|>`，所以 harness 是�
 uv run pytest                                          # 約 40 秒，不載入模型權重、不連網路
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma（含 MTP 草稿模型）和 Qwen，約 4 分鐘；加 -k Qwen 只跑一個
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # 問一台正在跑的 vLLM 伺服器
+RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real                        # 用 Qwen3.5 在 Docker 裡啟動 vLLM，問它一個問題
 ```
 
 大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，和 `LocalLLM` 一樣是一個 `Backend`（`backend.py`），所以 harness 和網頁可以從頭跑到尾。
@@ -268,9 +290,10 @@ VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k 
 | `test_simple_backend.py` | `LocalLLM` 有 `Backend` 的每個方法和屬性，它的 token 帶著每個欄位和細節；自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；`encode()` 照順序把每種媒體和家族的設定交給 processor、短影片給它全部畫格；圖片和影片在 prefill 前先跑視覺編碼器，上一個 prompt 的位置偏移不會留下來；greedy 遇到兩個 token 打平時和 `generate()` 一樣拿 id 小的；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布；模型照固定的 revision 下載到 `models/`（`AGENT_LOOP_MODELS` 可以換位置，`HF_HUB_CACHE` 不行），模型資料夾的檔案、大小（經過快取的連結）和說明提到的欄位 |
 | `test_agent.py` | 假模型是一個 `Backend`，它的 token 帶的欄位和 `LocalLLM` 的一樣；harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止；附件變成問題裡的 part 和給 `run_python` 的說明、每一輪的媒體都交給 processor、展開後的脈絡仍然只把工具結果標成新加入、`run_python` 拿到這段對話的資料夾、沒有 `run_python` 的一輪；模型讀到圖在哪裡，圖本身只給頁面 |
 | `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；一串同樣的特殊 token 畫成一個標籤加個數、截斷的片段不會切開 token、媒體佔了幾個 token、好幾行的程式碼和輸出照行寫出來、這一輪沒提供的工具、一次執行和每一步的圖；模型資料夾卡片：檔案的順序、大小和說明、家族有說明但 checkpoint 沒有的檔案、草稿模型的資料夾、跳脫；backend 沒回報機率、或只回報 log 機率時，token 照它帶的內容畫，不多畫；英文畫面上沒有留下中文 |
-| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案；設了 `VLLM_URL` 時，選單列出伺服器提供的模型、側欄和模型分頁寫出伺服器、MTP 由伺服器決定、開了 sampling mask 的伺服器不會從側欄收到 greedy 或不限的 top-k、模型讀伺服器收的媒體，頁面說明它不收哪些和原因，選單不列伺服器上的 LoRA adapter，伺服器跑到一半送來的錯誤用頁面的語言顯示，載入時或之後連不上伺服器，都用頁面的語言說明 |
+| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案；設了 `VLLM_URL` 時，選單列出伺服器提供的模型、側欄和模型分頁寫出伺服器、MTP 由伺服器決定、開了 sampling mask 的伺服器不會從側欄收到 greedy 或不限的 top-k、模型讀伺服器收的媒體，頁面說明它不收哪些和原因，選單不列伺服器上的 LoRA adapter，伺服器跑到一半送來的錯誤用頁面的語言顯示，載入時或之後連不上伺服器，都用頁面的語言說明；沒設 `VLLM_URL` 時，「用什麼跑模型」一開始是 transformers、完全不碰 Docker，選 vLLM（Docker）會放掉本機的模型（沒有東西留著它）再用它啟動伺服器，重跑不會再啟動，換模型就用新模型啟動，換回 transformers 會停掉容器，啟動失敗時用頁面的語言說明，只有按「再試一次」才重試，換回 transformers 的切換鈕也還在 |
 | `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（已經下載到 `models/` 才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、token 浮窗顯示的是它代表的文字、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字），用真的 processor、問題附上圖片和影片時也一樣；每個模型（和草稿模型）資料夾裡的每個檔案都有說明，說明提到的欄位在檔案裡都找得到 |
 | `test_vllm_backend.py` | vLLM backend 對上一個假伺服器，它說的是 vLLM 0.32 的串流格式：`/v1/completions` 收到 render 好的 prompt 的 token id、側欄的每個設定（其他取樣設定都設成不起作用）、停止 token，以及放得進伺服器脈絡的 `max_tokens`；每個 token 的機率和前 5 名，排名只在前 5 名裡才有；加了 `--enable-scale-out` 時走 `/inference/v1/generate`，每個 token 都有排名，雖然選中的 token 排在清單第一個，前 5 名仍照排名；有 sampling mask 時（vLLM 只在 processed log 機率下送），有剩下的候選和取樣時的機率，沒有模型自己的機率，temperature 0 和 top-k 0 在每條路上都照 vLLM 的做法被拒絕，有 mask 但沒加 `--enable-scale-out` 的伺服器，網頁載入時也會發現，而還沒準備好的伺服器不算這種拒絕；載入時用一個 token 判斷伺服器的 `--logprobs-mode`，沒有 mask 的 processed log 機率在前幾名有被剃掉時看得到剩下幾個，logits 只有排名；greedy 是只剩一個、一定抽中的候選；伺服器收哪幾種媒體、每個檔案跟著佔位 token 送過去、脈絡分頁顯示伺服器的展開、生成時展開得不一樣就是錯誤、不收的種類成為一般檔案；兩條路上都有 MTP 的統計，每一步的統計對得上時才標出猜中的 token，收下的只算到停止 token 為止；停止 token、token 上限、按停止就關掉串流；連不上伺服器、它沒有提供的模型、用它自己的資料夾、或用網頁（或它的 transformers）不認得的家族的模型、或沒有 config.json 的模型啟動的伺服器、沒有或出錯的 `/inference/v1/generate`、它的拒絕和錯誤，兩種語言都有，跑到一半的錯誤用頁面的語言顯示；暖機，以及第一個 token 之前就結束的一步；模型卡片上的規格、伺服器、每種 logprobs 模式下數字代表什麼、sampling mask 和它不收的媒體；一整輪呼叫工具再回答、一輪附上圖片的問題，每個時刻都畫得出來；用真的 tokenizer 和 chat template（在 `models/` 裡時），伺服器拿到的就是脈絡分頁上的 prompt；設了 `VLLM_TEST_URL` 時問真的伺服器，伺服器加了哪些參數就測哪些 |
+| `test_vllm_docker.py` | 在 Docker 裡啟動 vLLM，Docker 在 `subprocess` 這一層換成假的：先照固定的 commit 下載權重，再用模型、它的 revision 和 `models/` 以 `docker compose up` 跑 `docker-compose/compose.yaml`，Docker 有 nvidia runtime（或 `AGENT_LOOP_VLLM_DEVICE` 指定）時再疊上 `compose.gpu.yaml`；模型已經在跑的伺服器不會再啟動一次，換模型會換掉它；沒有 Docker、Docker 沒在執行、沒有 Compose、`docker compose up` 失敗、容器因為記憶體不夠被停掉、容器結束（列出記錄裡的例外，原因在前）和伺服器一直沒回應，都用兩種語言說明；Compose 還在忙時頁面重跑，也會停掉它；`docker compose down`。compose 檔：只聽 127.0.0.1、`models/` 唯讀又離線、預設是固定 commit 的 Qwen3.5、GPU 版是同一個 vLLM、除了只給 CPU 的那個以外參數都一樣，Docker Compose 讀得懂兩個檔（有裝的話）；設了 `RUN_VLLM_DOCKER_TESTS=1` 時，Docker 裡真的伺服器透過 `VLLMBackend` 回答 |
 | `test_media.py` | 網頁收的每一種格式都有範例檔、被當成正確的種類（聲音對 Qwen 是一般檔案）、解碼得出來；存檔的名字不重複也不含奇怪字元；問題的 part 和寫出文字檔欄位名稱的說明；照片轉正、聲音改成模型的取樣率、影片畫格平均取、畫格率跟著調整；每種聲音和影片播放時的類型，以及 MKV 影片改顯示的畫格 |
 | `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到、事件表指向真的送出事件的那一行、HTML 標籤成對；每段引用的程式和 `tests/guide_excerpts.txt` 一致，改到那段程式才會變，只是換了行號不會；中英文每一段指向同樣的程式和段落，英文版沒有留下中文；產生的靜態頁有亮色和暗色兩套配色與迴圈圖、寫出對應的 commit，根目錄的頁面會送到正確的語言 |
 | `test_real_model.py` | 預設跳過。每個模型：載入的模型是一個 `Backend`；greedy 解碼和 `model.generate()` 一致，純文字、附上圖片、影片和（Gemma）錄音都一樣，之後再問純文字也一樣；真的模型能呼叫計算機並回答；每一種圖片格式都讀得出收據的總計、每一種聲音格式都寫得出錄音的內容（Gemma；Qwen 收到的是一般檔案）、每一種影片格式都看得出球往哪邊滾、每一種資料格式都能用 `run_python` 打開，也寫得出在沙箱裡跑得動的程式（有 Docker 時）；Gemma 開 MTP 時 greedy 輸出和不開一模一樣（附上圖片也是），而且草稿真的有被收下 |
@@ -300,6 +323,7 @@ VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k 
 - Wikipedia 工具需要網路。
 - 在 vLLM 伺服器上（`VLLM_URL`）greedy 的輸出可能和 `generate()` 不同，畫面看得到多少要看伺服器加了哪些參數（見「在 vLLM 伺服器上跑模型」）：沒加 `--enable-scale-out` 時模型只讀文字，token 浮窗要嘛有模型自己的機率和前 5 名（預設），要嘛在 `--logprobs-mode processed_logprobs` 下（`--return-sampling-mask` 一定要它）有取樣時的機率和剩下幾個候選，兩者不會同時有；前 5 名哪些被剃掉永遠看不到；開了 sampling mask 的伺服器不接受 greedy 和不限的 top-k。MTP 猜中的 token 要等這一步結束、而且伺服器的統計對得上每個 token 才有底線，被退回的猜測原本是什麼也看不到。有媒體時，每一步都先問伺服器怎麼展開，多一個讀 prompt 的請求。網頁看不到伺服器載入的是哪個 revision，所以啟動時要照那一節加上 `--revision`。
 - `vllm_backend.py` 照 vLLM 0.32 原始碼裡的協定寫，測試用的是說這些協定的假伺服器、真的 tokenizer 和真的網頁；`/inference/v1/generate`、它的 sampling mask 和每一步的統計在 vLLM 裡標示為實驗性功能，之後可能會改。對真伺服器的測試（`VLLM_TEST_URL`）還沒在 GPU 上跑過。
+- 在 Mac 上，Docker 裡的 vLLM 是用 CPU 跑，而且慢：Gemma 4 E2B 解碼約 4.6 tok/s，Docker 要有大約 20 GB 以上的記憶體，第一次載入還要花大約 10 分鐘跑它的媒體編碼器，看伺服器收哪些媒體。`compose.gpu.yaml` 照 vLLM 文件寫 NVIDIA GPU 的設定，但還沒有在 GPU 上跑過。CPU 版的 image 修改了 vLLM 0.32.0（`docker-compose/vllm-cpu/patch_vllm.py`）；新版的 vLLM 可能兩個修正都不需要，要修改的程式和寫它時不一樣的話，建 image 時會停下來。
 - `MODEL_ID` 環境變數決定一開始選哪個模型，也可以指定選單裡沒有的 checkpoint，只要它屬於已經支援的家族（Gemma 4 或 Qwen3.5）；其他家族要先照「支援更多模型」加一個 family。
 
 ## 授權

@@ -1,0 +1,24 @@
+# compose.yaml's vLLM server on NVIDIA GPUs, for Linux with the NVIDIA Container Toolkit: vLLM's own CUDA image, at
+# the same version, with the same flags but one. The page adds this file when Docker has the nvidia runtime, or when
+# AGENT_LOOP_VLLM_DEVICE=gpu; by hand:
+#
+#     docker compose -f docker-compose/compose.yaml -f docker-compose/compose.gpu.yaml up -d
+services:
+  vllm:
+    build: !reset null  # nothing to build: the image is vLLM's own
+    image: vllm/vllm-openai:v0.32.0
+    # compose.yaml's command without --skip-mm-profiling: on a GPU, measuring what the image encoder needs takes
+    # seconds, and keeps the KV cache from taking memory the encoder will need.
+    command:
+      - ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      - --revision=${VLLM_REVISION:-2fc06364715b967f1860aea9cf38778875588b17}
+      - --served-model-name=${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      - --enable-scale-out
+      - --max-model-len=auto
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
