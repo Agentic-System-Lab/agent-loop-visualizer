@@ -155,9 +155,9 @@ class Server:
             return self.generate(body)
         if not body.get("stream"):
             self.probes.append(body)
-            return self.refused(body) or httpx.Response(200, json=self.completion(body))
+            return self.refused(body, stream=False) or httpx.Response(200, json=self.completion(body))
         self.requests.append(body)
-        if refused := self.refused(body):
+        if refused := self.refused(body, stream=True):
             return refused
         if self.fail:
             status, error = self.fail
@@ -171,7 +171,7 @@ class Server:
         if not self.scale_out:
             message = "Scale-out endpoints are disabled. Restart vllm serve with --enable-scale-out to enable them."
             return httpx.Response(403, json={"error": {"message": message, "type": "PermissionDeniedError", "param": None, "code": 403}})
-        if refused := self.refused(body["sampling_params"]):
+        if refused := self.refused(body["sampling_params"], bool(body.get("stream"))):
             return refused
         if self.fail and body.get("stream"):
             status, error = self.fail
@@ -234,17 +234,16 @@ class Server:
             scaled = {i: v - norm for i, v in scaled.items()}
         return {i: scaled.get(i, UNREPORTED) for i, _ in ranked}
 
-    def refused(self, params: dict) -> httpx.Response | None:
-        """What vLLM's engine answers, on every route, a request it cannot send a sampling mask for (InputProcessor)."""
-        if not self.masks:
+    def refused(self, params: dict, stream: bool) -> httpx.Response | None:
+        """What vLLM 0.32 answers, on every route, a request it cannot send a sampling mask for. InputProcessor refuses
+        temperature 0 and top-k 0 with a plain ValueError, which AsyncLLM.generate wraps in an EngineGenerateError, an
+        error without a message served as a 500; a streamed request has had its 200 by then, and gets it as a chunk."""
+        if not self.masks or (params.get("temperature", 1.0) > 0 and (params.get("top_k") or 0) > 0):
             return None
-        if params.get("temperature", 1.0) <= 0:
-            message = "sampling distribution replay requires temperature > 0"
-        elif (params.get("top_k") or 0) <= 0:
-            message = "sampling distribution replay requires top_k > 0 to bound sampling mask size, reduce transfer overhead, and avoid potential OOMs"
-        else:
-            return None
-        return httpx.Response(400, json={"error": {"message": message, "type": "BadRequestError", "param": None, "code": 400}})
+        error = {"message": "", "type": "InternalServerError", "param": None, "code": 500}
+        if stream:
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Stream([sse({"error": error}), "data: [DONE]\n\n"], self))
+        return httpx.Response(500, json={"error": error})
 
     def entry(self, token_id: int, p: float, params: dict) -> dict:
         """A token's logprobs as /inference/v1/generate sends them: its own and rank, then the chosen token first and
@@ -635,8 +634,17 @@ def test_a_model_of_a_family_the_page_does_not_know_is_said_in_both_languages(hu
     monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=lambda folder: SimpleNamespace(model_type="llama")))
     with pytest.raises(ServerError) as refused:
         connect(Server([]))
-    assert refused.value.text == {"zh": "google/gemma-4-E2B-it 是 model_type 'llama' 的模型，這個網頁還不支援；目前支援 Gemma 4、Qwen3.5。",
-                                  "en": "google/gemma-4-E2B-it is a model of model_type 'llama', which this page does not support yet; it supports Gemma 4, Qwen3.5."}
+    assert refused.value.text == {"zh": "這個網頁還不支援 google/gemma-4-E2B-it（model_type 'llama'）；目前支援 Gemma 4、Qwen3.5。",
+                                  "en": "This page does not support google/gemma-4-E2B-it yet (model_type 'llama'); it supports Gemma 4, Qwen3.5."}
+
+
+def test_a_model_newer_than_this_transformers_is_said_in_both_languages(hub, monkeypatch):
+    def unknown(folder):  # what transformers says of a config.json whose model_type it does not know
+        raise ValueError("The checkpoint you are trying to load has model type `gemma9` but Transformers does not recognize this architecture.")
+    monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=unknown))
+    with pytest.raises(ServerError) as refused:
+        connect(Server([]))
+    assert "這個網頁還不支援 google/gemma-4-E2B-it" in refused.value.text["zh"] and "model type `gemma9`" in refused.value.text["en"]
 
 
 def test_the_context_limit_and_the_specs_come_from_the_server_and_the_config(hub):
@@ -819,11 +827,12 @@ def test_a_server_with_masks_refuses_greedy_and_no_top_k_as_vllm_does(hub, scale
     # Without --enable-scale-out no response shows a mask, yet the engine refuses all the same, on /v1/completions too.
     assert (llm.generate_api, llm.masks, llm.refuses_greedy) == (scale_out, scale_out, True)
     assert llm.info["server"]["refuses_greedy"] and llm.info["server"]["sampling_mask"] == scale_out
-    with pytest.raises(ServerError, match="requires temperature > 0") as refused:
-        generate(llm, sampling=Sampling(temperature=0))
-    assert refused.value.status == 400
-    with pytest.raises(ServerError, match="requires top_k > 0"):
-        generate(llm, sampling=Sampling(top_k=0))
+    # The step's stream has begun by the time the engine refuses, so the refusal is an error chunk without a message.
+    for sampling in (Sampling(temperature=0), Sampling(top_k=0)):
+        with pytest.raises(ServerError, match="failed while generating: $"):
+            generate(llm, sampling=sampling)
+    if not scale_out:  # asked at load, and refused with a 500
+        assert server.probes[-1]["temperature"] == 0.0
 
 
 def test_a_server_with_processed_logprobs_but_no_masks_shows_how_many_were_left_when_some_of_the_top_were_cut(hub):
@@ -1070,7 +1079,7 @@ def served():
 def greedy(llm: VLLMBackend, max_new_tokens: int) -> Sampling:
     """Greedy decoding; or, from a server that sends sampling masks and so refuses temperature 0, top-k 1, which leaves
     the most likely token all the same."""
-    if llm.masks:
+    if llm.refuses_greedy:
         return Sampling(temperature=1.0, top_k=1, max_new_tokens=max_new_tokens)
     return Sampling(temperature=0, max_new_tokens=max_new_tokens)
 

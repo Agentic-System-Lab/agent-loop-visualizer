@@ -152,6 +152,13 @@ def _generation_config(folder: str, config) -> GenerationConfig:
         return GenerationConfig.from_model_config(config)
 
 
+def unsupported(model_id: str, why: str) -> ServerError:
+    """The error for a model of a family the page does not know (families.FAMILIES)."""
+    names = [f.name for f in families.FAMILIES.values()]
+    return ServerError(f"這個網頁還不支援 {model_id}（{why}）；目前支援 {'、'.join(names)}。",
+                       f"This page does not support {model_id} yet ({why}); it supports {', '.join(names)}.")
+
+
 def checkpoint_modalities(config, processor) -> tuple[str, ...]:
     """What the checkpoint reads besides text, worked out as LocalLLM._modalities does: an encoder in the config and a
     part of the processor to feed it. Whether the server takes each one is asked separately (VLLMBackend._probe)."""
@@ -280,11 +287,12 @@ class VLLMBackend:
                 "server was started with, so start it with a Hugging Face id (`vllm serve Qwen/Qwen3.5-0.8B`, say), or put the same folder "
                 "at the same path on this machine.",
             ) from e
-        config = AutoConfig.from_pretrained(files)
+        try:
+            config = AutoConfig.from_pretrained(files)
+        except ValueError as e:  # a model_type this transformers does not know, so no family here knows it either
+            raise unsupported(model_id, str(e)) from e
         if not any(config.model_type in f.model_types for f in families.FAMILIES.values()):
-            names = [f.name for f in families.FAMILIES.values()]
-            raise ServerError(f"{model_id} 是 model_type {config.model_type!r} 的模型，這個網頁還不支援；目前支援 {'、'.join(names)}。",
-                              f"{model_id} is a model of model_type {config.model_type!r}, which this page does not support yet; it supports {', '.join(names)}.")
+            raise unsupported(model_id, f"model_type {config.model_type!r}")
         self.family = families.for_model_type(config.model_type)
         # The same tokenizer and chat template LocalLLM loads, so the prompt is the same string and the same tokens.
         self.processor = AutoProcessor.from_pretrained(files)
@@ -354,13 +362,16 @@ class VLLMBackend:
         return logprobs_mode(list((top[0] or {}).values()))
 
     def _refuses_greedy(self, ids: list[int]) -> bool:
-        """Whether the server refuses a greedy one-token request, as vLLM's engine does (with a 400) once it was started
-        with --return-sampling-mask, whichever route the request takes."""
+        """Whether the server refuses a greedy one-token request, as vLLM's engine does once it was started with
+        --return-sampling-mask, whichever route the request takes."""
         body = {"model": self.served_as, "prompt": ids, "max_tokens": 1, "temperature": 0.0, "stream": False}
         try:
             _post(self.client, "/v1/completions", body)
         except ServerError as e:
-            if e.status == 400:
+            # vLLM 0.32 refuses with a plain ValueError, which AsyncLLM.generate wraps in an EngineGenerateError: a 500
+            # with no message (a 400, should it become a validation error). The same prompt at temperature 1 was just
+            # served (_logprobs_mode), so such a refusal is the greedy decoding's.
+            if e.status in (400, 500):
                 return True
             raise
         return False
