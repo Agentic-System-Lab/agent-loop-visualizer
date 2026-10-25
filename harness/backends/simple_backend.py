@@ -4,7 +4,7 @@ transformers' generate() hides the distribution at each step, so this module run
 the loop itself: one forward pass per token, then temperature, top-k and top-p,
 then a sample. Every token comes back with its probability, its rank and the
 strongest alternatives, which is what the visualization shows. SimpleBackend is the
-Backend (backend.py) the app runs, and it fills in every detail a token event can carry.
+Backend (backend.py) the app runs with transformers, and the one that fills in every detail a token event can carry.
 
 Nothing here is specific to one model: which tokens stop a generation and which
 ones switch between thinking, tool calls and the reply come from the model's family.

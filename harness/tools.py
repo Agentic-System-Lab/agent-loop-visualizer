@@ -37,7 +37,7 @@ from harness.i18n import pick
 
 WIKI_HEADERS = {"User-Agent": f"agent-loop-visualizer/0.1 (https://github.com/cyyeh/agent-atlas-learning) httpx/{httpx.__version__}"}
 SANDBOX_IMAGE = "agent-loop-sandbox"  # docker build -t agent-loop-sandbox harness/sandbox
-SANDBOX_VERSION = "2"  # the agent-loop-sandbox.version label in sandbox/Dockerfile; an older image is rebuilt
+SANDBOX_VERSION = "2"  # the agent-loop-sandbox.version label in sandbox/Dockerfile; for an older image the page asks for a rebuild
 DOCKER_INSTALL = "https://docs.docker.com/get-started/get-docker/"
 SANDBOX_TIMEOUT = 30  # seconds a piece of code may run
 MAX_OUTPUT_CHARS = 1500  # of what the code prints, and of a traceback; the harness cuts the whole result at 2000

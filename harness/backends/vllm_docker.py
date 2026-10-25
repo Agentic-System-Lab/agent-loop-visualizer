@@ -45,7 +45,7 @@ LOG_LINES = 15  # lines of output shown when something fails
 EXCEPTION = re.compile(r"\b((?:\w+\.)*\w*(?:Error|Exception): .+)")
 
 _lock = threading.Lock()  # one start or stop at a time, from every tab
-_server: dict = {}  # the server this process started and saw answer: model, url, device
+_server: dict = {}  # the server this process started and saw answer: model, url, device, mtp
 # The model this process last asked the server to run, from start() until stop(), whether it answered yet or not: what
 # every tab follows, since they share the one model in memory.
 _chosen: dict = {}

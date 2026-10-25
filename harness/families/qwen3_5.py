@@ -222,11 +222,12 @@ FILES = {
     }),
     "model.safetensors": FileNote({
         "zh": "權重，大多是 bfloat16；就算只有一個檔案，檔名也照分片的格式取。除了語言模型和視覺編碼器（`visual`），還有 `config.json` 說的那層 MTP（`mtp.`），"
-              "transformers 載入時跳過；這裡沒有 Qwen 的草稿模型，側欄的 MTP 只給 Gemma 用。Gated DeltaNet 層的 `A_log`（狀態衰減的速度）和它們的 norm 以 float32 存。",
+              "transformers 載入時跳過，所以用 transformers 時沒有 Qwen 的草稿模型，側欄的 MTP 只給 Gemma 用；有 GPU 的 vLLM (Docker) 則用這層推測解碼。"
+              "Gated DeltaNet 層的 `A_log`（狀態衰減的速度）和它們的 norm 以 float32 存。",
         "en": "The weights, mostly in bfloat16, in files named in the sharded format even when there is only one. Besides the language model and the "
-              "vision encoder (`visual`), they hold the MTP layer `config.json` mentions (`mtp.`), which transformers skips when loading; there is no "
-              "drafter for Qwen here, and MTP in the sidebar is for Gemma only. The Gated DeltaNet layers' `A_log` (how fast their state decays) and "
-              "their norms are stored in float32.",
+              "vision encoder (`visual`), they hold the MTP layer `config.json` mentions (`mtp.`), which transformers skips when loading, so with "
+              "transformers there is no drafter for Qwen and MTP in the sidebar is for Gemma only; vLLM (Docker) on a GPU decodes speculatively with it. "
+              "The Gated DeltaNet layers' `A_log` (how fast their state decays) and their norms are stored in float32.",
     }),
     "tokenizer.json": FileNote({
         "zh": "跟 GPT-2 一樣的 byte-level BPE：先用正規表示式切出詞、數字和標點，每個 byte 寫成一個可印出的字元"

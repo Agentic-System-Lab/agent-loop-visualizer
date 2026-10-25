@@ -2,13 +2,14 @@
 
 The harness (agent.Run) and the page (app/page.py) reach the model only through a Backend. It renders the
 conversation into a prompt with the model's chat template, encodes the prompt into the tokens the model reads,
-and generates, yielding the events render.py draws. simple_backend.SimpleBackend is the backend the app runs: transformers on
-this machine, with a hand-written decoding loop that sees the whole distribution at every token.
-tests/fakes.FakeLLM replays scripted replies. A backend that asks a serving engine such as vLLM, SGLang or
-Ollama would be one more; this module says what it has to provide.
+and generates, yielding the events render.py draws. The app runs one of two: simple_backend.SimpleBackend, transformers
+on this machine, with a hand-written decoding loop that sees the whole distribution at every token, or
+vllm_backend.VLLMBackend, a vLLM server. tests/fakes.FakeLLM replays scripted replies. A backend that asks another
+serving engine, such as SGLang or Ollama, would be one more; this module says what it has to provide.
 
-Such an engine tells less about each token than SimpleBackend's own loop does: a few log probabilities at most, not
-what temperature, top-k and top-p left of the distribution, nor what an MTP drafter guessed. So a token event
+Such an engine tells less about each token than SimpleBackend's own loop does: a few log probabilities, and only with
+the flags for them what temperature, top-k and top-p left of the distribution or which tokens an MTP drafter guessed
+(vllm_backend.py). So a token event
 has the fields every backend sends (TOKEN_FIELDS) and the ones a backend sends only when it knows them
 (TOKEN_DETAILS). render.py draws a token with whichever details it has and leaves the rest out, so the page
 never shows a number nobody measured.
@@ -38,7 +39,9 @@ class Encoded:
     text: str  # the prompt, with each placeholder of an image, clip or video expanded into the tokens it takes
     ids: object  # its token ids, in the form the backend's generate() takes (SimpleBackend: a tensor of shape (1, n_tokens))
     n_tokens: int
-    media: dict = field(default_factory=dict)  # the processor's inputs for the encoders (pixels, audio features), for the prefill
+    # what generate() needs to read the media: the processor's inputs for the encoders (SimpleBackend), or the files
+    # and the server's expansion of the ids (VLLMBackend)
+    media: dict = field(default_factory=dict)
     media_tokens: dict = field(default_factory=dict)  # kind -> how many of the tokens are that kind of media
 
 

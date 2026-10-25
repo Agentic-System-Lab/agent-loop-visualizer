@@ -381,7 +381,7 @@ def test_step_card_for_a_tool_call():
     assert "回覆" in second and "上一步的觀察接回脈絡" in second and "沒有工具呼叫" in second
 
 
-def test_live_step_has_no_tooltips():
+def test_a_live_steps_plain_tokens_have_no_popovers():
     events = record_run([ANSWER])[1]
     data = render.build(events[:8])
     html = render.step_html(data["steps"][0], data, live=True, lang="zh")
