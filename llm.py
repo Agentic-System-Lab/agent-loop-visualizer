@@ -388,10 +388,12 @@ class LocalLLM:
         decoding means when it is the top token; otherwise the pick comes from the other candidates. Either way
         each token comes out exactly as often as without a drafter."""
         probs = torch.softmax(logits, -1)  # the model's own distribution (T = 1, nothing cut off)
-        top_p_vals, top_ids = probs.topk(TOP_N)
+        # Equally likely tokens go lowest id first, the one argmax and so generate() takes. topk leaves their order open
+        # (on the CPU it can list the higher id first), and in bfloat16 two logits are equal more often than one would think.
+        top = sorted(zip(*probs.topk(TOP_N)), key=lambda c: (-float(c[0]), int(c[1])))
 
         if s.temperature <= 0:  # T -> 0 is greedy decoding
-            chosen = int(top_ids[0])
+            chosen = int(top[0][1])
             kept = 1
             p_sampled = 1.0
         else:
@@ -426,6 +428,6 @@ class LocalLLM:
             "kept": kept,
             "top": [
                 {"id": int(i), "piece": self.piece(int(i)), "p": float(v), "kept": rank < kept}
-                for rank, (v, i) in enumerate(zip(top_p_vals, top_ids))
+                for rank, (v, i) in enumerate(top)
             ],
         }

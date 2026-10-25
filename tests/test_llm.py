@@ -179,6 +179,15 @@ def test_greedy_picks_the_argmax():
     assert [c["kept"] for c in d["top"]] == [True, False, False, False, False]
 
 
+def test_greedy_takes_the_lowest_id_of_tied_tokens_as_generate_does():
+    # topk on the CPU lists 7 before 5 here; generate() takes the argmax, the first of the tied tokens.
+    probs = [0.01] * 5 + [0.4, 0, 0.4] + [0.01] * 7
+    chosen, d = make_llm()._sample(logits_for(probs), GREEDY)
+    assert chosen == int(torch.tensor(probs).argmax()) == 5
+    assert [c["id"] for c in d["top"][:2]] == [5, 7]
+    assert [c["kept"] for c in d["top"][:2]] == [True, False]
+
+
 def test_top_candidates_are_the_model_distribution_sorted():
     _, d = make_llm()._sample(logits_for(PROBS), Sampling(temperature=2.0, top_k=0, top_p=1.0))
     assert [c["id"] for c in d["top"]] == [0, 1, 2, 3, 4]

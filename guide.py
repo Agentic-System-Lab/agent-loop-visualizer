@@ -692,10 +692,12 @@ SECTIONS = [
                "token 浮窗裡的「模型給的機率」、排名和前 5 名候選都來自這個分布。",
          "en": "`_sample()` runs once per token. It first takes the softmax of the raw logits, the model's own distribution (T = 1, nothing cut): "
                "the model probability, the rank and the top 5 candidates in a token's popover all come from it."},
-        {"zh": "temperature ≤ 0 是 greedy，直接拿機率最高的。否則依序：logits ÷ T → 只留前 k 個（top-k，0 = 不限）→ "
+        {"zh": "temperature ≤ 0 是 greedy，直接拿機率最高的；兩個 token 機率一樣時拿 id 小的，和 `generate()` 的 argmax 一樣"
+               "（bfloat16 的 logits 打平比想像中常見）。否則依序：logits ÷ T → 只留前 k 個（top-k，0 = 不限）→ "
                "重新 softmax → 從機率最高的往下累加，累積機率達到 top-p 為止（nucleus，至少留一個）→ 重新正規化 → "
                "`torch.multinomial` 抽一個。這段跟模型無關，兩個家族共用。",
-         "en": "A temperature of 0 or less is greedy: it takes the most likely token. Otherwise, in order: logits ÷ T → keep only the top k "
+         "en": "A temperature of 0 or less is greedy: it takes the most likely token, and of two equally likely ones the lower id, as "
+               "`generate()`'s argmax does (in bfloat16, logits tie more often than one would think). Otherwise, in order: logits ÷ T → keep only the top k "
                "(top-k; 0 = no limit) → softmax again → add up from the most likely down until the cumulative probability reaches top-p "
                "(nucleus, keeping at least one) → renormalize → draw one with `torch.multinomial`. None of this depends on the model; both families share it."},
         Code("llm.py", "def _sample(self, logits"),
