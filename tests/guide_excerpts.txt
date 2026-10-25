@@ -160,7 +160,7 @@ families/qwen3_5.py: QWEN3_5 = Family(
 == files ==
 
 [[llm.py|MODELS_DIR = Path(]]
-    MODELS_DIR = Path(os.environ.get("HF_HUB_CACHE") or ROOT / "models").expanduser()
+    MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser()
 
 [[families/__init__.py|REVISIONS = {]]
     REVISIONS = {

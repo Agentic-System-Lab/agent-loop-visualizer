@@ -40,8 +40,9 @@ import media
 TOP_N = 5
 ROOT = Path(__file__).resolve().parent
 # Models download into models/ next to this file, which git ignores, rather than into the shared
-# ~/.cache/huggingface/hub, so they are easy to find and leave with the project. HF_HUB_CACHE puts them elsewhere.
-MODELS_DIR = Path(os.environ.get("HF_HUB_CACHE") or ROOT / "models").expanduser()
+# ~/.cache/huggingface/hub, so they are easy to find and leave with the project. AGENT_LOOP_MODELS puts them
+# elsewhere; HF_HUB_CACHE does not, because it is often set once for every project on a machine.
+MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser()
 
 
 @dataclass

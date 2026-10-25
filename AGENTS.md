@@ -39,7 +39,7 @@ guide.py           the 運作說明 page: content in both languages, code refere
 i18n.py            the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
 assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach, also offered above the input box)
 tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
-models/            downloaded models (llm.MODELS_DIR), which git ignores; HF_HUB_CACHE moves them
+models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_LOOP_MODELS moves them, HF_HUB_CACHE does not
 ```
 
 ## Rules that keep it working

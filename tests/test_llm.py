@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import runpy
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -594,9 +595,18 @@ def test_models_download_at_their_pinned_revision_into_the_project_folder_git_ig
         {"revision": None, "allow_patterns": "config.json", "cache_dir": llm.MODELS_DIR},  # main
     ]
     root = Path(llm.__file__).resolve().parent
-    if not os.environ.get("HF_HUB_CACHE"):  # which moves them out of the project
+    if not os.environ.get("AGENT_LOOP_MODELS"):  # which moves them out of the project
         assert llm.MODELS_DIR == root / "models"
     assert "/models/" in (root / ".gitignore").read_text().split()
+
+
+def test_only_agent_loop_models_moves_the_models_folder_not_a_machine_wide_hf_hub_cache(monkeypatch, tmp_path):
+    # MODELS_DIR is read when llm.py is imported, so run the module's code again, apart from the imported llm.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.delenv("AGENT_LOOP_MODELS", raising=False)
+    assert runpy.run_path(llm.__file__)["MODELS_DIR"] == Path(llm.__file__).resolve().parent / "models"
+    monkeypatch.setenv("AGENT_LOOP_MODELS", str(tmp_path / "elsewhere"))
+    assert runpy.run_path(llm.__file__)["MODELS_DIR"] == tmp_path / "elsewhere"
 
 
 def test_a_model_folder_lists_its_files_their_sizes_and_the_fields_its_notes_name(monkeypatch, tmp_path):

@@ -453,10 +453,10 @@ SECTIONS = [
             {"zh": "`from_pretrained` 載入的東西，全部來自 `models/` 裡每個模型各自的資料夾；兩個模型和 Gemma 的草稿模型分別說明。",
              "en": "Everything `from_pretrained` loads comes from one folder per model in `models/`; here is each, for both models and Gemma's drafter."}, (
         {"zh": "`_download()` 用 `snapshot_download()` 把模型下載到 `MODELS_DIR`（[[llm.py|MODELS_DIR = Path(]]）：預設是專案裡的 `models/`，git 不會追蹤它；"
-               "設定 `HF_HUB_CACHE` 就換到別的地方。下載的是 `REVISIONS` 固定的 commit（[[families/__init__.py|REVISIONS = {]]），不是當下的 `main`，"
+               "設定 `AGENT_LOOP_MODELS` 就換到別的地方（`HF_HUB_CACHE` 不行，因為它常是整台電腦所有專案共用的設定）。下載的是 `REVISIONS` 固定的 commit（[[families/__init__.py|REVISIONS = {]]），不是當下的 `main`，"
                "所以不管什麼時候下載，拿到的都是這一頁寫作和測試時用的檔案。已經下載過的檔案不會再抓，連不上 Hub 時直接用資料夾裡現有的。",
          "en": "`_download()` has `snapshot_download()` fetch a model into `MODELS_DIR` ([[llm.py|MODELS_DIR = Path(]]): by default the project's `models/`, "
-               "which git ignores; `HF_HUB_CACHE` moves it elsewhere. It downloads the commit pinned in `REVISIONS` "
+               "which git ignores; `AGENT_LOOP_MODELS` moves it elsewhere (`HF_HUB_CACHE` does not, since it is often set once for every project on a machine). It downloads the commit pinned in `REVISIONS` "
                "([[families/__init__.py|REVISIONS = {]]), not whatever `main` is by then, so whenever it runs, it gets the files this page was "
                "written and tested against. Files already there are not fetched again, and when the Hub cannot be reached, what the folder holds is used."},
         Code("llm.py", "def _download("),
