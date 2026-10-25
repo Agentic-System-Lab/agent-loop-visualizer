@@ -26,6 +26,10 @@ KINDS = {
     **dict.fromkeys(("mp4", "mov", "webm", "mkv"), "video"),
 }
 DATA_TYPES = ("csv", "tsv", "json", "txt", "md", "xlsx")  # files only run_python reads
+# How the chat plays a clip back. Browsers sniff the file, so the type changes nothing there, but the player's
+# download takes it for the file's extension. Safari cannot play a Matroska (.mkv) video, so the chat shows its frames.
+MIME = {"wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4", "flac": "audio/flac", "ogg": "audio/ogg",
+        "mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm"}
 PREVIEW_CHARS = 300  # of a text file's first line, shown to the model so its code can use the right columns
 MEDIA = ("image", "audio", "video")
 MAX_FRAMES = 64  # frames decoded from a video, evenly spaced; the processor samples its own number from them
@@ -66,6 +70,11 @@ def save(folder: Path, name: str, data: bytes, modalities: tuple[str, ...]) -> A
         path = folder / f"{stem}-{n}{suffix}"
     path.write_bytes(data)
     return Attachment(path.name, kind_of(path.name, modalities), str(path), len(data))
+
+
+def mime(name: str) -> str | None:
+    """The type the chat plays a clip back as, or None for a video browsers may not play (then: frame_strip)."""
+    return MIME.get(Path(name).suffix.lower().lstrip("."))
 
 
 def fmt_size(n: int) -> str:
@@ -146,3 +155,12 @@ def load_video(path: str) -> tuple[np.ndarray, dict]:
     # Evenly spaced, the frames kept are a video of their own at a lower frame rate.
     duration = total / fps
     return np.stack(frames), {"fps": len(frames) / duration, "total_num_frames": len(frames), "duration": duration}
+
+
+def frame_strip(path: str, n: int = 4, height: int = 120) -> np.ndarray:
+    """`n` of the frames load_video keeps for the model, side by side and `height` pixels tall: the chat's preview of a
+    video the browser may not play."""
+    frames, _ = load_video(path)
+    picked = [Image.fromarray(frames[i]) for i in np.linspace(0, len(frames) - 1, min(n, len(frames))).round().astype(int)]
+    size = (max(1, round(picked[0].width * height / picked[0].height)), height)
+    return np.concatenate([np.asarray(frame.resize(size)) for frame in picked], axis=1)

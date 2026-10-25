@@ -59,8 +59,10 @@ def _audio(path: Path, container_format: str, codec: str):
             out.mux(packet)
 
 
-def ball_frames(n: int = 30, size=(320, 240)):
-    """A red ball rolling from the left edge to the right, as in ball.mp4."""
+def ball_frames(n: int = 32, size=(320, 240)):
+    """A red ball rolling from the left edge to the right, as in ball.mp4: 32 frames, played at 4 a second. Gemma 4
+    writes each frame's time in whole seconds, and over 8 seconds those times tell it the frames are a sequence; packed
+    into 3 seconds, it took them for still pictures one time in four."""
     for i in range(n):
         frame = Image.new("RGB", size, "#f2efe6")
         draw = ImageDraw.Draw(frame)
@@ -72,7 +74,7 @@ def ball_frames(n: int = 30, size=(320, 240)):
 
 def _video(path: Path, container_format: str, codec: str):
     with av.open(str(path), "w", format=container_format) as out:
-        stream = out.add_stream(codec, rate=Fraction(10))
+        stream = out.add_stream(codec, rate=Fraction(4))
         stream.width, stream.height, stream.pix_fmt = 320, 240, "yuv420p"
         for pixels in ball_frames():
             for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format="rgb24")):

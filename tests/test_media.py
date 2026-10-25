@@ -120,8 +120,8 @@ def write_video(path: Path, frames: int, size=(64, 48), fps=10):
 
 def test_a_short_video_keeps_every_frame():
     frames, meta = media.load_video(str(EXAMPLES / "ball.mp4"))
-    assert frames.shape == (30, 240, 320, 3)
-    assert meta == {"fps": pytest.approx(10.0), "total_num_frames": 30, "duration": pytest.approx(3.0)}
+    assert frames.shape == (32, 240, 320, 3)
+    assert meta == {"fps": pytest.approx(4.0), "total_num_frames": 32, "duration": pytest.approx(8.0)}
 
 
 def test_a_long_video_keeps_evenly_spaced_frames_at_their_own_rate(tmp_path):
@@ -156,8 +156,18 @@ def test_every_format_is_read_as_what_it_is(tmp_path, ext):
         assert 5.7 < len(media.load_audio(path, 16000)) / 16000 < 6.1
     elif kind == "video":
         frames, meta = media.load_video(path)
-        assert frames.shape == (30, 240, 320, 3) and meta["fps"] == pytest.approx(10.0)
+        assert frames.shape == (32, 240, 320, 3) and meta["fps"] == pytest.approx(4.0)
         assert frames[0][190 - 22, 30].tolist() != frames[-1][190 - 22, 30].tolist()  # the ball has rolled away from the left
     else:
         first = {"csv": "month,region,units,revenue", "tsv": "month\tregion\tunits\trevenue", "txt": "Sales report, 2025", "md": "# Sales, 2025"}
         assert media.preview(path) == first.get(ext, "")
+
+
+def test_the_chat_plays_back_what_browsers_play_and_shows_frames_of_the_rest(tmp_path):
+    assert media.mime("a.MP3") == "audio/mpeg" and media.mime("b.m4a") == "audio/mp4" and media.mime("c.mov") == "video/quicktime"
+    assert media.mime("d.mkv") is None  # Safari cannot play Matroska
+    assert all(media.mime(f"x.{ext}") for ext, kind in media.KINDS.items() if kind == "audio")
+    strip = media.frame_strip(str(samples.make(tmp_path, "mkv")))
+    assert strip.shape == (120, 4 * 160, 3)  # four 320×240 frames at 120 pixels tall, side by side
+    red = lambda pixel: pixel[0] > 150 and pixel[1] < 100  # the ball's center, at half size: (15, 84) in the first frame
+    assert red(strip[84, 15]) and not red(strip[84, 3 * 160 + 15])  # by the last frame it has rolled away from the left

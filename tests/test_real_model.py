@@ -173,13 +173,18 @@ def test_the_model_writes_code_that_runs_in_the_sandbox(gemma, tmp_path):
 
 # ---------- every format the page accepts, with both models ----------
 
+def rolls_left_to_right(final: str) -> bool:
+    """Says the ball rolls left to right, in English or in Chinese (從左側滾動到右側), and not the other way."""
+    text = final.lower().replace("*", "")
+    return bool(re.search(r"left to right|左.{0,4}到.{0,2}右", text)) and not re.search(r"right to left|右.{0,4}到.{0,2}左", text)
+
+
 MEDIA_QUESTIONS = {  # with tools off, greedy: what each model must get right from each kind of file
     "image": ("What is the TOTAL printed on this receipt? Answer with the number only.", lambda final: samples.TOTAL_PRINTED in final),
     "audio": ("Transcribe the speech in this recording into English text.",
               lambda final: "apostle of the middle classes" in final.lower()),
     # Gemma often answers this one in Chinese
-    "video": ("Does the red ball in this video roll from left to right, or from right to left?",
-              lambda final: re.search(r"left to right|左.{0,3}右", final.lower()) and not re.search(r"right to left|右.{0,3}左", final.lower())),
+    "video": ("Does the red ball in this video roll from left to right, or from right to left?", rolls_left_to_right),
 }
 
 
