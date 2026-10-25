@@ -17,6 +17,8 @@ uv run pytest                                              # ~40 s; loads no wei
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen, ~4 min; -k Qwen for one
 docker build -t agent-loop-sandbox sandbox                 # optional: run_python's sandbox; its tests skip without it; bump SANDBOX_VERSION with the Dockerfile
 uv run streamlit run streamlit_app.py                      # http://localhost:8501; MODEL_ID=Qwen/Qwen3.5-0.8B starts on Qwen
+VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py   # the model on a vLLM server: vllm serve <model> --revision <its REVISIONS commit>
+VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # vllm_backend.py against that real server
 uv run python guide.py _site                               # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
 ```
@@ -30,7 +32,8 @@ are not changing.
 streamlit_app.py   layout, session state, model menu, background thread; redraws every 0.5 s while a run is live
 agent.py           the harness (Run): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
 llm.py             LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
-backend.py         Backend: what agent.py and the page ask of whatever runs the model (LocalLLM, tests' FakeLLM); Sampling, Encoded, the token event's fields
+backend.py         Backend: what agent.py and the page ask of whatever runs the model (LocalLLM, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
+vllm_backend.py    VLLMBackend (VLLM_URL): the tokenizer and chat template here, the token ids to a vLLM server's /v1/completions, each token's log probabilities back
 families/          everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
 tools.py           tools: the schema the model reads plus the Python function the harness runs; run_python's docker run
 media.py           attachments: saved per conversation, written into the user message, decoded for the processor (PyAV)
@@ -63,6 +66,8 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_
 - **The decoding loop stays exact.** Greedy output equals `model.generate()`. MTP only changes how many
   forward passes run: greedy with MTP equals greedy without, and sampling with MTP keeps each token's
   distribution. `tests/test_llm.py` and `tests/test_real_model.py` check this; don't loosen them.
+  This is about llm.py: vLLM runs its own kernels, so VLLMBackend promises only that the server reads
+  exactly the prompt's token ids and that nothing it shows was made up where the server sent nothing.
 - **Escape everything the model writes** before it reaches `st.html`. tests/test_render.py checks it,
   and also that every prefix of a run's events renders, because the page redraws mid-run.
 - **guide.py finds code by text, not line number.** `Code("agent.py", "def run(self):")` and inline
@@ -100,9 +105,9 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_
 - **One model in memory, one run at a time.** `current_llm()` is `st.cache_resource(max_entries=1)` and
   `generation_slot()` is a lock shared by every tab.
 - The app listens on localhost only (`.streamlit/config.toml`) because it runs a model on the user's
-  machine. Keep it that way.
-- **What a model reads comes from the checkpoint.** `LocalLLM.modalities` is worked out from the config
-  and the processor, not the family. A file of a kind the model does not read is a plain file for
+  machine. Keep it that way. With `VLLM_URL` the prompts go to that server; the page itself stays local.
+- **What a model reads comes from the checkpoint and the backend.** `LocalLLM.modalities` is worked out from the config
+  and the processor, not the family; `VLLMBackend.modalities` is empty, since /v1/completions takes token ids only. A file of a kind the model does not read is a plain file for
   `run_python`. `encode()` expands the media into their tokens, and the `context` event carries that
   expanded text, because it is what the model reads.
 - **Docker only when asked for.** `run_python` is offered only when Let the model write code is on and
@@ -119,6 +124,9 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_
   and skips models not yet downloaded into models/. tests/test_real_model.py loads the real
   weights and runs only with `RUN_MODEL_TESTS=1`. After changing parsing, prompts, stop tokens or the
   decoding loop, run them if the models are available, and say whether they ran or were skipped.
+- tests/test_vllm_backend.py fakes the vLLM server with `httpx.MockTransport`, in the stream format of vLLM
+  0.32's /v1/completions; when the models' tokenizers are in models/ it also runs them through the real chat
+  templates, and with `VLLM_TEST_URL` it asks a real server. Read vLLM's source before changing what is sent or read.
 - Wikipedia is faked over HTTP; the default suite never touches the network. Tests that need Docker
   run only when `tools.sandbox_problem()` finds it, and skip otherwise.
 - Every format `media.py` accepts has a sample in tests/samples.py (test_media.py fails otherwise), a

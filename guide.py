@@ -381,6 +381,11 @@ SECTIONS = [
              "en": "`backend.py`: everything the harness and the page ask of whatever runs the model, `Backend` ([[backend.py|class Backend(Protocol):]]): "
                    "`render()`, `encode()` and `generate()`, and which fields of a token event are always there and which only when the backend knows them. "
                    "`LocalLLM` in `llm.py` is one backend; running the model on a serving engine such as vLLM would mean writing another."},
+            {"zh": "`vllm_backend.py`：設了 `VLLM_URL` 時用的 `Backend`（[[vllm_backend.py|class VLLMBackend:]]）。prompt 照樣在這裡 render、切成 token，"
+                   "token id 送到 vLLM 伺服器，每個 token 帶著它的 log 機率和前 5 名候選回來；取樣時剃掉了哪些候選，留在伺服器上。",
+             "en": "`vllm_backend.py`: the `Backend` used when `VLLM_URL` is set ([[vllm_backend.py|class VLLMBackend:]]). The prompt is still rendered "
+                   "and tokenized here, the token ids go to a vLLM server, and each token comes back with its log probability and the top 5 candidates; "
+                   "which candidates the sampling cut stays on the server."},
             {"zh": "`families/`：跟著模型走的東西。`gemma4.py`、`qwen3_5.py` 各自負責讀懂自己模型的輸出，並說明它的特殊 token（{{families}}）。",
              "en": "`families/`: everything that goes with the model. `gemma4.py` and `qwen3_5.py` each read their own model's output "
                    "and explain its special tokens ({{families}})."},
@@ -620,13 +625,13 @@ SECTIONS = [
             {"zh": "送出問題：載入模型、開一條 thread 跑 agent", "en": "Sending a question: load the model, start a thread for the agent"},
             {"zh": "輸入框和範例按鈕都走 `start_run()`：拿鎖、凍結設定、開 thread。",
              "en": "The input box and the example buttons both go through `start_run()`: take the lock, freeze the settings, start a thread."}, (
-        {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`；畫面的其他地方只把它當成一個 `Backend`（{{overview}}）。"
+        {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`（設了 `VLLM_URL` 時是 `VLLMBackend`）；畫面的其他地方只把它當成一個 `Backend`（{{overview}}）。"
                "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，"
                "記憶體裡同時只留一個模型，換模型時舊的就會被放掉。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
                "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[llm.py|def _sampling_defaults(self)]]）。"
                "側欄的模型選單換了之後會開新對話（[[streamlit_app.py|key=\"model_id\", on_change=new_chat]]），MTP 也回到關閉；"
                "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[llm.py|def load_drafter(self):]]）。",
-         "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar; the rest of the page "
+         "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar (a `VLLMBackend` when `VLLM_URL` is set); the rest of the page "
                "takes it for just a `Backend` ({{overview}}). `load_llm()` is cached with "
                "`st.cache_resource(max_entries=1)`, so only one model stays in memory, and switching models lets the old one go. The first time "
                "a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "

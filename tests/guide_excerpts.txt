@@ -28,6 +28,9 @@
 [[backend.py|class Backend(Protocol):]]
     class Backend(Protocol):
 
+[[vllm_backend.py|class VLLMBackend:]]
+    class VLLMBackend:
+
 [[tools.py|TOOLS = {]]
     TOOLS = {
 
@@ -147,9 +150,9 @@ families/qwen3_5.py: QWEN3_5 = Family(
         },
         model_note={
             "zh": "混合架構：24 層裡每 4 層有 3 層是 Gated DeltaNet（線性 attention，狀態大小固定，不隨脈絡變長），1 層是 gated attention。"
-            "沒裝 flash-linear-attention 時用 PyTorch 參考實作，prefill 比較慢。",
+            "在 transformers 裡沒裝 flash-linear-attention 時，它們用 PyTorch 參考實作，prefill 比較慢。",
             "en": "A hybrid: of every 4 of its 24 layers, 3 are Gated DeltaNet (linear attention, whose state has a fixed size and does not grow with the context) and 1 is gated attention. "
-            "Without flash-linear-attention installed they run the PyTorch reference implementation, so prefill is slower.",
+            "In transformers, without flash-linear-attention installed, they run the PyTorch reference implementation, so prefill is slower.",
         },
         # The checkpoint ships no generation_config.json; these are the model card's non-thinking text settings.
         sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},
@@ -231,22 +234,26 @@ families/__init__.py: class FileNote:
     def _sampling_defaults(self) -> dict:
 
 [[streamlit_app.py|key="model_id", on_change=new_chat]]
-    tr("模型", "Model"), list(MODELS), format_func=MODELS.get, key="model_id", on_change=new_chat, disabled=busy,
+    tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=new_chat, disabled=busy,
 
 [[llm.py|def load_drafter(self):]]
     def load_drafter(self):
 
 streamlit_app.py: @st.cache_resource(max_entries=1 … def current_llm() -> Backend:
     @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
-    def load_llm(model_id: str) -> LocalLLM:
-        llm = LocalLLM(model_id)
+    def load_llm(model_id: str) -> Backend:
+        llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)
         llm.warmup()
         return llm
 
 
     def current_llm() -> Backend:
         model_id = st.session_state.model_id
-        with st.spinner(tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")):
+        if VLLM_URL:
+            loading = tr(f"連線到 {VLLM_URL} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {VLLM_URL} and loading {model_id}'s tokenizer…")
+        else:
+            loading = tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")
+        with st.spinner(loading):
             llm = load_llm(model_id)
         if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
             for key, value in {**llm.info["defaults"], "mtp": False}.items():

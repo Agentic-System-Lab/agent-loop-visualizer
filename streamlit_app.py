@@ -8,6 +8,9 @@ stage to a list. While a run is live, a fragment redraws the page from that list
 every half second. Clicking stop or approve reruns the script but not the thread,
 so the loop keeps going.
 
+With VLLM_URL set, a vLLM server runs the model instead of this machine (vllm_backend.py), and the
+model menu lists what that server serves.
+
 The top bar also links to 運作說明 (How it works), a walk through the loop with the code behind it:
 a static page that guide.py builds and GitHub Pages serves.
 
@@ -33,6 +36,7 @@ import families
 import media
 import render
 import tools
+import vllm_backend
 from agent import Run, RunSettings
 from backend import Backend, Sampling
 from i18n import LANGS, from_locale, pick
@@ -42,6 +46,8 @@ from tools import TOOLS
 # The model menu; MODEL_ID picks the one selected at first, and may name a model the menu does not list.
 DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(families.MODELS)))
 MODELS = {**families.MODELS, DEFAULT_MODEL: families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
+# Where a vLLM server listens (http://localhost:8000, say); with it set, the server runs the model, not this machine.
+VLLM_URL = os.environ.get("VLLM_URL")
 ASSETS = Path(__file__).parent / "assets"
 SAMPLES = ASSETS / "examples"  # the files some examples attach, and the sample files offered above the input box
 # Each conversation's files go in a folder of their own under here. It is under the home folder because that is
@@ -102,16 +108,35 @@ def tr(zh: str, en: str) -> str:
     return pick(st.session_state.lang, zh, en)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def model_menu() -> dict[str, str]:
+    """The model menu, id -> label: MODELS, or with VLLM_URL the models the vLLM server serves, each by what it was
+    loaded from, which is the Hugging Face id its tokenizer is downloaded by."""
+    if not VLLM_URL:
+        return MODELS
+    served = (card.get("root") or card["id"] for card in vllm_backend.served_models(VLLM_URL))
+    return {model_id: families.MODELS.get(model_id, model_id) for model_id in served}
+
+
+def default_model() -> str:
+    menu = model_menu()
+    return DEFAULT_MODEL if DEFAULT_MODEL in menu else next(iter(menu))
+
+
 @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
-def load_llm(model_id: str) -> LocalLLM:
-    llm = LocalLLM(model_id)
+def load_llm(model_id: str) -> Backend:
+    llm = vllm_backend.VLLMBackend(model_id, VLLM_URL) if VLLM_URL else LocalLLM(model_id)
     llm.warmup()
     return llm
 
 
 def current_llm() -> Backend:
     model_id = st.session_state.model_id
-    with st.spinner(tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")):
+    if VLLM_URL:
+        loading = tr(f"連線到 {VLLM_URL} 的 vLLM 伺服器，載入 {model_id} 的 tokenizer…", f"Connecting to the vLLM server at {VLLM_URL} and loading {model_id}'s tokenizer…")
+    else:
+        loading = tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")
+    with st.spinner(loading):
         llm = load_llm(model_id)
     if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
         for key, value in {**llm.info["defaults"], "mtp": False}.items():
@@ -177,7 +202,8 @@ def init_state():
     st.session_state.setdefault("history", [])
     st.session_state.setdefault("view", None)
     st.session_state.setdefault("viz_tab", "loop")
-    st.session_state.setdefault("model_id", DEFAULT_MODEL)
+    if "model_id" not in st.session_state:  # asking the vLLM server what it serves only when there is no choice yet
+        st.session_state.model_id = default_model()
     st.session_state.setdefault("sampling_for", None)
     st.session_state.setdefault("chat_id", uuid.uuid4().hex[:12])
 
@@ -278,18 +304,21 @@ def show_run(run_index: int):
 
 # ---------- sidebar ----------
 
-def sidebar(llm: Backend, live: bool, busy: bool):
+def sidebar(llm: Backend, menu: dict[str, str], live: bool, busy: bool):
     info, lang = llm.info, st.session_state.lang
     with st.sidebar:
         st.markdown(tr("### Agent Loop 可視化", "### Agent Loop Visualizer"))
         st.selectbox(
-            tr("模型", "Model"), list(MODELS), format_func=MODELS.get, key="model_id", on_change=new_chat, disabled=busy,
+            tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=new_chat, disabled=busy,
             help=tr("換模型會開始新的對話，解碼設定也換成新模型的建議值。harness、工具和畫面都不變。",
                     "Switching models starts a new conversation and resets the decoding settings to what the new model recommends. "
                     "The harness, the tools and the page stay the same."),
         )
-        st.caption(f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · "
-                   + tr(f"載入 {info['load_seconds']} s", f"loaded in {info['load_seconds']} s"))
+        if server := info.get("server"):
+            st.caption(f"`{llm.model_id}` · {llm.family.name} · {server['engine']} {server.get('version') or ''} · {server['url']}")
+        else:
+            st.caption(f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · "
+                       + tr(f"載入 {info['load_seconds']} s", f"loaded in {info['load_seconds']} s"))
 
         st.markdown(tr("##### 迴圈", "##### Loop"))
         st.toggle(tr("使用工具", "Use tools"), key="use_tools", help=tr("關掉就只是聊天機器人：模型看不到任何工具。", "Off, it is just a chatbot: the model sees no tools."))
@@ -320,6 +349,13 @@ def sidebar(llm: Backend, live: bool, busy: bool):
 
 
 def mtp_help(llm: Backend) -> str:
+    if server := llm.info.get("server"):
+        return tr(
+            f"{server['engine']} 伺服器啟動時就決定要不要推測解碼（`--speculative-config`），這裡不能切換。伺服器加上 "
+            "`--per-request-spec-decode-metrics summary` 的話，每一步會顯示它收下幾個猜測，但不會說是哪幾個 token。",
+            f"Whether the {server['engine']} server decodes speculatively is set when it starts (`--speculative-config`), not here. "
+            "Started with `--per-request-spec-decode-metrics summary`, it says how many guesses it kept in each step, though not which tokens they were.",
+        )
     if not llm.drafter_id:
         return tr("這個模型沒有搭配的 MTP 草稿模型，目前只有 Gemma 4 E2B 有。", "This model has no MTP drafter to go with it; for now only Gemma 4 E2B has one.")
     return tr(
@@ -568,11 +604,16 @@ def model_panel(llm: Backend, data: dict | None):
 # ---------- pages ----------
 
 def agent_page():
-    init_state()
-    llm = current_llm()
+    try:
+        init_state()
+        menu = model_menu()
+        llm = current_llm()
+    except vllm_backend.ServerError as e:  # the vLLM server is down or refused: say so, rather than show a traceback
+        st.error(e.text[st.session_state.lang], icon=":material/cloud_off:")
+        st.stop()
     own_live = any(run.live for run in st.session_state.runs)
     polling = own_live or other_tab_run() is not None
-    sidebar(llm, own_live, polling)
+    sidebar(llm, menu, own_live, polling)
 
     @st.fragment(run_every=POLL_SECONDS if polling else None)
     def workspace():

@@ -21,6 +21,7 @@ import agent
 import llm
 import render
 import tools
+import vllm_backend
 from backend import Sampling
 from families import GEMMA4, QWEN3_5
 from fakes import MEDIA_TOKENS, FakeLLM, tool_call
@@ -414,6 +415,86 @@ def test_reset_turns_mtp_off(at):
     mtp_toggle(at).set_value(True).run()
     click(at, "還原成模型建議值")
     assert mtp_toggle(at).value is False
+
+
+# ---------- a vLLM server runs the model ----------
+
+@pytest.fixture
+def vllm(monkeypatch, models, outputs):
+    """The page with VLLM_URL set. The server serves Qwen3.5 under the name "qwen", and a fake model with what a
+    VLLMBackend has (text only, the server in its info, nothing about weights loaded here) stands in for the backend.
+    `made` holds each one the page makes; set `down` and the server cannot be reached."""
+    state = {"made": [], "down": False}
+
+    class ServedLLM(FakeLLM):
+        def __init__(self, model_id, url):
+            super().__init__(outputs, model_id)
+            self.modalities = ()
+            self.drafter_id = None
+            unknown = ("device", "dtype", "parameters", "parameter_parts", "load_seconds")
+            self.info = {k: v for k, v in self.info.items() if k not in unknown} | {
+                "modalities": [], "drafter_id": None, "server": {"engine": "vLLM", "version": "0.32.0", "url": url, "served_as": "qwen"}}
+            state["made"].append(self)
+
+    def served_models(url, transport=None):
+        if state["down"]:
+            raise vllm_backend.ServerError(f"連不上 {url} 的 vLLM 伺服器。", f"Could not reach the vLLM server at {url}.")
+        return [{"id": "qwen", "root": "Qwen/Qwen3.5-0.8B", "max_model_len": 8192}]
+
+    monkeypatch.setenv("VLLM_URL", "http://localhost:8000")
+    monkeypatch.setattr(vllm_backend, "VLLMBackend", ServedLLM)
+    monkeypatch.setattr(vllm_backend, "served_models", served_models)
+    return state
+
+
+def test_with_vllm_url_the_page_runs_what_the_server_serves(vllm, at, models, outputs):
+    menu = next(s for s in at.selectbox if s.label == "模型")
+    assert menu.options == ["Qwen3.5 0.8B (Alibaba)"] and menu.value == "Qwen/Qwen3.5-0.8B"
+    assert models == [] and [m.model_id for m in vllm["made"]] == ["Qwen/Qwen3.5-0.8B"]  # nothing loaded on this machine
+    assert "`Qwen/Qwen3.5-0.8B` · Qwen3.5 · vLLM 0.32.0 · http://localhost:8000" in captions(at)
+    outputs.append("答案是 42。<|im_end|>")
+    ask(at)
+    assert "答案是 42。" in drawn_text(at) and vllm["made"][0].prompts
+
+
+def test_with_vllm_the_sidebar_says_the_server_decides_speculative_decoding(vllm, at):
+    assert mtp_toggle(at).disabled and mtp_toggle(at).value is False
+    assert "--speculative-config" in mtp_toggle(at).help and "--per-request-spec-decode-metrics" in mtp_toggle(at).help
+
+
+def test_with_vllm_the_model_reads_text_only(vllm, at):
+    labels = example_labels(at)
+    assert "這張收據上的品項加起來是多少？和收據上寫的總計一樣嗎？" not in labels
+    assert "影片裡的紅球是從左邊滾到右邊，還是從右邊滾到左邊？" not in labels
+    assert "台北現在幾點？紐約呢？" in labels
+
+
+def test_with_vllm_the_model_tab_says_the_server_runs_it(vllm, at):
+    tab(at).set_value("model").run()
+    html = page_html(at)
+    assert "Qwen3.5 家族，由 http://localhost:8000 的 vLLM 伺服器跑" in html and "<dd>vLLM 0.32.0</dd>" in html
+    assert "transformers 跑" not in html and 'class="params-bar"' not in html and "None" not in drawn_text(at)
+    assert "伺服器自己讀權重" in html
+
+
+def test_a_vllm_server_that_goes_down_later_is_said_not_a_traceback(vllm, at):
+    vllm["down"] = True
+    st.cache_data.clear()  # as when the menu's minute is up
+    at.run()
+    assert not at.exception and [e.value for e in at.error] == ["連不上 http://localhost:8000 的 vLLM 伺服器。"]
+
+
+@pytest.mark.parametrize(("locale", "message"), [("zh-TW", "連不上 http://localhost:8000 的 vLLM 伺服器。"),
+                                                 ("en-US", "Could not reach the vLLM server at http://localhost:8000.")])
+def test_a_vllm_server_that_cannot_be_reached_is_said_in_the_page_language(vllm, browser, new_tab, locale, message):
+    vllm["down"] = True
+    browser["locale"] = locale
+    at = new_tab()
+    assert [e.value for e in at.error] == [message] and not at.chat_input
+    vllm["down"] = False
+    st.cache_data.clear()  # the menu is not cached while the server is down; this only makes sure of it
+    at.run()
+    assert not at.exception and not at.error and at.chat_input
 
 
 # ---------- the guide ----------

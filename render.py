@@ -816,7 +816,7 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
                     f'MTP kept <b>{mtp["accepted"]}</b> / {mtp["drafted"]} guesses{f" ({rate})" if rate else ""} · '
                     f'{mtp["forwards"]} decoding forward passes ({plain} without MTP)',
                 )
-        if s.get("mtp"):
+        if s.get("mtp") or (step["done"] or {}).get("mtp"):  # asked for in the sidebar, or done by a server started with it
             how = pick(lang, "一次推論；草稿模型先猜，主模型一次驗證好幾個 token", "one inference; the drafter guesses, the model checks several tokens at once")
         else:
             how = pick(lang, "一次推論，一次一個 token", "one inference, one token at a time")
@@ -939,22 +939,25 @@ def context_html(step: dict, family: families.Family, lang: str) -> str:
 # ---------- model tab ----------
 
 def model_html(info: dict, lang: str) -> str:
+    """The model's card. A model a server runs (info["server"], vllm_backend.py) has no device, precision, parameter
+    count or load time here, since its weights are not loaded on this machine; the card leaves those out."""
     family = families.get(info["family"])
-    total = info["parameters"]
+    server = info.get("server")
     colors = {"language_model": "var(--c-model)", "audio_tower": "var(--c-env)", "vision_tower": "var(--c-context)", "visual": "var(--c-context)"}
     other = pick(lang, "其他", "other")
-    parts = {PARAM_PARTS[lang].get(k, other): 0 for k in info["parameter_parts"]}
+    parts = {PARAM_PARTS[lang].get(k, other): 0 for k in info.get("parameter_parts", {})}
     color_of = {}
-    for key, n in info["parameter_parts"].items():
+    for key, n in info.get("parameter_parts", {}).items():
         label = PARAM_PARTS[lang].get(key, other)
         parts[label] += n
         color_of[label] = colors.get(key, "var(--muted)")
     bar = "".join(f'<span style="flex:{n};background:{color_of[label]}" title="{label}"></span>' for label, n in parts.items())
     legend = "".join(f'<li><i style="background:{color_of[label]}"></i>{label} {fmt_params(n)}</li>' for label, n in parts.items())
     specs = [
+        (pick(lang, "伺服器", "server"), f'{server["engine"]} {server.get("version") or ""}'.strip()) if server else
         (pick(lang, "裝置", "device"), info["device"].upper()),
-        (pick(lang, "精度", "precision"), info["dtype"]),
-        (pick(lang, "總參數", "parameters"), fmt_params(total)),
+        (pick(lang, "精度", "precision"), info.get("dtype")),
+        (pick(lang, "總參數", "parameters"), fmt_params(info["parameters"]) if info.get("parameters") else None),
         (pick(lang, "層數", "layers"), info["layers"]),
         (pick(lang, "隱藏層維度", "hidden size"), f"{info['hidden_size']:,}"),
         (pick(lang, "注意力頭數", "attention heads"), f"{info['attention_heads']} Q / {info['kv_heads']} KV"),
@@ -963,20 +966,28 @@ def model_html(info: dict, lang: str) -> str:
         (pick(lang, "脈絡上限", "context limit"), f"{info['context_length']:,} tokens"),
         (pick(lang, "詞彙量", "vocabulary"), f"{info['vocab_size']:,}"),
         (pick(lang, "讀得懂", "reads"), " · ".join(MODALITIES[lang][k] for k in ("text", *info.get("modalities", ())))),
-        (pick(lang, "載入時間", "load time"), f"{info['load_seconds']} s"),
+        (pick(lang, "載入時間", "load time"), f"{info['load_seconds']} s" if info.get("load_seconds") is not None else None),
     ]
     spec_html = "".join(f"<div><dt>{k}</dt><dd>{esc(v)}</dd></div>" for k, v in specs if v)
     stops = "".join(f'<li><span class="sp">{esc(p)}</span> {stop_meaning(p, family, lang)}</li>' for p in info["stop_tokens"])
     name, arch = esc(family.name), esc(info["architecture"])
+    if server:
+        engine, url = esc(server["engine"]), esc(server["url"])
+        where = pick(lang, f"{name} 家族，由 {url} 的 {engine} 伺服器跑（{arch}）：prompt 在這裡 render 成 token id 送過去，"
+                           "每個 token 回來時帶著它的機率和前 5 名候選；取樣時剃掉了哪些候選，留在伺服器上。",
+                     f"The {name} family, run by the {engine} server at {url} ({arch}): the prompt is rendered into token ids here and sent "
+                     "there, and each token comes back with its probability and the top 5 candidates; which candidates the sampling cut stays on the server. ")
+    else:
+        where = pick(lang, f"{name} 家族，在你的電腦上用 transformers 跑（{arch}）。", f"The {name} family, running on your computer with transformers ({arch}). ")
     return (
         '<div class="card">'
         f'<h4><a href="https://huggingface.co/{esc(info["model_id"])}" target="_blank" rel="noopener">{esc(info["model_id"])}</a></h4>'
         '<p class="card-sub">'
-        + pick(lang, f"{name} 家族，在你的電腦上用 transformers 跑（{arch}）。", f"The {name} family, running on your computer with transformers ({arch}). ")
+        + where
         + f'{prose_html(family.model_note.get(lang, ""))}</p>'
         f'<dl class="specs">{spec_html}</dl>'
-        f'<div class="params-bar">{bar}</div><ul class="params-legend">{legend}</ul>'
-        f'<p class="card-sub stops-label">{pick(lang, "停止 token：生成到這些 token 就交回 harness", "Stop tokens: generating one of these hands control back to the harness")}</p>'
+        + (f'<div class="params-bar">{bar}</div><ul class="params-legend">{legend}</ul>' if parts else "")
+        + f'<p class="card-sub stops-label">{pick(lang, "停止 token：生成到這些 token 就交回 harness", "Stop tokens: generating one of these hands control back to the harness")}</p>'
         f'<ul class="stop-list">{stops}</ul>'
         f'{drafter_html(info, lang)}</div>'
     )
@@ -1049,7 +1060,7 @@ def step_rows(data: dict, lang: str) -> list[dict]:
             pick(lang, "平均機率", "mean probability"): round(sum(probs) / len(probs), 3) if probs else None,
             pick(lang, "停止", "stop"): done.get("stop_piece") or done.get("finish"),
         })
-        if data["settings"].get("mtp"):
+        if data["settings"].get("mtp") or any((st["done"] or {}).get("mtp") for st in data["steps"]):
             mtp = done.get("mtp") or {}
             rows[-1][pick(lang, "MTP 收下", "MTP kept")] = f'{mtp["accepted"]}/{mtp["drafted"]}' if mtp else None
             rows[-1][pick(lang, "解碼 forward", "decoding forwards")] = mtp.get("forwards")
@@ -1130,9 +1141,10 @@ def field_value(value) -> str:
     return text if len(text) <= 80 else text[:79] + "…"
 
 
-def files_html(folder: dict, notes: dict, family: families.Family, lang: str) -> str:
+def files_html(folder: dict, notes: dict, family: families.Family, lang: str, served: bool = False) -> str:
     """One folder's files, in MODEL_FILES order: size, what the kind of file is for, what the family's note says it
-    holds and the values of the fields the note names. A file the family has a note on but the folder lacks is listed too."""
+    holds and the values of the fields the note names. A file the family has a note on but the folder lacks is listed too;
+    when a server runs the model (`served`), the weights it lacks are on the server."""
     present = {file_kind(f["name"]) or f["name"] for f in folder["files"]}
     rows = [(f["name"], f) for f in folder["files"]] + [(name, None) for name in notes if name not in present]
     order = list(MODEL_FILES)
@@ -1146,7 +1158,12 @@ def files_html(folder: dict, notes: dict, family: families.Family, lang: str) ->
         if kind and kind in said:  # another shard of the weights: the notes are on the first
             what, held = pick(lang, "權重的另一個分片。", "Another shard of the weights."), ""
         said.add(kind)
-        size = fmt_bytes(file["bytes"]) if file else pick(lang, "這個 checkpoint 沒有", "not in this checkpoint")
+        if file:
+            size = fmt_bytes(file["bytes"])
+        elif served and kind == "model.safetensors":
+            size = pick(lang, "只在伺服器上", "on the server only")
+        else:
+            size = pick(lang, "這個 checkpoint 沒有", "not in this checkpoint")
         fields = "".join(f'<li><span class="tk">{esc(k)}</span> {esc(field_value(v))}</li>' for k, v in (file or {}).get("fields", {}).items())
         out.append(
             f'<div><dt><span class="tk">{esc(name)}</span><small>{size}</small></dt>'
@@ -1172,13 +1189,22 @@ def folder_html(info: dict, lang: str) -> str:
         how = which + pick(
             lang,
             "檔案放在 `snapshots/<revision>/`，每個都是連結，指向 `blobs/` 裡用 hash 命名的檔案（系統不能建連結時，例如沒開開發者模式的 Windows，就直接複製），"
-            "所以兩個 revision 共用的檔案只存一份。同一個 revision 在每台電腦、每種作業系統上都是同樣的檔案，不同的只有載入的方式（上面的裝置和精度）。",
+            "所以兩個 revision 共用的檔案只存一份。同一個 revision 在每台電腦、每種作業系統上都是同樣的檔案，不同的只有載入的方式"
+            + ("。" if "server" in info else "（上面的裝置和精度）。"),
             "The files sit in `snapshots/<revision>/`, each a link to a file in `blobs/` named by its hash (a copy where the system cannot make links, "
             "as on Windows without developer mode), so a file two revisions share is stored once. A revision is the same files on every computer and "
-            "every operating system; only how they are loaded differs (the device and precision above).",
+            "every operating system; only how they are loaded differs" + ("." if "server" in info else " (the device and precision above)."),
         )
     else:
         how = pick(lang, "一個磁碟上的 checkpoint，直接從這裡載入。", "A checkpoint on disk, loaded in place.")
+    if server := info.get("server"):  # how goes through prose_html, which escapes it
+        how += pick(
+            lang,
+            f"{server['engine']} 伺服器自己讀權重，所以這裡只下載了 tokenizer、chat template 和設定檔，用來把 prompt render 成 token id；"
+            "伺服器啟動時用 `--revision` 指定同一個 commit，兩邊讀的就是同樣的檔案。",
+            f" The {server['engine']} server reads the weights itself, so only the tokenizer, the chat template and the settings are downloaded "
+            "here, to render the prompts into token ids; a server started with `--revision` at the same commit reads the same files.",
+        )
     drafter = info.get("drafter") or {}
     extra = ""
     if drafter.get("folder"):
@@ -1192,5 +1218,5 @@ def folder_html(info: dict, lang: str) -> str:
         + prose_html(how)
         + pick(lang, "下面是每個檔案的大小和用途，以及它在這個家族的 checkpoint 裡裝了什麼；欄位的值是從檔案讀出來的。",
                " Below is each file's size and purpose, and what it holds in this family's checkpoints; the values of the fields are read from the files.")
-        + f'</p>{files_html(folder, family.file_notes, family, lang)}{extra}</div>'
+        + f'</p>{files_html(folder, family.file_notes, family, lang, served="server" in info)}{extra}</div>'
     )
