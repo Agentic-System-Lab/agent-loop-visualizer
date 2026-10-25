@@ -647,6 +647,15 @@ def test_a_model_newer_than_this_transformers_is_said_in_both_languages(hub, mon
     assert "這個網頁還不支援 google/gemma-4-E2B-it" in refused.value.text["zh"] and "model type `gemma9`" in refused.value.text["en"]
 
 
+def test_a_checkpoint_without_a_config_is_said_in_both_languages(hub, monkeypatch):
+    def missing(folder):  # what transformers says of a folder without config.json, a repo of GGUF files say
+        raise OSError("google/gemma-4-E2B-it does not appear to have a file named config.json.")
+    monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=missing))
+    with pytest.raises(ServerError) as refused:
+        connect(Server([]))
+    assert "這個網頁還不支援 google/gemma-4-E2B-it" in refused.value.text["zh"] and "a file named config.json" in refused.value.text["en"]
+
+
 def test_the_context_limit_and_the_specs_come_from_the_server_and_the_config(hub):
     llm = connect(Server([], max_model_len=8192))
     info = llm.info
@@ -833,6 +842,22 @@ def test_a_server_with_masks_refuses_greedy_and_no_top_k_as_vllm_does(hub, scale
             generate(llm, sampling=sampling)
     if not scale_out:  # asked at load, and refused with a 500
         assert server.probes[-1]["temperature"] == 0.0
+
+
+@pytest.mark.parametrize("status", [400, 503])
+def test_only_a_refusal_of_the_greedy_probe_says_the_server_refuses_greedy_not_a_server_that_is_not_ready(hub, status):
+    server = Server([], logprobs_mode="processed_logprobs")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and json.loads(request.content).get("temperature") == 0.0:
+            return httpx.Response(status, json={"error": {"message": "", "type": "Error", "param": None, "code": status}})
+        return server.handle(request)
+
+    if status == 400:  # what vLLM would send were its check a VLLMValidationError
+        assert VLLMBackend("google/gemma-4-E2B-it", URL, transport=httpx.MockTransport(handle)).refuses_greedy
+    else:
+        with pytest.raises(ServerError, match="HTTP 503"):
+            VLLMBackend("google/gemma-4-E2B-it", URL, transport=httpx.MockTransport(handle))
 
 
 def test_a_server_with_processed_logprobs_but_no_masks_shows_how_many_were_left_when_some_of_the_top_were_cut(hub):

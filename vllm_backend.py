@@ -289,7 +289,7 @@ class VLLMBackend:
             ) from e
         try:
             config = AutoConfig.from_pretrained(files)
-        except ValueError as e:  # a model_type this transformers does not know, so no family here knows it either
+        except (ValueError, OSError) as e:  # a model_type this transformers does not know, or no config.json (a repo of GGUF files)
             raise unsupported(model_id, str(e)) from e
         if not any(config.model_type in f.model_types for f in families.FAMILIES.values()):
             raise unsupported(model_id, f"model_type {config.model_type!r}")
