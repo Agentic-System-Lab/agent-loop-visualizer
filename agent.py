@@ -9,6 +9,9 @@ event so the browser can draw it.
 
 A run keeps the page's language from when it started: the errors and refusals the model reads come
 back in it. The system prompt is the same in both languages.
+
+Files attached to the question (media.py) are saved in the conversation's folder: the images, clips and
+videos the model reads become parts of the user's message, and run_python's sandbox sees the folder as /data.
 """
 
 import json
@@ -16,8 +19,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
+import media
 from i18n import pick
 from llm import LocalLLM, Sampling
 from tools import TOOLS, ToolError
@@ -27,7 +32,7 @@ MAX_FORMAT_ERRORS = 3
 APPROVAL_TIMEOUT = 300  # seconds; an unanswered request (say, from a closed tab) must not hold the model forever
 
 SYSTEM_WITH_TOOLS = """You are a helpful assistant running inside an agent loop.
-Call a tool whenever it gives you something you cannot know or compute reliably yourself: the current time, exact arithmetic, or facts to look up on Wikipedia.
+Call a tool whenever it gives you something you cannot know or compute reliably yourself: the current time, exact arithmetic, facts to look up on Wikipedia, or the result of running code.
 Call one tool at a time and wait for its result. When you have enough information, answer the user directly without calling a tool.
 Reply in the same language and script the user writes in; if the user writes Traditional Chinese, reply in Traditional Chinese.
 使用者用繁體中文時，請用繁體中文回答。"""
@@ -43,6 +48,7 @@ class RunSettings:
     max_steps: int = 6
     thinking: bool = False
     use_tools: bool = True
+    tools: tuple[str, ...] = tuple(TOOLS)  # the tools the model gets when use_tools is on; run_python only once the page allows it
     approve_tools: bool = False
     lang: str = "zh"  # what the model reads from the harness and the tools is worded in this language
 
@@ -56,11 +62,14 @@ def common_prefix(a: str, b: str) -> int:
 
 
 class Run:
-    def __init__(self, llm: LocalLLM, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None]):
+    def __init__(self, llm: LocalLLM, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
+                 attachments: list[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.llm = llm
         self.settings = settings
-        self.messages = [*history, {"role": "user", "content": user_text}]
+        self.messages = [*history, {"role": "user", "content": media.user_content(user_text, list(attachments))}]
+        self.files = files  # the conversation's folder, which run_python's sandbox sees as /data
+        self.tools = {name: t for name, t in TOOLS.items() if name in settings.tools} if settings.use_tools else {}
         self._emit = emit
         self._start = time.perf_counter()
         self._stop = threading.Event()
@@ -88,12 +97,12 @@ class Run:
     def run(self):
         s = self.settings
         family = self.llm.family  # how this model writes its turns, thinking and tool calls
-        tools = [t.schema() for t in TOOLS.values()] if s.use_tools else None
+        tools = [t.schema() for t in self.tools.values()] or None
         schemas = {t.name: t.parameters for t in TOOLS.values()}
-        system = {"role": "system", "content": SYSTEM_WITH_TOOLS if s.use_tools else SYSTEM_NO_TOOLS}
+        system = {"role": "system", "content": SYSTEM_WITH_TOOLS if tools else SYSTEM_NO_TOOLS}
         self.emit(
             "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
-            settings=_settings_dict(s), tools=list(TOOLS) if s.use_tools else [],
+            settings=_settings_dict(s), tools=list(self.tools),
         )
 
         seen: list[tuple[str, str]] = []
@@ -105,19 +114,23 @@ class Run:
             for step in range(1, s.max_steps + 1):
                 self.emit("step_start", step=step)
                 prompt = self.llm.render([system, *self.messages], tools, s.thinking)
-                added_from = common_prefix(prompt, prev_sequence) if prev_sequence else 0
+                encoded = self.llm.encode(prompt, media.parts(self.messages))
+                # Media sit in user messages, all before what is new since the last step; so the new part is the same
+                # text in the prompt and in what the model reads, only further along by what the media expanded into.
+                added_from = len(encoded.text) - len(prompt) + common_prefix(prompt, prev_sequence) if prev_sequence else 0
                 self.emit(
                     "context",
                     step=step,
-                    prompt=prompt,
-                    n_tokens=len(self.llm.tokenizer(prompt, add_special_tokens=False).input_ids),
+                    prompt=encoded.text,
+                    n_tokens=encoded.n_tokens,
                     added_from=added_from,
+                    media_tokens=encoded.media_tokens,
                     context_length=self.llm.context_length,
                     roles=_role_counts([system, *self.messages]),
                 )
 
                 done = None
-                for ev in self.llm.generate(prompt, s.sampling, self._stop.is_set):
+                for ev in self.llm.generate(encoded, s.sampling, self._stop.is_set):
                     kind = ev.pop("type")
                     if kind == "done":
                         done = ev
@@ -129,7 +142,7 @@ class Run:
                 # The chat template may open the thinking itself; that part is in the prompt, not in raw.
                 prefix = family.thought_prefix if prompt.endswith(family.thought_prefix) else ""
                 parsed = family.parse(prefix + raw, schemas, s.lang)
-                calls = parsed["tool_calls"] if s.use_tools else []
+                calls = parsed["tool_calls"] if tools else []
                 self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
 
                 if done["finish"] == "user_stopped":
@@ -184,12 +197,12 @@ class Run:
     def _handle_call(self, step: int, cid: str, call: dict, seen: list) -> str:
         """Validate, approve and execute one tool call. Returns the observation text for the model."""
         lang = self.settings.lang
-        tool = TOOLS.get(call["name"])
+        tool = self.tools.get(call["name"])
         args, errors = call["arguments"] or {}, []
         if call["error"]:
             errors = [pick(lang, f"無法解析工具呼叫：{call['error']}", f"Could not parse the tool call: {call['error']}")]
         elif tool is None:
-            known = ", ".join(TOOLS)
+            known = ", ".join(self.tools)
             errors = [pick(lang, f"沒有 {call['name']} 這個工具，可用的工具是 {known}", f"There is no tool {call['name']}; the tools are {known}")]
         else:
             args, errors = tool.validate(args, lang)
@@ -229,7 +242,7 @@ class Run:
         self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
         start = time.perf_counter()
         try:
-            result, ok = tool.fn(**args), True
+            result, ok = tool.fn(**args, **({"files": self.files} if tool.takes_files else {})), True
         except ToolError as e:
             result, ok = {"error": e.text[lang]}, False
         except Exception as e:
@@ -267,6 +280,7 @@ def _settings_dict(s: RunSettings) -> dict:
         "max_steps": s.max_steps,
         "thinking": s.thinking,
         "use_tools": s.use_tools,
+        "tools": list(s.tools),
         "approve_tools": s.approve_tools,
         "lang": s.lang,
     }

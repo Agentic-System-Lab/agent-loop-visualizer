@@ -6,6 +6,8 @@
 
 - 模型：側欄可以選 [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) 或 [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)，在本機用 Hugging Face `transformers` 推論
 - MTP 推測解碼：Gemma 4 E2B 可以在側欄打開（預設關閉），用 [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant) 當草稿模型，一次 forward 產生好幾個 token
+- 檔案：用輸入框左邊的 ＋ 附上圖片和影片（兩個模型都行）、聲音（Gemma 4 E2B，也可以直接用麥克風錄音）；每個檔案在脈絡裡變成一串 token，畫面上看得到
+- 寫程式（選用）：在側欄打開「讓模型寫程式」，模型多一個 `run_python` 工具，它寫的 Python 在 Docker 沙箱裡執行，也讀得到你附上的資料檔（CSV、TSV、JSON、純文字、Markdown、Excel）。只有這個功能需要 Docker
 - 語言：網頁和運作說明都有繁體中文和英文版，預設跟著瀏覽器的語言，右上角可以切換；選過的語言會記住，下次打開直接用它
 - 授權：[Apache License 2.0](LICENSE)
 
@@ -20,13 +22,13 @@
 | 畫面 | 看得到的東西 | 對應 unit 01 導讀 |
 |---|---|---|
 | 迴圈圖 | 目前在脈絡、模型、harness、環境、停止哪一格，正在流動的箭頭 | §4 Agent 就是放在迴圈裡的模型 |
-| 脈絡 | 每一步模型讀到的完整字串：system prompt、工具 schema、對話，以及上一步接回來的工具結果。滑過深色的特殊 token 會說明它的用途 | §1 脈絡有上限、§3 工具定義也是 token |
+| 脈絡 | 每一步模型讀到的完整字串：system prompt、工具 schema、對話，以及上一步接回來的工具結果。滑過深色的特殊 token 會說明它的用途。附上的圖片、聲音或影片就是它展開成的那一串 token，畫成一個標籤加上個數（`<\|image\|>` ×266），step 卡片也寫出每種媒體佔了幾個 token | §1 脈絡有上限、§3 工具定義也是 token |
 | 模型 | 每個生成的 token，顏色越深代表被選中的 token 機率越低。滑過 token 看機率、排名、前 5 名候選，以及 top-k / top-p 剃掉了哪些；特殊 token 另外說明它的用途。打開 MTP 時，草稿模型猜中的 token 有底線，浮窗寫出草稿猜了什麼、有沒有被收下，step 卡片顯示收下幾個、主模型少跑了幾次 forward | §1 LLM 是會抽樣的條件機率分布、解碼設定 |
 | Harness | 從模型自己的格式（Gemma 4 或 Qwen3.5）解析出的工具呼叫、schema 驗證結果、重複呼叫警告、你的允許或拒絕 | §3 模型從不直接碰環境 |
-| 環境 | 工具實際回傳的結果與耗時 | §2 環境與可觀察的狀態 |
+| 環境 | 工具實際回傳的結果與耗時；`run_python` 的程式碼寫在上面，印出來的東西或 traceback 寫在下面 | §2 環境與可觀察的狀態 |
 | 停止 | 停止原因和停止 token。Gemma 回答完停在 `<turn\|>`（相當於 end_turn）、要工具時停在 `<\|tool_response>`（相當於 tool_use）；Qwen 兩種都停在 `<\|im_end\|>`。另外還有步數上限、token 上限、使用者中斷 | §5 什麼時候停 |
-| 模型分頁 | 參數量拆解、層數與層的種類、attention heads、脈絡上限、MTP 草稿模型、解碼設定的說明、每一步的 prefill 時間與 tok/s（開 MTP 時加上草稿收下幾個、解碼 forward 幾次），以及 tokenizer 全部特殊 token 的 id 與用途（Gemma 24 個、Qwen 33 個） | §1、§7 Agent 是系統 |
-| 運作說明頁 | 一輪對話的 15 個階段（包括 MTP 怎麼猜、怎麼驗證），每段附上做這件事的程式碼片段和行號，有中文和英文兩版。放在 GitHub Pages，行號在產生頁面時從原始碼查出來；每次推上 main 都會重新產生，程式改了會跟著更新 | 全部 |
+| 模型分頁 | 參數量拆解、層數與層的種類、attention heads、脈絡上限、模型讀得懂什麼（文字、圖片、聲音、影片）、MTP 草稿模型、解碼設定的說明、每一步的 prefill 時間與 tok/s（開 MTP 時加上草稿收下幾個、解碼 forward 幾次），以及 tokenizer 全部特殊 token 的 id 與用途（Gemma 24 個、Qwen 33 個） | §1、§7 Agent 是系統 |
+| 運作說明頁 | 一輪對話的 16 個階段（包括圖片怎麼變成 token、MTP 怎麼猜、怎麼驗證），每段附上做這件事的程式碼片段和行號，有中文和英文兩版。放在 GitHub Pages，行號在產生頁面時從原始碼查出來；每次推上 main 都會重新產生，程式改了會跟著更新 | 全部 |
 
 ## 快速開始
 
@@ -38,6 +40,7 @@
 - Linux + CUDA：鎖定的 torch 是 CUDA 13 版本，`nvidia-smi` 右上角的 CUDA Version 要 13.0 以上。驅動太舊時 torch 會偵測不到 GPU，改用 CPU 執行；側欄上方會顯示目前用的裝置
 - [uv](https://docs.astral.sh/uv/)（會自動裝好 Python 3.12）
 - 網路：第一次下載模型，以及 Wikipedia 工具
+- 選用：[Docker](https://docs.docker.com/get-started/get-docker/)（Docker Desktop、OrbStack 或 Colima），只有讓模型寫程式時才需要
 
 ```bash
 uv sync
@@ -45,9 +48,12 @@ uv run hf download google/gemma-4-E2B-it   # 先下載權重（約 10 GB）；�
 uv run hf download Qwen/Qwen3.5-0.8B       # 約 1.8 GB
 uv run hf download google/gemma-4-E2B-it-assistant   # MTP 草稿模型，約 160 MB；跳過的話，第一次打開 MTP 時會自動下載
 uv run streamlit run streamlit_app.py      # 預設先載入 Gemma；MODEL_ID=Qwen/Qwen3.5-0.8B 可以先載入 Qwen
+docker build -t agent-loop-sandbox sandbox # 選用，只要一次：「讓模型寫程式」用的沙箱（約 300 MB）
 ```
 
 瀏覽器會打開 http://localhost:8501 ，語言跟著瀏覽器（中文的瀏覽器看到中文，其他看到英文），右上角的「中文 | English」可以切換，下次打開會用你選過的那個。第一次載入 Gemma 加暖機大約 10–20 秒，Qwen 幾秒；之後重新整理頁面不會再載入。側欄最上面的「模型」選單可以換模型，換了會開新對話，解碼設定也換成新模型的建議值，MTP 回到關閉。側欄的「MTP 推測解碼」第一次打開時才載入草稿模型（不到 1 秒），之後一直留在記憶體裡。
+
+側欄的「讓模型寫程式」預設關閉，關著的時候網頁完全不會去找 Docker。打開之後才檢查 Docker 和 `agent-loop-sandbox` image，缺了哪一個就在側欄說明怎麼安裝 Docker 或建 image；兩個都在，模型才拿得到 `run_python`，要寫 Python 的範例也才會出現。你附上的檔案存在 `~/.cache/agent-loop-visualizer/uploads/` 底下，每段對話一個資料夾（按「新對話」就刪掉），沙箱裡看到的是唯讀的 `/data`。
 
 > 下載時出現 401，可是模型明明是公開的？多半是本機存的 Hugging Face token 過期了。重新登入（`uv run hf auth login`），或加上 `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` 不送 token。
 
@@ -60,7 +66,11 @@ uv run streamlit run streamlit_app.py      # 預設先載入 Gemma；MODEL_ID=Qw
 5. **推理也是 token**：打開「思考模式」，斜體的思考 token 會出現在工具呼叫之前；脈絡分頁裡 system turn 的開頭會多一個 `<|think|>`。
 6. **迴圈會打轉**：問「ReAct 這篇論文是誰提出的？用 Wikipedia 查。」。E2B 常常重複同一個搜尋，harness 會標出「跟之前一模一樣的呼叫」，對照導讀 §4 ReAct 的錯誤分析。
 7. **換模型，harness 不變**：同一個問題分別問 Gemma 和 Qwen，打開脈絡分頁比較：回合標記（`<|turn>` 對 `<|im_start|>`）、工具 schema 放的位置、工具呼叫的寫法（`call:名稱{…}` 對 XML）、工具結果接回的位置都不一樣，但 step 卡片裡的 harness、環境、停止判斷完全相同。
-8. **MTP：猜得中才會快**：在 Gemma 打開「MTP 推測解碼」，分別按「台北現在幾點？紐約呢？」和「Write a Python function to test for primes.」，再問「用三段話介紹台北。」。比較每一步的 tok/s 和底線：工具呼叫幾乎每個 token 都被草稿猜中，英文程式碼約一半，中文長文只有一成左右。把 temperature 設成 0 再開關 MTP 各跑一次，輸出會一模一樣：草稿模型只決定要跑幾次 forward，不決定寫出什麼。
+8. **MTP：猜得中才會快**：在 Gemma 打開「MTP 推測解碼」，按「台北現在幾點？紐約呢？」，在關著「讓模型寫程式」時輸入「Write a Python function to test for primes.」，再問「用三段話介紹台北。」。比較每一步的 tok/s 和底線：工具呼叫幾乎每個 token 都被草稿猜中，英文程式碼約一半，中文長文只有一成左右。把 temperature 設成 0 再開關 MTP 各跑一次，輸出會一模一樣：草稿模型只決定要跑幾次 forward，不決定寫出什麼。
+
+9. **圖片也是 token**：按收據的範例。在 step 卡片的脈絡段和脈絡分頁裡，這張圖是幾百個 `<|image|>`（Gemma）或 `<|image_pad|>`（Qwen），這就是它在脈絡裡的成本。品項加起來是 360，收據上卻寫 370；看看模型是自己加，還是呼叫工具。
+10. **脈絡決定模型聽不聽**：用 Gemma 在中文頁按錄音的範例，它會把那句英文寫下來再翻譯。換到英文頁、開著「使用工具」問「Transcribe this recording.」，它常說自己聽不到聲音，有時還已經把那句話寫進了工具呼叫的參數；關掉「使用工具」再問一次，它就寫出來了。模型和聲音的 token 都一樣，只有脈絡不同。
+11. **在沙箱裡寫程式**：打開「讓模型寫程式」（需要 Docker），按銷售資料的範例。你的訊息最後多了一段說明，寫著檔案的路徑和第一行；step 卡片寫出模型的程式碼，沙箱印出來的東西或 traceback 當作觀察接回去，程式出錯的話模型下一步可以改。也換 Qwen 試試：它通常算得出每個月的合計，接著卻把自己的程式寫壞。
 
 ## 架構
 
@@ -75,7 +85,10 @@ families/          跟著模型走的東西：每個模型家族怎麼寫回合�
   __init__.py      Family 的定義、模型選單 MODELS、MTP 草稿模型 DRAFTERS、依 config.json 的 model_type 找家族
   gemma4.py        Gemma 4：輸出的 parser 與 24 個特殊 token 的說明
   qwen3_5.py       Qwen3.5：輸出的 parser 與 33 個特殊 token 的說明
-tools.py           工具：schema（給模型看）加上 Python 函式（給 harness 執行）
+tools.py           工具：schema（給模型看）加上 Python 函式（給 harness 執行）；run_python 的 Docker 沙箱
+media.py           附件：存檔、寫進使用者訊息，把圖片、聲音、影片解碼給 processor
+sandbox/           run_python 沙箱的 Dockerfile：Python 3.12 加上 numpy、pandas、openpyxl、tabulate
+assets/            網頁的樣式和運作說明的 script；logo.svg；examples/ 是範例附上的檔案
 tests/             pytest 測試，見下面「測試」
 ```
 
@@ -89,7 +102,7 @@ agent 在背景 thread 執行，每走到一個階段就 append 一個事件；U
 
 模型讀到的錯誤（參數不對、工具失敗、你拒絕了）也用這一輪開始時網頁的語言寫，因為它們會原封不動變成觀察；system prompt 兩種語言都一樣，所以模型的行為不跟著網頁語言變。
 
-一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→ `tool_start` → `tool_result`，最後是 `run_end`。
+一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→ `tool_start` → `tool_result`，最後是 `run_end`。`context` 帶的是模型實際讀到的 prompt（每個附件都展開成它的 token），以及每種媒體佔了幾個 token（`media_tokens`）。
 
 ### 為什麼自己寫解碼迴圈
 
@@ -112,6 +125,25 @@ agent 在背景 thread 執行，每走到一個階段就 append 一個事件；U
 | 英文程式碼，約 750 tokens | 8.8 tok/s | 11.6 tok/s（單獨跑 `llm.py`：8.1 → 29.0） | 51% |
 | 中文長文（「用三段話介紹台北。」） | 10.3 tok/s | 10.3 tok/s | 7% |
 
+### 圖片、聲音和影片
+
+模型讀得懂哪些東西，是載入時從 checkpoint 看出來的：config 裡要有那種編碼器，processor 也要有對應的部分。Gemma 4 E2B 讀得懂圖片、聲音和影片；Qwen3.5 0.8B 讀得懂圖片和影片。輸入框只收模型讀得懂的檔案：
+
+| 種類 | 格式 | Gemma 4 E2B | Qwen3.5 0.8B |
+|---|---|---|---|
+| 圖片 | png、jpg、jpeg、webp、gif、bmp | 最多 280 個 token | 看圖片大小（640×480 約 300 個） |
+| 聲音 | wav、mp3、m4a、flac、ogg | 每 40 ms 一個 token，只聽前 30 秒 | —（打開「讓模型寫程式」時當成給 `run_python` 的檔案） |
+| 影片 | mp4、mov、webm、mkv | 32 張畫格（比這短的影片全部都用），每張前面寫上時間 `mm:ss`，每張最多 70 個 token | 每秒 2 張畫格，每 2 張一組，前面寫上時間 |
+| 資料 | csv、tsv、json、txt、md、xlsx | 打開「讓模型寫程式」時給 `run_python` 讀 | 同左 |
+
+chat template 在每個檔案的位置寫一個佔位 token（Gemma 是 `<|image|>`，Qwen 是 `<|vision_start|><|image_pad|><|vision_end|>`），`LocalLLM.encode()` 把對話裡所有檔案交給 processor，processor 把每個佔位 token 展開成那個檔案的 token；脈絡分頁顯示的就是展開後的字串，因為那才是模型讀到的。檔案先由 `media.py` 解碼：圖片轉成 RGB、照 EXIF 轉正；聲音用 PyAV 解碼成單聲道、改成 feature extractor 要的 16 kHz；影片平均取最多 64 張畫格、縮到長邊 768 像素（transformers 自己讀影片要裝 torchcodec）。每個檔案只解碼一次。prefill 時，圖片和影片先跑一次視覺編碼器再交給 prefill，和 `generate()` 的做法一樣（直接交給 forward 的話，transformers 5.20 的 Gemma 4 會漏掉影片的畫格數）；Qwen3.5 記在模型上的圖片位置偏移，每次 prefill 前清掉。prefill 之後的解碼和純文字一樣；`tests/test_real_model.py` 確認附上圖片、影片和錄音時，greedy 的輸出也和 `generate()` 一致。
+
+### 在 Docker 沙箱裡寫程式
+
+打開「讓模型寫程式」而且 Docker 準備好時，模型多一個工具 `run_python`。每次呼叫都從 `sandbox/Dockerfile` 建的 image 開一個新容器：沒有網路，檔案系統唯讀、只有一小塊 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，拿掉所有 Linux capability，用沒有權限的使用者執行，這段對話的資料夾唯讀掛在 `/data`；程式從 stdin 送進去，跑完容器就刪掉。超過 30 秒就停掉；結束代碼不是 0、記憶體用太多或什麼都沒印，都用這一輪的語言當成錯誤回給模型，附上 traceback，模型下一步可以改。
+
+模型看不到資料檔的內容，所以 harness 在使用者訊息後面加一段說明：`run_python` 在哪裡找得到每個檔案，以及文字檔的第一行（CSV 就是欄位名稱）。少了這一行，小模型寫程式時會亂猜欄位，例如不存在的 `Date`，然後出錯；多給幾列資料也不行，Gemma 會把那幾列抄進程式，只用它們算答案。image 裡有 `tabulate`，因為小模型很愛用的 `DataFrame.to_markdown()` 需要它。
+
 ### 支援更多模型
 
 harness（`agent.py`）、解碼迴圈（`llm.py`）和畫面（`render.py`）都只寫一次，裡面沒有任何「如果是 Gemma」的分支。每個模型不一樣的地方集中在 `families/` 的一個 `Family` 物件裡：
@@ -119,6 +151,7 @@ harness（`agent.py`）、解碼迴圈（`llm.py`）和畫面（`render.py`）�
 - 讀輸出：`parse`（把輸出切成思考、工具呼叫、回覆）、`thought_prefix`、`channel_switch`（哪些 token 切到思考、工具呼叫、回覆）、`stop_tokens`
 - 寫回對話：`reasoning_key`（思考存在哪個欄位，chat template 才讀得到）、`text_with_calls`（工具呼叫前的文字留不留）
 - 畫面：`user_turn`、`byte_level`（詞表是不是把 byte 寫成字元，Qwen 就是，所以 token 浮窗要顯示「如果」而不是 `å¦Ĥæŀľ`）、每個特殊 token 的說明、側欄與模型分頁的說明文字、沒有 generation_config.json 時的建議解碼設定
+- 媒體：`processor_kwargs`，給 processor 的設定（Qwen 限制每張影片畫格的像素）；模型讀得懂哪幾種媒體由 checkpoint 決定，不是由家族決定
 
 要加模型：
 
@@ -152,11 +185,13 @@ Qwen 不管回答完或要用工具都停在 `<|im_end|>`，所以 harness 是�
 ## 測試
 
 ```bash
-uv run pytest                                          # 約 25 秒，不載入模型權重、不連網路
-RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma（含 MTP 草稿模型）和 Qwen，約 40 秒；加 -k Qwen 只跑一個
+uv run pytest                                          # 約 40 秒，不載入模型權重、不連網路
+RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma（含 MTP 草稿模型）和 Qwen，約 4 分鐘；加 -k Qwen 只跑一個
 ```
 
 大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，介面和 `LocalLLM` 一樣，所以 harness 和網頁可以從頭跑到尾。
+
+網頁收的每一種檔案格式都有測試：`tests/samples.py` 用範例的檔案做出每種格式的小檔案（收據的每種圖片格式、錄音的每種聲音格式、滾動的球的每種影片格式、銷售資料的每種資料格式）。`media.py` 多收了一種格式卻沒有對應的範例檔，`test_media.py` 就會失敗；`test_real_model.py` 拿每一種格式問兩個模型。需要 Docker 的測試只在 Docker 和沙箱 image 都在時才跑。
 
 運作說明會引用程式碼，`tests/guide_excerpts.txt` 存著它引用的每一段程式，不含行號。改到被引用的程式時，`test_guide.py` 會失敗，並列出引用它的段落：重讀那幾段，把不再正確的說明改掉，再用 `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py` 重寫這個檔案。
 
@@ -165,14 +200,15 @@ RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma�
 | `test_gemma4.py` | Gemma 4 的 parser：思考、工具呼叫、回覆的切分；`<\|"\|>` 字串、巢狀參數、各種格式錯誤 |
 | `test_qwen3_5.py` | Qwen3.5 的 parser：XML 工具呼叫、照 schema 轉型別、思考、各種格式錯誤；用 Qwen 格式跑完整個 harness |
 | `test_families.py` | 每個家族都說明了它用到的 token、中英文說明列出同樣的 token、`model_type` 找得到家族；token 顯示成它代表的文字，只是一個字一部分的 byte 顯示成 `<0xF0>` |
-| `test_tools.py` | schema 驗證與預設值、計算機的 AST 白名單（拒絕 `__import__` 之類）、時區、Wikipedia（HTTP 用假的）；錯誤訊息有中英文兩種 |
-| `test_llm.py` | 自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布 |
-| `test_agent.py` | harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止 |
-| `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；英文畫面上沒有留下中文 |
-| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言 |
-| `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（本機有快取才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、token 浮窗顯示的是它代表的文字、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字） |
+| `test_tools.py` | schema 驗證與預設值、計算機的 AST 白名單（拒絕 `__import__` 之類）、時區、Wikipedia（HTTP 用假的）；`run_python` 鎖住的 `docker run`、各種錯誤（traceback、沒有輸出、記憶體太多、跑太久、沒有 image）、Docker 沒準備好時缺什麼，都有中英文兩種；有 Docker 時，真的沙箱讀得到 `/data` 但改不了、連不上網路，也讀得了每一種資料格式 |
+| `test_llm.py` | 自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；`encode()` 照順序把每種媒體和家族的設定交給 processor、短影片給它全部畫格；圖片和影片在 prefill 前先跑視覺編碼器，上一個 prompt 的位置偏移不會留下來；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布 |
+| `test_agent.py` | harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止；附件變成問題裡的 part 和給 `run_python` 的說明、每一輪的媒體都交給 processor、展開後的脈絡仍然只把工具結果標成新加入、`run_python` 拿到這段對話的資料夾、沒有 `run_python` 的一輪 |
+| `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；一串同樣的特殊 token 畫成一個標籤加個數、截斷的片段不會切開 token、媒體佔了幾個 token、好幾行的程式碼和輸出照行寫出來、這一輪沒提供的工具；英文畫面上沒有留下中文 |
+| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、「新對話」刪掉這段對話的檔案 |
+| `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（本機有快取才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、token 浮窗顯示的是它代表的文字、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字），用真的 processor、問題附上圖片和影片時也一樣 |
+| `test_media.py` | 網頁收的每一種格式都有範例檔、被當成正確的種類（聲音對 Qwen 是一般檔案）、解碼得出來；存檔的名字不重複也不含奇怪字元；問題的 part 和寫出文字檔欄位名稱的說明；照片轉正、聲音改成模型的取樣率、影片畫格平均取、畫格率跟著調整 |
 | `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到、事件表指向真的送出事件的那一行、HTML 標籤成對；每段引用的程式和 `tests/guide_excerpts.txt` 一致，改到那段程式才會變，只是換了行號不會；中英文每一段指向同樣的程式和段落，英文版沒有留下中文；產生的靜態頁有亮色和暗色兩套配色與迴圈圖、寫出對應的 commit，根目錄的頁面會送到正確的語言 |
-| `test_real_model.py` | 預設跳過。每個模型：greedy 解碼和 `model.generate()` 一致，真的模型能呼叫計算機並回答；Gemma 開 MTP 時 greedy 輸出和不開一模一樣，而且草稿真的有被收下 |
+| `test_real_model.py` | 預設跳過。每個模型：greedy 解碼和 `model.generate()` 一致，純文字、附上圖片、影片和（Gemma）錄音都一樣，之後再問純文字也一樣；真的模型能呼叫計算機並回答；每一種圖片格式都讀得出收據的總計、每一種聲音格式都寫得出錄音的內容（Gemma；Qwen 收到的是一般檔案）、每一種影片格式都看得出球往哪邊滾、每一種資料格式都能用 `run_python` 打開，也寫得出在沙箱裡跑得動的程式（有 Docker 時）；Gemma 開 MTP 時 greedy 輸出和不開一模一樣（附上圖片也是），而且草稿真的有被收下 |
 
 ## 已知限制
 
@@ -189,11 +225,16 @@ RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma�
 - token 浮窗要等那一步生成完才會出現，生成中只有熱度顏色（特殊 token 的用途說明除外），避免每次重畫都送出大量 HTML。浮窗是純 CSS，太靠近時間軸底部的 token，浮窗可能被切到。
 - 特殊 token 的說明浮窗用 CSS anchor positioning 貼在 token 旁邊，不會被捲動框切到；不支援的瀏覽器會改成直接開在 token 下方，靠近框的底部時可能被切到。
 - 兩個模型都很小：可能用簡體中文回答、重複同一個搜尋、只回答一半的問題，或在思考裡算錯。用英文一次問兩個城市的時間時，Gemma 會呼叫兩次工具，然後多半改用中文回答，或在工具結果之後直接停下、沒有回覆；只問一個城市就會用英文回答。這些剛好是可以觀察的材料。
+- 只有 Gemma 4 E2B 聽得到聲音，而且只聽前 30 秒。兩個模型都聽不到影片的聲音：影片就是一張張畫格。每張畫格都要 token，3 秒的影片在 Gemma 約 2,000 個 token 的 prefill。
+- 用英文問、又開著「使用工具」時，Gemma 4 E2B 常說它聽不到附上的錄音，有時還已經把那句話寫進了工具呼叫；用中文問，或關掉「使用工具」，它就寫得出來。所以英文的錄音範例問的是「說了什麼」而不是要它逐字寫下，大約三次成功兩次。
+- Qwen3.5 0.8B 用 `run_python` 打得開每一種資料格式，但很少寫對好幾步的 pandas 程式；銷售資料的範例 Gemma 4 E2B 答得出來。
+- 沙箱沒有網路，模型沒辦法 `pip install`；裡面有 numpy、pandas、openpyxl 和 tabulate。每次呼叫都是新的容器，變數和 `/tmp` 裡的檔案都不會留到下一次。
+- 每個附件最大 50 MB。附件留在 `~/.cache/agent-loop-visualizer/uploads/`，直到按「新對話」或換模型；直接關掉分頁的話，資料夾會留著。
 - Wikipedia 工具需要網路。
 - `MODEL_ID` 環境變數決定一開始選哪個模型，也可以指定選單裡沒有的 checkpoint，只要它屬於已經支援的家族（Gemma 4 或 Qwen3.5）；其他家族要先照「支援更多模型」加一個 family。
 
 ## 授權
 
-本專案的程式碼以 [Apache License 2.0](LICENSE) 授權。Gemma 4 模型權重和它的 MTP 草稿模型由 Google 以 Apache 2.0 釋出（見[模型卡](https://huggingface.co/google/gemma-4-E2B-it)、[草稿模型卡](https://huggingface.co/google/gemma-4-E2B-it-assistant)），Qwen3.5 模型權重由 Alibaba 的 Qwen 團隊以 Apache 2.0 釋出（見[模型卡](https://huggingface.co/Qwen/Qwen3.5-0.8B)），都不包含在本專案裡。
+本專案的程式碼以 [Apache License 2.0](LICENSE) 授權。Gemma 4 模型權重和它的 MTP 草稿模型由 Google 以 Apache 2.0 釋出（見[模型卡](https://huggingface.co/google/gemma-4-E2B-it)、[草稿模型卡](https://huggingface.co/google/gemma-4-E2B-it-assistant)），Qwen3.5 模型權重由 Alibaba 的 Qwen 團隊以 Apache 2.0 釋出（見[模型卡](https://huggingface.co/Qwen/Qwen3.5-0.8B)），都不包含在本專案裡。`assets/examples/speech.flac` 是 [LibriSpeech ASR 語料庫](https://www.openslr.org/12)（Panayotov 等人，2015，取自 LibriVox 的朗讀）的第 1272-128104-0000 句，以 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 授權；其他範例檔（`receipt.png`、`ball.mp4`、`sales.csv`）和 logo 是為本專案製作的。
 
 AI 使用說明：程式碼由 Claude Code 協助撰寫，並在本機用 gemma-4-E2B-it（含 MTP 草稿模型 gemma-4-E2B-it-assistant）和 Qwen3.5-0.8B 實際執行、用瀏覽器檢查過畫面。

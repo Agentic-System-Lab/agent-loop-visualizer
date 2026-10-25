@@ -133,6 +133,8 @@
   white-space: nowrap;
   box-shadow: none;
 }
+/* ×266: a run of one special token, such as the placeholders an image expands into, drawn as one chip */
+.sp-n { margin-left: 4px; padding-left: 4px; border-left: 1px solid color-mix(in srgb, var(--surface) 45%, transparent); font-weight: 500; }
 .tok.ch-thought.special { background: var(--muted); }
 /* A token the MTP drafter guessed and the model kept: a bar along the bottom, on text and chips alike. */
 .tok.drafted { box-shadow: inset -1px 0 0 color-mix(in srgb, var(--line) 80%, transparent), inset 0 -2px 0 var(--c-draft); }

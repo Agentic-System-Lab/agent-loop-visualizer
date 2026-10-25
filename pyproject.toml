@@ -5,6 +5,7 @@ description = "Chat with a local agent and watch every step of its loop"
 requires-python = ">=3.11"
 dependencies = [
     "accelerate>=1.10",
+    "av>=15",
     "httpx>=0.27",
     "pygments>=2.21.0",
     "streamlit>=1.66.1",
@@ -16,10 +17,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "openpyxl>=3.1",
     "pytest>=9.1.1",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "tests"]
-markers = ["model: loads the real Gemma weights; set RUN_MODEL_TESTS=1 to run"]
+markers = ["model: loads the real model weights; set RUN_MODEL_TESTS=1 to run"]

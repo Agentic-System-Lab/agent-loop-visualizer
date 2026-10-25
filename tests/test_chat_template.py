@@ -1,20 +1,24 @@
 """The harness, the parsers and the UI all assume things about each model's real tokenizer
 and chat template. These tests check those assumptions against the real files, for every
-model in the menu. Only the tokenizer is loaded (a few seconds); a model that is not in the
-local Hugging Face cache is skipped."""
+model in the menu. Only the tokenizer is loaded (a few seconds), and the processor for the
+tests with media; a model that is not in the local Hugging Face cache is skipped."""
 
 import os
 import re
+from pathlib import Path
 
 import pytest
 from huggingface_hub import try_to_load_from_cache
 
 import families
 import render
+import media
 from agent import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, Run, RunSettings
 from fakes import FakeLLM, gemma_call, qwen_call
 from llm import LocalLLM
 from tools import TOOLS
+
+SAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
 
 # Per family: where a tool call sits in a rendered prompt, how the model ends a turn that calls
 # a tool, and how the next prompt begins the tool's result.
@@ -36,7 +40,22 @@ def model(request):
     folder = os.path.dirname(files[0])
     m = LocalLLM.__new__(LocalLLM)
     m.tokenizer = AutoTokenizer.from_pretrained(folder)
-    m.family = families.for_model_type(AutoConfig.from_pretrained(folder).model_type)
+    m.config = AutoConfig.from_pretrained(folder)
+    m.family = families.for_model_type(m.config.model_type)
+    m.folder = folder
+    return m
+
+
+@pytest.fixture(scope="module")
+def with_processor(model):
+    """The same, with the real processor in front of the tokenizer, as LocalLLM loads it, for prompts with media."""
+    import torch
+    from transformers import AutoProcessor
+
+    m = LocalLLM.__new__(LocalLLM)
+    m.processor = AutoProcessor.from_pretrained(model.folder)
+    m.tokenizer, m.family, m.device, m.dtype = m.processor.tokenizer, model.family, "cpu", torch.float32
+    m.media_token_ids = {kind: getattr(model.config, f"{kind}_token_id", None) for kind in ("image", "video")}
     return m
 
 
@@ -212,3 +231,27 @@ def test_step_card_marks_only_the_observation_as_new(model, monkeypatch, before,
     next_turn = {"gemma4": "<tool_response|>", "qwen3_5": "<|im_start|>assistant\n"}[family.key]
     assert second["prompt"].endswith(family.thought_prefix if thinking else "") or not thinking
     assert next_turn in second["prompt"][second["added_from"]:]
+
+
+class MediaTemplateLLM(TemplateLLM):
+    """The real chat template and processor with scripted model output."""
+
+    def encode(self, prompt, parts):
+        self.encodes.append(parts)
+        return self.real.encode(prompt, parts)
+
+
+def test_with_media_the_step_card_still_marks_only_the_observation_as_new(with_processor, monkeypatch):
+    monkeypatch.setattr(TOOLS["search_wikipedia"], "fn", lambda query, lang="en": {"query": query, "results": []})
+    family = with_processor.family
+    files = [media.Attachment(name, kind, str(SAMPLES / name), (SAMPLES / name).stat().st_size) for name, kind in
+             (("receipt.png", "image"), ("ball.mp4", "video"))]
+    events = []
+    llm = MediaTemplateLLM(with_processor, [scripted(family, "", {"query": "ReAct"}, False), "好。" + next(iter(family.stop_tokens))])
+    Run(llm, [], "這是什麼？", RunSettings(), events.append, files).run()
+    first, second = (e for e in events if e["type"] == "context")
+    assert first["media_tokens"]["image"] > 100 and first["media_tokens"]["video"] > 100
+    assert first["n_tokens"] == len(with_processor.tokenizer(first["prompt"], add_special_tokens=False).input_ids)
+    # The expanded media come before the tool result, which is still all that is new in step 2.
+    assert second["prompt"][second["added_from"]:].startswith(OBSERVATION[family.key].format(name="search_wikipedia"))
+    assert second["prompt"].startswith(first["prompt"][: second["added_from"]])

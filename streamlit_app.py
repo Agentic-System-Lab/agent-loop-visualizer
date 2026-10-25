@@ -13,17 +13,25 @@ a static page that guide.py builds and GitHub Pages serves.
 
 The page is in Traditional Chinese or English (i18n.py). It starts in the language last picked on the
 switch at the top right, kept in a cookie, or else in the browser's language.
+
+A question can come with files (media.py): images, sound and video the model reads, and, when the sidebar
+lets the model write code, data files for run_python. Only then does the page look for Docker, which
+run_python's sandbox needs, and say how to install it when it is missing.
 """
 
 import json
 import os
+import shutil
 import threading
+import uuid
 from pathlib import Path
 
 import streamlit as st
 
 import families
+import media
 import render
+import tools
 from agent import Run, RunSettings
 from i18n import LANGS, from_locale, pick
 from llm import LocalLLM, Sampling
@@ -33,12 +41,18 @@ from tools import TOOLS
 DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(families.MODELS)))
 MODELS = {**families.MODELS, DEFAULT_MODEL: families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
 ASSETS = Path(__file__).parent / "assets"
+SAMPLES = ASSETS / "examples"  # the files some examples attach
+# Each conversation's files go in a folder of their own under here. It is under the home folder because that is
+# the one every Docker setup (Docker Desktop, OrbStack, Colima) shares with its containers.
+UPLOADS = Path(os.environ.get("AGENT_LOOP_UPLOADS", Path.home() / ".cache" / "agent-loop-visualizer" / "uploads"))
+MAX_UPLOAD_MB = 50
 GUIDE_URL = "https://cyyeh.github.io/agent-loop-visualizer/"  # built from guide.py; zh/ and en/ under it are the two languages
 LANG_COOKIE = "agent_loop_lang"  # the language last picked on the switch
 POLL_SECONDS = 0.5
 BOX_HEIGHT = 620  # the chat and each tab scroll in a box this tall; side by side, style.css fits them to the window
 DEFAULTS = {
     "use_tools": True,
+    "python": False,  # let the model write code: offers run_python, which needs Docker
     "thinking": False,
     "approve_tools": False,
     "temperature": 1.0,
@@ -48,26 +62,36 @@ DEFAULTS = {
     "max_steps": 6,
     "max_new_tokens": 1024,
 }
+# The examples under the welcome, in the page's language only: (question, what it needs). "python" needs run_python;
+# a file name attaches that file from assets/examples, and the example shows only when the model can use it.
 EXAMPLES = {
     "zh": [
-        "台北現在幾點？紐約呢？",
-        "(37.5 × 12) 的平方根，再加上 2 的 20 次方，是多少？",
-        "ReAct 這篇論文是誰提出的？用 Wikipedia 查。",
-        "Gemma 是哪家公司開發的？第一版什麼時候發布？",
-        "What time is it in Paris right now?",
-        "Who created the Transformer? Ask Wikipedia.",
-        "Write a Python function to test for primes.",
+        ("台北現在幾點？紐約呢？", None),
+        ("(37.5 × 12) 的平方根，再加上 2 的 20 次方，是多少？", None),
+        ("ReAct 這篇論文是誰提出的？用 Wikipedia 查。", None),
+        ("Gemma 是哪家公司開發的？第一版什麼時候發布？", None),
+        ("這張收據上的品項加起來是多少？和收據上寫的總計一樣嗎？", "receipt.png"),
+        ("影片裡的紅球是從左邊滾到右邊，還是從右邊滾到左邊？", "ball.mp4"),
+        ("把這段錄音的內容寫下來，再翻成繁體中文。", "speech.flac"),
+        ("寫一個 Python 函式判斷質數，用它算出 10000 以內有幾個質數。", "python"),
+        ("用 Python 讀這份銷售資料：哪個月的總營收最高？全年總營收是多少？", "sales.csv"),
     ],
     "en": [
         # One city: asked about two at once in English, Gemma often replies in Chinese or not at all.
-        "What time is it in Taipei right now?",
-        "What is the square root of (37.5 × 12), plus 2 to the power of 20?",
-        "Who proposed the ReAct paper? Look it up on Wikipedia.",
-        "Which company developed Gemma, and when was the first version released?",
-        "Who created the Transformer? Ask Wikipedia.",
-        "Write a Python function to test for primes.",
+        ("What time is it in Taipei right now?", None),
+        ("What is the square root of (37.5 × 12), plus 2 to the power of 20?", None),
+        ("Who proposed the ReAct paper? Look it up on Wikipedia.", None),
+        ("Which company developed Gemma, and when was the first version released?", None),
+        ("Who created the Transformer? Ask Wikipedia.", None),
+        ("What do the items on this receipt add up to? Does it match the total printed on it?", "receipt.png"),
+        ("Does the red ball in this video roll from left to right, or from right to left?", "ball.mp4"),
+        # Asked to transcribe in English with tools on, Gemma tends to say it cannot hear; a question on the content works more often.
+        ('The speaker in this recording calls someone "the apostle of the middle classes". Who?', "speech.flac"),
+        ("Write a Python function that tests for primes, and use it to count the primes below 10,000.", "python"),
+        ("Use Python to read this sales data: which month had the highest total revenue, and what was the revenue for the whole year?", "sales.csv"),
     ],
 }
+EXAMPLE_ICONS = {"image": ":material/image:", "audio": ":material/graphic_eq:", "video": ":material/movie:", "file": ":material/table_chart:", "python": ":material/code:"}
 
 
 def tr(zh: str, en: str) -> str:
@@ -113,11 +137,13 @@ def generation_slot() -> Slot:
 class LiveRun:
     """One user turn: the harness thread and the events it has emitted so far."""
 
-    def __init__(self, llm: LocalLLM, history: list[dict], text: str, settings: RunSettings, slot: Slot):
+    def __init__(self, llm: LocalLLM, history: list[dict], text: str, attachments: list[media.Attachment], files: Path,
+                 settings: RunSettings, slot: Slot):
         self.text = text
+        self.attachments = attachments
         self.events: list[dict] = []
         self.absorbed = False
-        self.run = Run(llm, history, text, settings, self.events.append)
+        self.run = Run(llm, history, text, settings, self.events.append, attachments, files)
         self._slot = slot
         slot.run = self
         self.thread = threading.Thread(target=self._work, daemon=True)
@@ -150,6 +176,12 @@ def init_state():
     st.session_state.setdefault("viz_tab", "loop")
     st.session_state.setdefault("model_id", DEFAULT_MODEL)
     st.session_state.setdefault("sampling_for", None)
+    st.session_state.setdefault("chat_id", uuid.uuid4().hex[:12])
+
+
+def chat_folder() -> Path:
+    """This conversation's files: what the user attached, and what run_python sees as /data."""
+    return UPLOADS / st.session_state.chat_id
 
 
 def current_settings(llm: LocalLLM) -> RunSettings:
@@ -159,18 +191,41 @@ def current_settings(llm: LocalLLM) -> RunSettings:
         max_steps=s.max_steps,
         thinking=s.thinking,
         use_tools=s.use_tools,
+        tools=offered_tools(),
         approve_tools=s.approve_tools,
         lang=s.lang,
     )
 
 
-def start_run(llm: LocalLLM, text: str) -> bool:
+@st.cache_data(ttl=10, show_spinner=False)
+def sandbox_problem() -> dict | None:
+    """What keeps run_python from running (tools.sandbox_problem), asked again at most every 10 s."""
+    return tools.sandbox_problem()
+
+
+def code_allowed() -> bool:
+    """Whether the sidebar lets the model write code; Docker is looked for only then."""
+    return st.session_state.use_tools and st.session_state.python
+
+
+def code_ready() -> bool:
+    return code_allowed() and sandbox_problem() is None
+
+
+def offered_tools() -> tuple[str, ...]:
+    """Every tool, but run_python only when the model may write code and Docker can run it."""
+    return tuple(name for name in TOOLS if name != "run_python" or code_ready())
+
+
+def start_run(llm: LocalLLM, text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
+    """Ask the question in a new run, with `uploads` (file name, contents) saved in the conversation's folder first."""
     slot = generation_slot()
     if not slot.lock.acquire(blocking=False):
         st.toast(tr("另一個 agent 正在執行（可能在別的分頁），請稍等。", "Another agent is running (maybe in another tab). Please wait."))
         return False
     try:
-        run = LiveRun(llm, st.session_state.history, text, current_settings(llm), slot)
+        attachments = [media.save(chat_folder(), name, data, llm.modalities) for name, data in uploads]
+        run = LiveRun(llm, st.session_state.history, text, attachments, chat_folder(), current_settings(llm), slot)
     except Exception:
         slot.lock.release()
         raise
@@ -204,6 +259,9 @@ def new_chat():
     st.session_state.runs = []
     st.session_state.history = []
     st.session_state.view = None
+    if "chat_id" in st.session_state:  # the old conversation's files go with it
+        shutil.rmtree(chat_folder(), ignore_errors=True)
+    st.session_state.chat_id = uuid.uuid4().hex[:12]
 
 
 def show_context(run_index: int, step: int):
@@ -232,6 +290,13 @@ def sidebar(llm: LocalLLM, live: bool, busy: bool):
 
         st.markdown(tr("##### 迴圈", "##### Loop"))
         st.toggle(tr("使用工具", "Use tools"), key="use_tools", help=tr("關掉就只是聊天機器人：模型看不到任何工具。", "Off, it is just a chatbot: the model sees no tools."))
+        st.toggle(tr("讓模型寫程式", "Let the model write code"), key="python", disabled=not st.session_state.use_tools,
+                  help=tr("打開後模型多一個 run_python 工具：它寫的 Python 在 Docker 容器裡執行（沒有網路，檔案唯讀），"
+                          "也讀得到你附上的資料檔（CSV、Excel…）。需要先安裝 Docker；沒打開就不會用到 Docker。",
+                          "Gives the model one more tool, run_python: the Python it writes runs in a Docker container (no network, files "
+                          "read-only), and it can read the data files you attach (CSV, Excel…). It needs Docker; with this off, Docker is never used."))
+        if code_allowed() and (problem := sandbox_problem()):
+            st.warning(problem[lang], icon=":material/warning:")
         st.toggle(tr("思考模式", "Thinking mode"), key="thinking", help=llm.family.thinking_help[lang])
         st.toggle(tr("執行工具前先問我", "Ask me before running a tool"), key="approve_tools",
                   help=tr("由 harness 擋下等你確認，而不是寫在 prompt 裡請模型遵守。",
@@ -277,14 +342,19 @@ def chat_panel(llm: LocalLLM, live_run: LiveRun | None, other: LiveRun | None):
                 "Send a question, and the agent loop is drawn on the right step by step: the model reads the context and proposes "
                 "an action, the harness carries it out, and the result goes back into the context, until it stops.",
             ))
+            if llm.modalities:
+                kinds = pick(st.session_state.lang, "、", ", ").join(render.MODALITIES[st.session_state.lang][k] for k in llm.modalities)
+                st.caption(tr(f"這個模型讀得懂{kinds}：用輸入框左邊的 ＋ 附上檔案"
+                              + ("，或按麥克風錄一段話。" if "audio" in llm.modalities else "。"),
+                              f"This model reads {kinds}: attach a file with the + at the left of the input box"
+                              + (", or record yourself with the microphone." if "audio" in llm.modalities else ".")))
             st.caption(tr("試試看", "Try one"))
-            for i, example in enumerate(EXAMPLES[st.session_state.lang]):
-                if st.button(example, key=f"example-{i}", disabled=busy):
-                    if start_run(llm, example):
-                        st.rerun()
+            examples(llm, busy)
         for i, run in enumerate(runs):
             with st.chat_message("user"):
-                st.markdown(run.text)
+                attachments_view(run.attachments)
+                if run.text:
+                    st.markdown(run.text)
             with st.chat_message("assistant"):
                 assistant_message(i, run)
 
@@ -295,9 +365,53 @@ def chat_panel(llm: LocalLLM, live_run: LiveRun | None, other: LiveRun | None):
                       f"An agent from another tab is still running (“{other.text[:30]}”), perhaps left over from before a reload. "
                       "No new question can be sent until it ends."))
         st.button(tr("停止那個 agent", "Stop that agent"), icon=":material/stop_circle:", on_click=other.run.stop, width="stretch")
-    prompt = st.chat_input(tr("問一個問題…", "Ask a question…"), key="chat_input", disabled=busy)
-    if prompt and start_run(llm, prompt):
+    types = media.accepted(llm.modalities, python=code_allowed())
+    sent = st.chat_input(
+        tr("問一個問題，也可以附上檔案…", "Ask a question; you can attach files…") if types else tr("問一個問題…", "Ask a question…"),
+        key="chat_input", disabled=busy, accept_file="multiple" if types else False, file_type=types or None,
+        accept_audio="audio" in llm.modalities, max_upload_size=MAX_UPLOAD_MB,
+    )
+    text, uploads = (sent, []) if isinstance(sent, str) or sent is None else (sent.text, uploaded(sent))
+    if (text or uploads) and start_run(llm, text or "", uploads):
         st.rerun()
+
+
+def uploaded(sent) -> list[tuple[str, bytes]]:
+    """The files sent with a message, and a recording made with the microphone, as (file name, contents)."""
+    files = [(f.name, f.getvalue()) for f in sent.get("files") or []]  # a key is missing when the input does not take its kind
+    return files + ([("recording.wav", audio.getvalue())] if (audio := sent.get("audio")) else [])
+
+
+def examples(llm: LocalLLM, busy: bool):
+    """The page language's examples that this model can try: one that attaches a file shows only if the model reads
+    that kind, and one that needs Python only once the model may write code, disabled until Docker is ready."""
+    lang, hidden = st.session_state.lang, False
+    for i, (question, needs) in enumerate(EXAMPLES[lang]):
+        sample = needs if needs not in (None, "python") else None
+        kind = media.KINDS.get(Path(sample).suffix.lstrip("."), "file") if sample else needs
+        if kind in media.MEDIA and kind not in llm.modalities:
+            continue
+        if kind in ("python", "file") and not code_allowed():
+            hidden = True
+            continue
+        problem = sandbox_problem() if kind in ("python", "file") else None
+        note = problem[lang] if problem else tr(f"會附上範例檔案 {sample}", f"Attaches the sample file {sample}") if sample else None
+        if st.button(question, key=f"example-{i}", icon=EXAMPLE_ICONS.get(kind), help=note, disabled=busy or problem is not None):
+            if start_run(llm, question, [(sample, (SAMPLES / sample).read_bytes())] if sample else []):
+                st.rerun()
+    if hidden:
+        st.caption(tr("打開側欄的「讓模型寫程式」，還有要寫 Python 的範例。", "Turn on Let the model write code in the sidebar for examples that need Python."))
+
+
+def attachments_view(attachments: list[media.Attachment]):
+    for a in attachments:
+        if a.kind == "image":
+            st.image(a.path, width=240)
+        elif a.kind == "audio":
+            st.audio(a.path)
+        elif a.kind == "video":
+            st.video(a.path)
+        st.caption(f"📎 {a.name} · {media.fmt_size(a.size)}")
 
 
 def assistant_message(i: int, run: LiveRun):
@@ -309,8 +423,12 @@ def assistant_message(i: int, run: LiveRun):
 
     for call in render.pending_approvals(data):
         with st.container(border=True):
-            args = json.dumps(call["arguments"], ensure_ascii=False)
+            # An argument over several lines (code) is shown below the call rather than squeezed into its JSON.
+            blocks = {k: v for k, v in call["arguments"].items() if isinstance(v, str) and "\n" in v.strip()}
+            args = json.dumps({k: "…" if k in blocks else v for k, v in call["arguments"].items()}, ensure_ascii=False)
             st.markdown(tr("**Agent 想執行這個工具，要允許嗎？**", "**The agent wants to run this tool. Allow it?**") + f"  \n`{call['name']}({args})`")
+            for code in blocks.values():
+                st.code(code)
             allow, reject = st.columns(2)
             allow.button(tr("允許", "Allow"), key=f"allow-{i}-{call['call_id']}", type="primary", width="stretch",
                          on_click=run.run.decide, args=(call["call_id"], True))
@@ -404,7 +522,8 @@ def model_panel(llm: LocalLLM, data: dict | None):
     if data and data["steps"]:
         st.markdown(tr("##### 每一步的推論", "##### Inference in each step"))
         st.dataframe(render.step_rows(data, lang), hide_index=True, width="stretch")
-    st.html(render.tools_html(TOOLS, settings["use_tools"], llm.family, lang))
+    offered = data["settings"].get("tools") if data else list(offered_tools())
+    st.html(render.tools_html(TOOLS, settings["use_tools"], llm.family, lang, offered))
     st.html(render.special_tokens_html(llm.info, lang))
 
 
@@ -454,7 +573,8 @@ def language_switch():
 
 
 def main():
-    st.set_page_config(layout="wide")
+    st.set_page_config(layout="wide", page_icon=ASSETS / "logo.svg")
+    st.logo(ASSETS / "logo.svg", size="large")
     st.html(ASSETS / "style.css")
     if st.context.theme.type == "dark":
         st.html(ASSETS / "dark.css")

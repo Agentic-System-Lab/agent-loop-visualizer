@@ -22,6 +22,7 @@ code excerpts between them are shared, so the two pages always show the same cod
 """
 
 import ast
+import base64
 import html
 import re
 import subprocess
@@ -266,12 +267,18 @@ a { color: #2f5191; } @media (prefers-color-scheme: dark) { body { background: #
 """
 
 
+def logo_url() -> str:
+    """The site's logo (assets/logo.svg, the app's too) as a data URL, so the page stays one file."""
+    return "data:image/svg+xml;base64," + base64.b64encode((ASSETS / "logo.svg").read_bytes()).decode()
+
+
 def page_html(commit: str, lang: str) -> str:
     """The page body; `commit` is the commit its line numbers were looked up in."""
     sections = "".join(section_html(n, sec, lang) for n, sec in enumerate(SECTIONS, 1))
     link = f'<a href="{REPO}/tree/{esc(commit)}"><code>{esc(commit[:7])}</code></a>'
     return (
-        f'{lang_switch_html(lang)}<main class="guide"><header class="g-hero"><p class="g-kicker">{pick(lang, "運作說明", "HOW IT WORKS")}</p>'
+        f'{lang_switch_html(lang)}<main class="guide"><header class="g-hero"><img class="g-logo" src="{logo_url()}" alt="">'
+        f'<p class="g-kicker">{pick(lang, "運作說明", "HOW IT WORKS")}</p>'
         f'<h1>{pick(lang, "一個問題在 agent 迴圈裡怎麼走", "How one question travels through the agent loop")}</h1>'
         f'<p class="g-intro">{prose_html(INTRO[lang], lang)}</p>'
         f'<p class="g-meta"><a href="{REPO}">{pick(lang, "原始碼和執行方式在 GitHub", "The source and how to run it are on GitHub")}</a> · '
@@ -298,6 +305,7 @@ def document_html(commit: str, lang: str) -> str:
         f'<!doctype html><html lang="{HTML_LANG[lang]}"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{title}</title>"
+        f'<link rel="icon" href="{logo_url()}">'
         f'<meta name="description" content="{description}">'
         f'<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="{FONTS}">'
         f"<style>\n{stylesheet()}</style></head><body>{page_html(commit, lang)}"
@@ -323,10 +331,12 @@ def build(out: Path) -> list[Path]:
 
 INTRO = {
     "zh": "從你按下送出到看到回覆，中間發生的每一件事，照實際執行的順序走一遍。app 的側欄可以選 Gemma 4 E2B 或 Qwen3.5 0.8B，"
-    "兩個模型跑的是同一個迴圈，不一樣的地方會並排說明。每段都附上做這件事的程式碼；`agent.py:98` 這類標記是檔名和行號，"
+    "兩個模型跑的是同一個迴圈，不一樣的地方會並排說明。問題可以附上圖片、聲音或影片（{{media}}），打開「讓模型寫程式」時，"
+    "模型還能在 Docker 沙箱裡執行 Python（{{execute}}）。每段都附上做這件事的程式碼；`agent.py:98` 這類標記是檔名和行號，"
     "滑過去會顯示那一行。行號是產生這一頁時從原始碼查出來的；每次推上 main，GitHub Actions 都會重新產生，程式改了也會跟著更新。",
     "en": "Everything that happens between pressing send and seeing the reply, in the order it really runs. The app's sidebar picks "
     "Gemma 4 E2B or Qwen3.5 0.8B; both models run the same loop, and where they differ, the two are described side by side. "
+    "A question can carry images, sound or video ({{media}}), and with Let the model write code on, the model can also run Python in a Docker sandbox ({{execute}}). "
     "Every part comes with the code that does it; a mark like `agent.py:98` is a file and a line number, and hovering over it shows that line. "
     "The line numbers are looked up in the source when this page is built; GitHub Actions rebuilds it on every push to main, so they follow the code as it changes.",
 }
@@ -368,9 +378,14 @@ SECTIONS = [
             {"zh": "`families/`：跟著模型走的東西。`gemma4.py`、`qwen3_5.py` 各自負責讀懂自己模型的輸出，並說明它的特殊 token（{{families}}）。",
              "en": "`families/`: everything that goes with the model. `gemma4.py` and `qwen3_5.py` each read their own model's output "
                    "and explain its special tokens ({{families}})."},
-            {"zh": "`tools.py`：每個工具的 schema（給模型看）和 Python 函式（給 harness 執行），全部列在 `TOOLS`（[[tools.py|TOOLS = {]]）。",
+            {"zh": "`tools.py`：每個工具的 schema（給模型看）和 Python 函式（給 harness 執行），全部列在 `TOOLS`（[[tools.py|TOOLS = {]]）。"
+                   "其中 `run_python` 在 `sandbox/Dockerfile` 建的 Docker 容器裡跑模型寫的程式（{{execute}}）。",
              "en": "`tools.py`: each tool's schema (for the model to read) and Python function (for the harness to run), "
-                   "all listed in `TOOLS` ([[tools.py|TOOLS = {]])."},
+                   "all listed in `TOOLS` ([[tools.py|TOOLS = {]]). One of them, `run_python`, runs the model's code in a Docker container "
+                   "built from `sandbox/Dockerfile` ({{execute}})."},
+            {"zh": "`media.py`：問題附上的檔案：存進這段對話的資料夾、寫進使用者訊息，再解碼成模型的 processor 要的格式（{{media}}）。",
+             "en": "`media.py`: the files attached to a question: it saves them in the conversation's folder, writes them into the user's "
+                   "message and decodes them for the model's processor ({{media}})."},
             {"zh": "`render.py`：把事件列表折成 step（[[render.py|def build(events: list[dict])]]），再畫成 HTML。",
              "en": "`render.py`: folds the event list into steps ([[render.py|def build(events: list[dict])]]) and draws them as HTML."},
             {"zh": "`i18n.py`：頁面的兩種語言，繁體中文和英文；`pick()` 照語言挑出其中一段文字（[[i18n.py|def pick(]]）。",
@@ -406,15 +421,19 @@ SECTIONS = [
         {"zh": "這些差異全部寫進 `Family`，其他程式只問 family，沒有任何 `if 是 Gemma` 的分支：",
          "en": "All of these differences go into a `Family`, and the rest of the code just asks the family; there is no `if Gemma` branch anywhere:"},
         Code("families/__init__.py", "class Family:", end="def special_re(self)",
-             caption={"zh": "欄位分三組：讀模型輸出用的、把對話寫回 chat template 用的、畫面用的。",
-                      "en": "The fields come in three groups: for reading the model's output, for writing the conversation back for the chat template, and for the page."}),
+             caption={"zh": "欄位分三組：讀模型輸出用的、把對話寫回 chat template 用的、畫面用的。最後幾個有預設值，只有某些家族需要，"
+                            "例如 Qwen 在 `processor_kwargs` 裡給 processor 的影片設定。",
+                      "en": "The fields come in three groups: for reading the model's output, for writing the conversation back for the chat template, and for the page. "
+                            "The last few have defaults and only some families need them, such as the video setting Qwen gives its processor in `processor_kwargs`."}),
         {"zh": "載入模型時，用 checkpoint 的 `config.json` 裡的 `model_type` 找出 family。停止 token 是 generation config 列的，再加上 family 宣告的："
                "Qwen3.5 的 checkpoint 只列了 `<|endoftext|>`，沒有列每個回合結尾的 `<|im_end|>`，少了 family 這一層，模型回答完會繼續寫下去。"
-               "Qwen 的 `<think>`、`<tool_call>` 在 tokenizer 裡也沒有標成 special，同樣由 family 補上。",
+               "Qwen 的 `<think>`、`<tool_call>` 在 tokenizer 裡也沒有標成 special，同樣由 family 補上。"
+               "tokenizer 放在模型的 processor 裡；processor 也負責把圖片、聲音和影片變成模型的輸入，一個模型讀得懂哪幾種由 checkpoint 決定（{{media}}）。",
          "en": "When a model loads, the `model_type` in the checkpoint's `config.json` finds its family. The stop tokens are those the generation "
                "config lists plus those the family declares: the Qwen3.5 checkpoint lists only `<|endoftext|>`, not the `<|im_end|>` that ends "
                "every turn, so without the family the model would keep writing after its answer. Qwen's tokenizer does not mark `<think>` "
-               "and `<tool_call>` as special either, and the family adds those too."},
+               "and `<tool_call>` as special either, and the family adds those too. The tokenizer comes inside the model's processor, which "
+               "also turns images, sound and video into the model's inputs; which of those a model reads, the checkpoint says ({{media}})."},
         Code("llm.py", "self.family = families.for_model_type(", end="self.special_ids = set("),
         {"zh": "要加模型時：同一個家族的另一個 checkpoint（例如更大的 Gemma 4），在 `MODELS` 加一行就好（[[families/__init__.py|MODELS = {]]）。"
                "新的家族，照 `families/qwen3_5.py` 寫一個模組，內容是一個輸出的 parser 和特殊 token 的說明（中英文各一份），"
@@ -443,24 +462,30 @@ SECTIONS = [
                "and turns MTP back off; the first time MTP speculative decoding is switched on, `current_llm()` also loads the drafter "
                "([[llm.py|def load_drafter(self):]])."},
         Code("streamlit_app.py", "@st.cache_resource(max_entries=1", end="def current_llm() -> LocalLLM:"),
-        {"zh": "輸入框（[[streamlit_app.py|prompt = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。"
-               "它先用不等待的方式拿一把全域的鎖（[[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]）："
-               "模型只有一份，所以不管開幾個分頁，同一時間只能有一個 agent 在跑，拿不到鎖就跳出提示。",
-         "en": "The input box ([[streamlit_app.py|prompt = st.chat_input(]]) and the example buttons both call `start_run()`. "
-               "It first tries to take a global lock without waiting ([[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]): "
-               "there is one copy of the model, so however many tabs are open, only one agent can run at a time, and without the lock the tab shows a notice."},
+        {"zh": "輸入框（[[streamlit_app.py|sent = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。輸入框可以附上檔案，模型讀得懂聲音時還能錄音；"
+               "有些範例也會附上 `assets/examples/` 裡的範例檔。`start_run()` 先用不等待的方式拿一把全域的鎖"
+               "（[[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]）："
+               "模型只有一份，所以不管開幾個分頁，同一時間只能有一個 agent 在跑，拿不到鎖就跳出提示。拿到鎖之後，才把檔案存進這段對話的資料夾（{{media}}）。",
+         "en": "The input box ([[streamlit_app.py|sent = st.chat_input(]]) and the example buttons both call `start_run()`. Files can be attached "
+               "in the input box, and a model that hears can be sent a recording; some examples attach a sample file from `assets/examples/`. "
+               "`start_run()` first tries to take a global lock without waiting ([[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]): "
+               "there is one copy of the model, so however many tabs are open, only one agent can run at a time, and without the lock the tab shows a notice. "
+               "Only with the lock does it save the files in the conversation's folder ({{media}})."},
         Code("streamlit_app.py", "def start_run(",
              caption={"zh": "鎖是 `generation_slot()` 裡的 `threading.Lock`，用 `st.cache_resource` 讓所有分頁共用。",
                       "en": "The lock is the `threading.Lock` in `generation_slot()`, shared by every tab through `st.cache_resource`."}),
         {"zh": "`current_settings()` 把側欄的值打包成 `RunSettings`，解碼參數（包括要不要用 MTP）包在裡面的 `Sampling`。這份設定這一輪從頭用到尾，"
-               "執行中改側欄只會影響下一輪。它也記下頁面現在的語言：harness 和工具回給模型的錯誤，這一輪都用這個語言寫。",
+               "執行中改側欄只會影響下一輪。它也記下頁面現在的語言：harness 和工具回給模型的錯誤，這一輪都用這個語言寫。"
+               "`tools` 是這一輪提供給模型的工具：打開「讓模型寫程式」而且 Docker 準備好了，才有 `run_python`（{{execute}}）。",
          "en": "`current_settings()` packs the sidebar's values into `RunSettings`, with the decoding parameters (MTP included) in its `Sampling`. "
                "These settings hold for the whole turn; changing the sidebar during a run only affects the next one. It also records the page's "
-               "language: the errors that the harness and the tools send the model are worded in it for the whole turn."},
+               "language: the errors that the harness and the tools send the model are worded in it for the whole turn. `tools` are the tools "
+               "the model is offered: `run_python` only when Let the model write code is on and Docker is ready ({{execute}})."},
         Code("streamlit_app.py", "def current_settings("),
-        {"zh": "`LiveRun` 建立 `Run`，把 `self.events.append` 當成 `emit` 傳進去，然後開背景 thread。"
+        {"zh": "`LiveRun` 建立 `Run`，把 `self.events.append` 當成 `emit` 傳進去，連同附件和這段對話的資料夾，然後開背景 thread。"
                "thread 跑完 `run.run()` 之後才在 `finally` 裡放開鎖，所以就算 agent 出錯，鎖也一定會還回去。",
-         "en": "`LiveRun` creates the `Run`, passing `self.events.append` as its `emit`, and starts the background thread. "
+         "en": "`LiveRun` creates the `Run`, passing `self.events.append` as its `emit`, along with the attachments and the conversation's folder, "
+               "and starts the background thread. "
                "The thread releases the lock in a `finally` only after `run.run()` returns, so the lock always comes back, even when the agent fails."},
         Code("streamlit_app.py", "class LiveRun:",
              caption={"zh": "`daemon=True`：關掉 server 時不用等 agent 跑完。", "en": "`daemon=True`: stopping the server does not wait for the agent to finish."}),
@@ -471,20 +496,23 @@ SECTIONS = [
              "en": "`self.messages` is all the agent remembers; every step renders the whole of it again."}, (
         {"zh": "`Run.__init__` 把之前的對話歷史接上這次的問題，存成 `self.messages`（[[agent.py|self.messages = [*history,]]）。"
                "之後的工具呼叫和工具結果都 append 在後面；模型本身不記得任何事，每一步看到的都是這份 list 重新 render 出來的字串。"
-               "訊息用的是 Hugging Face 的通用格式（`role`、`content`、`tool_calls`），兩個家族都吃得下，格式差異交給各自的 chat template。"
-               "`_stop` 和 `_decided` 是 UI thread 用來通知 agent 的兩個同步工具。",
+               "訊息用的是 Hugging Face 的通用格式（`role`、`content`、`tool_calls`），兩個家族都吃得下，格式差異交給各自的 chat template；"
+               "附了檔案時，這則訊息的 `content` 是一串 part（{{media}}）。`self.tools` 是這一輪模型拿得到的工具，"
+               "`self.files` 是這段對話的資料夾。`_stop` 和 `_decided` 是 UI thread 用來通知 agent 的兩個同步工具。",
          "en": "`Run.__init__` appends this question to the conversation so far and keeps it as `self.messages` ([[agent.py|self.messages = [*history,]]). "
                "Tool calls and tool results are appended after it; the model itself remembers nothing, and what it sees in each step is this "
                "list rendered into a string again. The messages use Hugging Face's common format (`role`, `content`, `tool_calls`), which "
-               "both families accept; each family's chat template takes care of its own format. `_stop` and `_decided` are the two "
-               "synchronization tools the UI thread signals the agent with."},
+               "both families accept; each family's chat template takes care of its own format. With files attached, that message's `content` "
+               "is a list of parts ({{media}}). `self.tools` are the tools the model gets this turn, and `self.files` is the conversation's folder. "
+               "`_stop` and `_decided` are the two synchronization tools the UI thread signals the agent with."},
         Code("agent.py", "def __init__(self, llm: LocalLLM, history"),
-        {"zh": "`run()` 一開始拿出這個模型的 family，決定這一輪模型看得到什麼：開著「使用工具」時，收集每個工具的 `schema()` 給 chat template，"
+        {"zh": "`run()` 一開始拿出這個模型的 family，決定這一輪模型看得到什麼：收集 `self.tools` 裡每個工具的 `schema()` 給 chat template"
+               "（關掉「使用工具」時一個都沒有），"
                "另外留一份「工具名稱 → 參數 schema」給 parser（Qwen 的參數值是純文字，要靠 schema 才知道型別）；"
                "system prompt 也分有工具（[[agent.py|SYSTEM_WITH_TOOLS = ]]）和沒工具兩個版本。"
                "第一個事件 `run_start` 帶著模型和 family，畫面就知道這一輪要用哪個模型的格式來畫。",
-         "en": "`run()` starts by taking the model's family and deciding what the model gets to see this turn: with Use tools on, it collects "
-               "every tool's `schema()` for the chat template, and keeps a map from tool name to parameters schema for the parser (Qwen's "
+         "en": "`run()` starts by taking the model's family and deciding what the model gets to see this turn: it collects the `schema()` "
+               "of every tool in `self.tools` for the chat template (none with Use tools off), and keeps a map from tool name to parameters schema for the parser (Qwen's "
                "argument values are plain text, and only the schema says their types); the system prompt comes in two versions, with tools "
                "([[agent.py|SYSTEM_WITH_TOOLS = ]]) and without. The first event, `run_start`, carries the model and the family, so the page "
                "knows whose format to draw the turn in."},
@@ -502,8 +530,8 @@ SECTIONS = [
         {"zh": "每一圈從 `for step in range(1, s.max_steps + 1)` 開始，側欄的「步數上限」就是這個 range 的上界。第一件事是 render：",
          "en": "Each step starts at `for step in range(1, s.max_steps + 1)`; the sidebar's Max steps is the top of that range. The first thing is to render:"},
         Code("agent.py", "for step in range(1, s.max_steps + 1):", end="roles=_role_counts([system, *self.messages])",
-             caption={"zh": "`step_start` 讓畫面開一張新的 step 卡片；`context` 帶著完整字串送出。",
-                      "en": "`step_start` has the page open a new step card; `context` goes out with the whole string."}),
+             caption={"zh": "`step_start` 讓畫面開一張新的 step 卡片；`context` 帶著模型實際讀到的完整字串送出。",
+                      "en": "`step_start` has the page open a new step card; `context` goes out with the whole string the model really reads."}),
         {"zh": "`render()` 呼叫 tokenizer 自帶的 chat template。格式是模型自己的，harness 不用知道：",
          "en": "`render()` calls the chat template that comes with the tokenizer. The format is the model's own, and the harness does not need to know it:"},
         (
@@ -521,19 +549,89 @@ SECTIONS = [
          "en": "`generation_prompt=True` (`add_generation_prompt`) opens the model's turn at the end, asking the model to write next: `<|turn>model` "
                "for Gemma; for Qwen, `<|im_start|>assistant` followed by `<think>` (thinking mode on) or an empty `<think></think>` (off)."},
         Code("llm.py", "def render(self, messages"),
-        {"zh": "接著數 token（[[agent.py|n_tokens=len(self.llm.tokenizer(prompt]]），畫面拿它和脈絡上限比，顯示用掉幾 %。"
-               "`added_from` 是這一步的字串和 `prev_sequence` 共同開頭的長度（{{record}}會說 `prev_sequence` 是什麼）："
-               "從這個位置之後就是這一步新加入的內容，第 2 步以後正好是工具結果。",
-         "en": "Next it counts the tokens ([[agent.py|n_tokens=len(self.llm.tokenizer(prompt]]), which the page compares with the context "
-               "limit to show how much of it is used. `added_from` is the length of the start that this step's string shares with "
-               "`prev_sequence` ({{record}} says what `prev_sequence` is): everything after it is new in this step, which from step 2 on "
-               "is exactly the tool result."},
+        {"zh": "接著 `encode()` 把字串變成模型真正讀的 token（[[agent.py|encoded = self.llm.encode(]]）。只有文字時，就是 tokenizer 切出來的 token；"
+               "對話裡有圖片、聲音或影片時，chat template 在它們的位置只寫了一個佔位 token，`encode()` 把它展開成那個檔案佔的幾十到幾千個 token"
+               "（{{media}}），所以 `context` 送出的是展開後的字串。`n_tokens` 是它的長度，畫面拿它和脈絡上限比，顯示用掉幾 %。"
+               "`added_from` 是這一步新加入的內容從哪裡開始：先算 render 出來的字串和 `prev_sequence` 共同開頭的長度（{{record}}會說 `prev_sequence` 是什麼），"
+               "再加上媒體展開多出來的長度：媒體都在使用者訊息裡，在新加入的內容前面。第 2 步以後，新加入的正好是工具結果。",
+         "en": "Next `encode()` turns the string into the tokens the model really reads ([[agent.py|encoded = self.llm.encode(]]). With text "
+               "alone, they are the tokenizer's tokens; when the conversation has images, sound or video, the chat template wrote a single "
+               "placeholder token where each goes, and `encode()` expands it into the tens to thousands of tokens that file takes ({{media}}), "
+               "so `context` goes out with the expanded string. `n_tokens` is its length, which the page compares with the context limit to "
+               "show how much of it is used. `added_from` is where what is new in this step begins: the length of the start that the rendered "
+               "string shares with `prev_sequence` ({{record}} says what `prev_sequence` is), plus however much longer the media made it, since "
+               "the media are all in user messages, before what is new. From step 2 on, what is new is exactly the tool result."},
         Code("agent.py", "def common_prefix(",
              caption={"zh": "逐字元比較，回傳兩個字串共同開頭的長度。", "en": "Compares character by character and returns the length of the start the two strings share."}),
         {"zh": "畫面上的「脈絡」分頁就是把 `context` 事件裡的字串原樣印出來（[[render.py|def context_html(]]），"
-               "`added_from` 之後的部分標成「這一步新加入」，family 列出的特殊 token 換成可以滑過看說明的深色標籤。",
+               "`added_from` 之後的部分標成「這一步新加入」，family 列出的特殊 token 換成可以滑過看說明的深色標籤；"
+               "一長串同一個特殊 token，例如一張圖片展開成的幾百個 `<|image|>`，畫成一個標籤加上個數。",
          "en": "The page's Context tab prints the string in the `context` event as it is ([[render.py|def context_html(]]), marks everything "
-               "after `added_from` as new in this step, and turns the special tokens the family lists into dark chips you can hover over for a note."},
+               "after `added_from` as new in this step, and turns the special tokens the family lists into dark chips you can hover over for a note; "
+               "a long run of one special token, like the hundreds of `<|image|>` an image expands into, is one chip with the count."},
+    )),
+    Section("media", "context",
+            {"zh": "圖片、聲音和影片：變成脈絡裡的 token", "en": "Images, sound and video: tokens in the context"},
+            {"zh": "附上的檔案存進對話的資料夾；模型讀得懂的，由 processor 展開成一串 token，prefill 時再換成編碼器的輸出。",
+             "en": "Attached files go into the conversation's folder; those the model reads are expanded by its processor into a run of tokens, "
+                   "which the prefill replaces with the encoders' output."}, (
+        {"zh": "一個模型讀得懂哪些東西，是載入時從 checkpoint 看出來的：config 裡要有那種編碼器，processor 也要有對應的部分。"
+               "Gemma 4 E2B 有視覺和音訊編碼器，看得懂圖片、聽得懂聲音，也看得懂影片（一張張畫格）；Qwen3.5 0.8B 只有視覺編碼器，看得懂圖片和影片。"
+               "輸入框只收模型讀得懂的檔案，打開「讓模型寫程式」時再加上 CSV、Excel 這類資料檔。",
+         "en": "Which things a model reads is found out from the checkpoint when it loads: the config needs that kind of encoder, and the processor "
+               "the part that feeds it. Gemma 4 E2B has a vision and an audio encoder, so it sees images, hears sound and watches video (frame by "
+               "frame); Qwen3.5 0.8B has only a vision encoder and reads images and video. The input box takes only files the model reads, plus "
+               "data files such as CSV and Excel once Let the model write code is on."},
+        Code("llm.py", "def _modalities(self)"),
+        {"zh": "`start_run()` 把每個檔案存進這段對話的資料夾，名字只留一般字元，因為模型可能要在程式裡打出它（[[media.py|def save(]]）。"
+               "使用者訊息裡，模型讀得懂的檔案各是一個 part，排在文字前面；其他檔案模型看不到內容，只在文字後面多一段說明："
+               "`run_python` 在 `/data` 底下找得到它們，CSV、JSON 這類文字檔再附上第一行（通常就是欄位名稱）。少了這一行，小模型寫程式時會亂猜欄位，"
+               "例如不存在的 `Date`，然後出錯；多給幾列資料也不行，Gemma 會把那幾列直接抄進程式，只算它們，不去讀檔案。"
+               "這段說明是寫給模型看的，所以和 system prompt 一樣用英文。",
+         "en": "`start_run()` saves each file in the conversation's folder, keeping its name to plain characters, since the model may have to "
+               "type it into code ([[media.py|def save(]]). In the user's message, each file the model reads is a part of its own, before the "
+               "text; the model cannot see into other files, which get a note after the text: `run_python` finds them under `/data`, and a text "
+               "file such as a CSV or JSON comes with its first line (usually the column names). Without it a small model guesses the columns "
+               "in its code, a `Date` that is not there, say, and fails; a few rows of data are too many, as Gemma copies them into its code and "
+               "works out the answer from them alone instead of reading the file. The note is for the model, so it is in English, like the system prompt."},
+        Code("media.py", "def user_content("),
+        {"zh": "chat template 在每個 part 的位置寫一個佔位 token：Gemma 是 `<|image|>`、`<|audio|>`、`<|video|>`；"
+               "Qwen 是 `<|vision_start|><|image_pad|><|vision_end|>` 和 `<|video_pad|>`。`encode()` 把對話裡所有媒體依出現的順序交給 processor，"
+               "processor 把每個佔位 token 展開成那個檔案佔的 token：",
+         "en": "The chat template writes a placeholder token where each part goes: `<|image|>`, `<|audio|>` and `<|video|>` for Gemma; "
+               "`<|vision_start|><|image_pad|><|vision_end|>` and `<|video_pad|>` for Qwen. `encode()` hands the processor all the media in "
+               "the conversation, in the order they come, and the processor expands each placeholder into the tokens that file takes:"},
+        (
+            {"zh": "Gemma 4：一張圖片最多 280 個 `<|image|>`，包在 `<|image>` 和 `<image|>` 之間；影片平均取 32 張畫格（比這短的影片全部都用），每張前面寫上時間 `mm:ss`，"
+                   "最多 70 個 `<|video|>`；聲音每 40 ms 一個 `<|audio|>`，最多 750 個，所以只聽得到前 30 秒。",
+             "en": "Gemma 4: an image is up to 280 `<|image|>` between `<|image>` and `<image|>`; a video is 32 frames taken evenly (all of them, "
+                   "for a shorter one), each after "
+                   "its time as `mm:ss` and up to 70 `<|video|>`; sound is one `<|audio|>` per 40 ms, at most 750, so only the first 30 seconds are heard."},
+            {"zh": "Qwen3.5：圖片越大 token 越多（640×480 約 300 個 `<|image_pad|>`）；影片每秒取 2 張畫格，每 2 張一組，前面寫上時間，例如 `<0.3 seconds>`。",
+             "en": "Qwen3.5: the bigger the image, the more tokens (about 300 `<|image_pad|>` for 640×480); a video gives 2 frames a second, "
+                   "in pairs, each pair after its time, such as `<0.3 seconds>`."},
+        ),
+        Code("llm.py", "def encode(self, prompt",
+             caption={"zh": "`media_tokens` 數每種媒體佔了幾個 token，step 卡片的脈絡段會寫出來。",
+                      "en": "`media_tokens` counts how many tokens each kind of media takes; the step card's context section shows it."}),
+        {"zh": "processor 要的是解碼好的資料，由 `media.py` 準備：圖片轉成 RGB，照片照 EXIF 轉正；聲音用 PyAV 解碼成單聲道，"
+               "取樣率改成模型的 feature extractor 要的 16 kHz；影片平均取最多 64 張畫格、縮小到長邊 768 像素，"
+               "再附上取完之後的畫格率，processor 寫出的時間才對（[[media.py|def load_video(]]）。每個檔案只解碼一次，之後每一步都重複使用。",
+         "en": "The processor wants decoded data, which `media.py` prepares: images become RGB, and photos are turned upright by their EXIF; "
+               "sound is decoded with PyAV into mono at the 16 kHz the model's feature extractor expects; a video gives at most 64 frames taken "
+               "evenly, shrunk to 768 pixels on the longer side, with the frame rate of what was kept, so the times the processor writes are "
+               "right ([[media.py|def load_video(]]). Each file is decoded once and reused in every step after."},
+        {"zh": "prefill 時，編碼器的輸出換掉這些佔位 token 的 embedding。圖片和影片先跑一次視覺編碼器再交給 prefill，和 `generate()` 的做法一樣；"
+               "直接交給 forward 的話，transformers 5.20 的 Gemma 4 會漏掉影片的畫格數。Qwen3.5 的位置編碼（M-RoPE）要知道圖片的長寬，"
+               "所以除了像素以外的輸入都留著；它也會把上一個 prompt 的位置偏移記在模型上，每次 prefill 前要清掉。"
+               "prefill 之後，媒體都已經在 KV cache 裡，解碼和純文字完全一樣。`tests/test_real_model.py` 確認附上圖片、影片和錄音時，greedy 的輸出也和 `generate()` 一致。",
+         "en": "In the prefill, the encoders' output replaces the embeddings of those placeholder tokens. Images and videos go through the "
+               "vision encoder first and its output goes to the prefill, as `generate()` does it; handed to the forward pass as they are, "
+               "videos lose their frame counts in transformers 5.20's Gemma 4. Qwen3.5's position encoding (M-RoPE) needs the images' sizes, "
+               "so every input but the pixels stays; it also keeps the last prompt's position offset on the model, which is cleared before "
+               "every prefill. After the prefill, the media are in the KV cache, and decoding is the same as for text. "
+               "`tests/test_real_model.py` checks that with an image, a video and a recording, too, greedy output matches `generate()`."},
+        Code("llm.py", "def _encoded_media("),
     )),
     Section("model", "model",
             {"zh": "模型：prefill，然後一次一個 token", "en": "Model: prefill, then one token at a time"},
@@ -546,11 +644,13 @@ SECTIONS = [
         Code("agent.py", "done = None", end='self.emit("model_end"',
              caption={"zh": "傳進去的 `self._stop.is_set` 是一個函式：模型每生成一個 token 前都會呼叫它，問「要停了嗎？」。",
                       "en": "The `self._stop.is_set` passed in is a function: the model calls it before every token to ask whether to stop."}),
-        {"zh": "**prefill**：把整個 prompt 轉成 token id，一次 forward 算完。`use_cache=True` 留下每一層的狀態（一般 attention 層是 key / value，"
+        {"zh": "**prefill**：`encode()` 已經把整個 prompt 轉成 token id，一次 forward 算完；有媒體時，這次 forward 也把編碼器的輸出放進它們的位置（{{media}}）。"
+               "`use_cache=True` 留下每一層的狀態（一般 attention 層是 key / value，"
                "Qwen3.5 的 Gated DeltaNet 層是一個固定大小的狀態），之後每個新 token 只需要算自己那一個位置；"
                "`logits_to_keep=1` 只取最後一個位置的 logits，因為只需要「下一個 token」的分布（[[llm.py|def _forward(]]）。"
                "prefill 的時間主要看 prompt 有多長，模型分頁的表格裡有每一步的 prefill ms。",
-         "en": "**prefill**: the whole prompt becomes token ids and goes through one forward pass. `use_cache=True` keeps each layer's state "
+         "en": "**prefill**: the whole prompt, already token ids from `encode()`, goes through one forward pass, which also puts the encoders' "
+               "output in place of any media ({{media}}). `use_cache=True` keeps each layer's state "
                "(the keys and values in ordinary attention layers, a fixed-size state in Qwen3.5's Gated DeltaNet layers), so each new token "
                "needs only its own position computed; `logits_to_keep=1` returns the logits for the last position only, since only the "
                "distribution of the next token is needed ([[llm.py|def _forward(]]). Prefill time depends mostly on the prompt's length; "
@@ -776,9 +876,10 @@ SECTIONS = [
             {"zh": "驗證與權限：模型從不直接碰環境", "en": "Validation and permission: the model never touches the environment"},
             {"zh": "每個呼叫要過三關：格式和 schema、重複檢查、（開著時）你的確認。",
              "en": "Each call has three checks to pass: format and schema, repeats, and (when it is on) your confirmation."}, (
-        {"zh": "每個呼叫交給 `_handle_call()`。第一關是驗證：解析失敗、沒有這個工具、參數不符合 schema，都不會執行。",
-         "en": "Each call goes to `_handle_call()`. The first check is validation: a call that failed to parse, names no known tool or has "
-               "arguments that do not fit the schema never runs."},
+        {"zh": "每個呼叫交給 `_handle_call()`。第一關是驗證：解析失敗、沒有這個工具（這一輪沒提供的也算，例如沒打開「讓模型寫程式」時的 `run_python`）、"
+               "參數不符合 schema，都不會執行。",
+         "en": "Each call goes to `_handle_call()`. The first check is validation: a call that failed to parse, names no tool offered this turn "
+               "(`run_python` without Let the model write code, say) or has arguments that do not fit the schema never runs."},
         Code("agent.py", "def _handle_call(", end="args, errors = tool.validate(args, lang)"),
         {"zh": "`Tool.validate()` 檢查必要參數有沒有給、有沒有多出不認得的參數、型別和 enum 對不對，然後補上預設值。"
                "錯誤訊息是完整的句子，用這一輪開始時頁面的語言寫，因為它會原封不動變成模型下一步讀到的觀察。",
@@ -803,9 +904,11 @@ SECTIONS = [
                "or `APPROVAL_TIMEOUT` passes ([[agent.py|APPROVAL_TIMEOUT = ]], 5 minutes). A timeout counts as a rejection and stops the "
                "whole turn, so a closed tab cannot hold on to the model."},
         Code("agent.py", "def _wait_for_decision("),
-        {"zh": "畫面這邊，等待中的呼叫會在聊天區顯示「允許／拒絕」按鈕，按下去就呼叫 `run.run.decide()`。"
+        {"zh": "畫面這邊，等待中的呼叫會在聊天區顯示「允許／拒絕」按鈕，按下去就呼叫 `run.run.decide()`；"
+               "像 `run_python` 的程式碼這種好幾行的參數，另外用程式碼區塊顯示，看得清楚再決定。"
                "「先問我」寫在 harness 的程式裡，而不是寫在 prompt 裡請模型遵守，所以模型沒有辦法繞過。",
-         "en": "On the page, a waiting call shows Allow and Reject buttons in the chat, and pressing one calls `run.run.decide()`. Asking first "
+         "en": "On the page, a waiting call shows Allow and Reject buttons in the chat, and pressing one calls `run.run.decide()`; an argument "
+               "over several lines, like `run_python`'s code, is shown in a code block of its own, so you can read it before you decide. Asking first "
                "is written into the harness's code, not into the prompt as a request to the model, so the model has no way around it."},
         Code("streamlit_app.py", "for call in render.pending_approvals(data):"),
     )),
@@ -813,13 +916,15 @@ SECTIONS = [
             {"zh": "環境：真的去執行工具", "en": "Environment: really running the tool"},
             {"zh": "通過三關才會呼叫 Python 函式；錯誤也會變成觀察，不會讓迴圈當掉。",
              "en": "Only after the three checks is the Python function called; errors become observations too, and never crash the loop."}, (
-        {"zh": "送出 `tool_start` 後呼叫工具的 Python 函式。工具自己丟的 `ToolError` 是可以預期的錯誤（時區打錯、找不到頁面），"
+        {"zh": "送出 `tool_start` 後呼叫工具的 Python 函式；`takes_files` 的工具（`run_python`）另外拿到這段對話的資料夾。"
+               "工具自己丟的 `ToolError` 是可以預期的錯誤（時區打錯、找不到頁面、程式出錯），"
                "訊息用這一輪的語言直接給模型看；其他例外也會被接住，變成 `{\"error\": …}`。",
-         "en": "After `tool_start` goes out, the tool's Python function is called. A `ToolError` from the tool is an expected failure (a mistyped "
-               "timezone, a page that does not exist), and its message goes to the model as it is, in the turn's language; any other exception "
-               "is caught too and becomes `{\"error\": …}`."},
+         "en": "After `tool_start` goes out, the tool's Python function is called; a tool that `takes_files` (`run_python`) also gets the "
+               "conversation's folder. A `ToolError` from the tool is an expected failure (a mistyped timezone, a page that does not exist, "
+               "code that fails), and its message goes to the model as it is, in the turn's language; any other exception is caught too and "
+               "becomes `{\"error\": …}`."},
         Code("agent.py", 'self.emit("tool_start"', end="return self._observe(step, cid, call[\"name\"], result, ok=ok"),
-        {"zh": "四個工具各自連到不同的環境：", "en": "The four tools reach different environments:"},
+        {"zh": "五個工具各自連到不同的環境：", "en": "The five tools reach different environments:"},
         (
             {"zh": "`get_current_time`：讀系統時鐘，用 IANA 時區名稱換算（[[tools.py|def get_current_time(]]）。",
              "en": "`get_current_time`: reads the system clock and converts with an IANA timezone name ([[tools.py|def get_current_time(]])."},
@@ -832,10 +937,29 @@ SECTIONS = [
                    "和 ReAct 論文在 HotpotQA 上用的 search / read 是同一組動作。",
              "en": "`search_wikipedia` / `read_wikipedia`: call the Wikipedia API with httpx ([[tools.py|def search_wikipedia(]]), the same pair "
                    "of actions, search and read, that the ReAct paper used on HotpotQA."},
+            {"zh": "`run_python`：在 Docker 容器裡跑模型寫的程式，把印出來的東西傳回去（[[tools.py|def run_python(]]）。",
+             "en": "`run_python`: runs the code the model writes in a Docker container and returns what it prints ([[tools.py|def run_python(]])."},
         ),
         Code("tools.py", "def _eval(node):",
              caption={"zh": "遞迴走過語法樹，遇到白名單以外的節點就丟 `ToolError`。",
                       "en": "Walks the syntax tree recursively and raises `ToolError` at any node outside the allowlist."}),
+        {"zh": "`calculator` 只算得了一行算式；`run_python` 則讓模型寫完整的程式，所以環境要關得更緊。每次呼叫都從 `sandbox/Dockerfile` 建的 image"
+               "（Python 3.12 加上 numpy、pandas，以及讀 Excel 的 openpyxl、印表格的 tabulate）開一個新容器：沒有網路，檔案系統唯讀、只有 `/tmp` 能寫，記憶體 512 MB、一顆 CPU、最多 64 個 process，"
+               "拿掉所有 Linux capability，用沒有權限的使用者執行；這段對話的資料夾唯讀掛在 `/data`。程式從 stdin 送進去，跑完容器就刪掉。",
+         "en": "`calculator` can only work out one expression; `run_python` lets the model write whole programs, so its environment is shut "
+               "tighter. Every call starts a new container from the image `sandbox/Dockerfile` builds (Python 3.12 with numpy and pandas, plus openpyxl to read Excel and tabulate to print tables): no "
+               "network, a read-only file system where only `/tmp` can be written, 512 MB of memory, one CPU, at most 64 processes, no Linux "
+               "capabilities and an unprivileged user; the conversation's folder is mounted read-only at `/data`. The code goes in on stdin, "
+               "and the container is deleted when it is done."},
+        Code("tools.py", "def sandbox_command("),
+        {"zh": "跑超過 30 秒就把容器停掉；結束代碼不是 0（例如丟出例外）、記憶體用太多或什麼都沒印，都當成 `ToolError`，模型下一步讀到 traceback 或提醒，可以改了再跑。"
+               "Docker 不是必要的：只有側欄打開「讓模型寫程式」時才會提供 `run_python`，頁面也是那時候才去找 Docker（[[tools.py|def sandbox_problem(]]），"
+               "沒裝、沒啟動或還沒建 image，就在側欄說明怎麼做，這一輪也不把 `run_python` 給模型。",
+         "en": "Code that runs past 30 seconds has its container stopped; a nonzero exit code (an exception, say), too much memory or no output at all is a "
+               "`ToolError`, so the model reads the traceback or a reminder in the next step and can fix the code and run it again. Docker is "
+               "not required: `run_python` is offered only when Let the model write code is on in the sidebar, and only then does the page look "
+               "for Docker ([[tools.py|def sandbox_problem(]]); if it is not installed, not running or the image is not built, the sidebar says "
+               "what to do, and the turn goes on without `run_python`."},
     )),
     Section("observe", "context",
             {"zh": "觀察接回脈絡，進下一圈", "en": "The observation goes back into the context for the next step"},
@@ -912,8 +1036,9 @@ EVENTS = [
      {"zh": "step 編號", "en": "the step number"},
      {"zh": "開一張新的 step 卡片；迴圈圖亮起「脈絡」", "en": "opens a new step card; Context lights up in the loop diagram"}),
     ("context", "agent.py", '"context",',
-     {"zh": "完整 prompt、token 數、`added_from`、脈絡上限、各角色訊息數",
-      "en": "the whole prompt, its token count, `added_from`, the context limit, the number of messages per role"},
+     {"zh": "模型讀到的完整 prompt（媒體已展開）、token 數、`added_from`、每種媒體佔的 token 數、脈絡上限、各角色訊息數",
+      "en": "the whole prompt as the model reads it (media expanded), its token count, `added_from`, the tokens each kind of media takes, "
+            "the context limit, the number of messages per role"},
      {"zh": "step 卡片的脈絡段、「脈絡」分頁", "en": "the step card's context section, the Context tab"}),
     ("prefill", "llm.py", 'yield {"type": "prefill"',
      {"zh": "prompt 的 token 數、prefill 耗時", "en": "the prompt's token count, the prefill time"},

@@ -1,15 +1,18 @@
 """The harness loop, driven by a fake model that replays scripted outputs."""
 
+import dataclasses
 import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 import agent
 from agent import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, Run, RunSettings, common_prefix
-from fakes import FakeLLM, record_run, tool_call
+from fakes import MEDIA_TOKENS, FakeLLM, record_run, tool_call
 from llm import Sampling
+from media import Attachment
 from tools import TOOLS, ToolError
 
 ANSWER = "現在是下午三點。<turn|>"
@@ -63,7 +66,7 @@ def test_run_start_reports_settings_and_tools():
     assert start["type"] == "run_start" and len(start["run_id"]) == 12
     assert start["settings"] == {
         "temperature": 0.5, "top_p": 0.9, "top_k": 10, "max_new_tokens": 256, "mtp": False,
-        "max_steps": 3, "thinking": True, "use_tools": True, "approve_tools": True, "lang": "zh",
+        "max_steps": 3, "thinking": True, "use_tools": True, "tools": list(TOOLS), "approve_tools": True, "lang": "zh",
     }
     assert start["tools"] == list(TOOLS)
 
@@ -191,6 +194,74 @@ def test_with_tools_the_model_sees_every_schema():
     _, _, fake = record_run([ANSWER])
     assert fake.renders[0]["tools"] == [t.schema() for t in TOOLS.values()]
     assert fake.renders[0]["messages"][0]["content"] == agent.SYSTEM_WITH_TOOLS
+
+
+def test_a_turn_can_leave_tools_out():
+    _, events, fake = record_run([tool_call("run_python", code="print(1)"), ANSWER], tools=("calculator", "get_current_time"))
+    assert [t["function"]["name"] for t in fake.renders[0]["tools"]] == ["get_current_time", "calculator"]  # in TOOLS' order
+    assert events[0]["tools"] == ["get_current_time", "calculator"]
+    [call] = of_type(events, "tool_call")
+    assert call["errors"] == ["沒有 run_python 這個工具，可用的工具是 get_current_time, calculator"]
+
+
+# ---------- attachments ----------
+
+PHOTO = Attachment("photo.png", "image", "/chat/photo.png", 2048)
+CLIP = Attachment("clip.mp4", "video", "/chat/clip.mp4", 90_000)
+SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "assets/examples/sales.csv"), 942)
+
+
+def test_media_become_parts_of_the_question_and_files_a_line_for_run_python():
+    _, events, fake = record_run([ANSWER], user="這是什麼？", attachments=[PHOTO, SALES, CLIP])
+    question = fake.renders[0]["messages"][1]["content"]
+    assert question == [
+        {"type": "image", "name": "photo.png", "kind": "image", "path": "/chat/photo.png", "size": 2048},
+        {"type": "video", "name": "clip.mp4", "kind": "video", "path": "/chat/clip.mp4", "size": 90_000},
+        {"type": "text", "text": "這是什麼？\n\nAttached for run_python, which reads them:\n"
+                                 "/data/sales.csv (942 B), whose first line is: month,region,units,revenue"},
+    ]
+    assert [p["name"] for p in fake.encodes[0]] == ["photo.png", "clip.mp4"]  # the processor gets the media, in order
+    assert end_of(events)["messages"][0]["content"] == question  # and the next turn's history keeps them
+
+
+def test_a_question_without_files_is_plain_text():
+    _, _, fake = record_run([ANSWER])
+    assert fake.renders[0]["messages"][1]["content"] == "台北現在幾點？" and fake.encodes == [[]]
+
+
+def test_the_context_is_what_the_model_reads_with_the_media_expanded():
+    _, events, fake = record_run([tool_call("calculator", expression="6*7"), ANSWER], attachments=[PHOTO])
+    ctx1, ctx2 = of_type(events, "context")
+    assert ctx1["prompt"] == fake.prompts[0] and "<|image|>" * MEDIA_TOKENS in ctx1["prompt"]
+    assert ctx1["media_tokens"] == {"image": MEDIA_TOKENS} and ctx1["n_tokens"] == len(fake.tokenizer(ctx1["prompt"]).input_ids)
+    # The media come before what is new in step 2, which still starts at the tool result.
+    assert ctx2["prompt"][: ctx2["added_from"]].startswith(ctx1["prompt"])
+    assert ctx2["prompt"][ctx2["added_from"]:].startswith("response:calculator")
+    assert fake.encodes[1] == fake.encodes[0]  # every step reads the conversation's media again
+
+
+def test_media_from_earlier_turns_go_to_the_processor_too():
+    first, _, _ = record_run([ANSWER], attachments=[PHOTO])
+    _, _, fake = record_run([ANSWER], user="再看一次", history=first.messages, attachments=[CLIP])
+    assert [p["name"] for p in fake.encodes[0]] == ["photo.png", "clip.mp4"]
+
+
+def test_run_python_gets_the_conversations_folder(monkeypatch, tmp_path):
+    seen = {}
+
+    def run_python(code, files=None):
+        seen.update(code=code, files=files)
+        return {"stdout": "42\n"}
+
+    monkeypatch.setitem(TOOLS, "run_python", dataclasses.replace(TOOLS["run_python"], fn=run_python))
+    _, events, _ = record_run([tool_call("run_python", code="print(42)"), ANSWER], files=tmp_path)
+    assert seen == {"code": "print(42)", "files": tmp_path}
+    assert json.loads(of_type(events, "tool_result")[0]["result"]) == {"stdout": "42\n"}
+
+
+def test_other_tools_do_not_get_the_folder(monkeypatch, tmp_path):
+    _, events, _ = record_run([tool_call("calculator", expression="6*7"), ANSWER], files=tmp_path)
+    assert of_type(events, "tool_result")[0]["ok"] is True
 
 
 # ---------- the harness checks the call before running it ----------

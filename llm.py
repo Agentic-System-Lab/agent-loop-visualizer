@@ -10,21 +10,27 @@ ones switch between thinking, tool calls and the reply come from the model's fam
 
 With MTP switched on, a small drafter guesses the next few tokens and one forward pass
 checks them all (_drafted); every token still comes from the model's distribution.
+
+Images, sound and video go in through the model's processor: encode() expands each placeholder the
+chat template wrote into the tokens of its file, and the prefill hands the encoders their inputs.
+After the prefill, decoding is the same as for text.
 """
 
+import inspect
 import logging
 import os
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
 import torch
 from huggingface_hub import snapshot_download
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoProcessor
 
 import families
+import media
 
 TOP_N = 5
 
@@ -36,6 +42,17 @@ class Sampling:
     top_k: int = 64
     max_new_tokens: int = 1024
     mtp: bool = False  # let the MTP drafter guess ahead, once it is loaded (LocalLLM.load_drafter)
+
+
+@dataclass
+class Encoded:
+    """A prompt as the model reads it (LocalLLM.encode)."""
+
+    text: str  # the prompt, with each placeholder of an image, clip or video expanded into the tokens it takes
+    ids: object  # its token ids, a tensor of shape (1, n_tokens)
+    n_tokens: int
+    media: dict = field(default_factory=dict)  # the processor's inputs for the encoders (pixels, audio features), for the prefill
+    media_tokens: dict = field(default_factory=dict)  # kind -> how many of the tokens are that kind of media
 
 
 def _download(model_id: str, only: str | None = None) -> str:
@@ -83,8 +100,12 @@ class LocalLLM:
         # config.json alone says which family the model belongs to; an unsupported one fails before the weights download.
         self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
         files = _download(model_id)
-        self.tokenizer = AutoTokenizer.from_pretrained(files)
+        # The processor holds the tokenizer and, for a model that reads more than text, what turns files into its inputs.
+        self.processor = AutoProcessor.from_pretrained(files)
+        self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
         self.model = AutoModelForMultimodalLM.from_pretrained(files, dtype=self.dtype, device_map=self.device).eval()
+        self.modalities = self._modalities()
+        self.media_token_ids = {kind: getattr(self.model.config, f"{kind}_token_id", None) for kind in self.modalities}
         self.load_seconds = time.perf_counter() - start
 
         # The generation config's stop tokens, plus the family's: a checkpoint may list only some of them.
@@ -118,6 +139,7 @@ class LocalLLM:
             "layer_types": dict(Counter(getattr(cfg, "layer_types", None) or [])),
             "context_length": self.context_length,
             "vocab_size": cfg.vocab_size,
+            "modalities": list(self.modalities),
             "family": self.family.key,
             "stop_tokens": [self.piece(i) for i in sorted(self.eos_ids)],
             "special_tokens": {self.piece(i): i for i in sorted(self.special_ids)},
@@ -125,6 +147,17 @@ class LocalLLM:
             "drafter_id": self.drafter_id,
             "drafter": None,
         }
+
+    def _modalities(self) -> tuple[str, ...]:
+        """What the checkpoint reads besides text: each kind needs an encoder in the config and a part of the processor
+        to feed it. It is asked of the checkpoint, not the family, since checkpoints of one family can differ."""
+        config, processor = self.model.config, self.processor
+        reads = {
+            "image": getattr(config, "vision_config", None) is not None and hasattr(processor, "image_processor"),
+            "audio": getattr(config, "audio_config", None) is not None and hasattr(processor, "feature_extractor"),
+            "video": getattr(config, "video_token_id", None) is not None and hasattr(processor, "video_processor"),
+        }
+        return tuple(kind for kind, ok in reads.items() if ok)
 
     def _sampling_defaults(self) -> dict:
         """The checkpoint's generation_config.json, or the family's recommendation when it ships none."""
@@ -140,7 +173,7 @@ class LocalLLM:
 
     def warmup(self, mtp: bool = False):
         """The first forward passes on MPS compile kernels and take seconds; pay that at load time."""
-        prompt = self.render([{"role": "user", "content": "Hi"}], None, False)
+        prompt = self.encode(self.render([{"role": "user", "content": "Hi"}], None, False), [])
         for _ in self.generate(prompt, Sampling(max_new_tokens=16 if mtp else 2, mtp=mtp), lambda: False):
             pass
 
@@ -173,10 +206,38 @@ class LocalLLM:
             messages, tools=tools or None, tokenize=False, add_generation_prompt=generation_prompt, enable_thinking=thinking
         )
 
-    def generate(self, prompt: str, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
+    def encode(self, prompt: str, parts: list[dict]) -> Encoded:
+        """The prompt as the model reads it. Without media that is the prompt's tokens. With media (`parts`, the
+        conversation's media in the order of their placeholders), the processor replaces each placeholder with the
+        tokens that image, clip or video takes, and makes the inputs of the encoders whose output goes there."""
+        if not parts:
+            ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids
+            return Encoded(prompt, ids, ids.shape[-1])
+        files = {kind: [p["path"] for p in parts if p["type"] == kind] for kind in media.MEDIA}
+        inputs = {}
+        if files["image"]:
+            inputs["images"] = [media.load_image(path) for path in files["image"]]
+        if files["audio"]:
+            inputs["audio"] = [media.load_audio(path, self.processor.feature_extractor.sampling_rate) for path in files["audio"]]
+        if files["video"]:
+            videos = [media.load_video(path) for path in files["video"]]
+            inputs["videos"] = [frames for frames, _ in videos]
+            inputs["videos_kwargs"] = {"video_metadata": [metadata for _, metadata in videos]}
+            # A processor that takes a set number of frames (Gemma 4: 32) refuses a video with fewer; it gets all there are.
+            wanted, fewest = getattr(self.processor.video_processor, "num_frames", None), min(len(frames) for frames, _ in videos)
+            if wanted and fewest < wanted:
+                inputs["videos_kwargs"]["num_frames"] = fewest
+        out = self.processor(text=prompt, return_tensors="pt", **inputs, **self.family.processor_kwargs)
+        ids = out.pop("input_ids")
+        out.pop("attention_mask", None)  # one sequence, no padding: every position counts, as with text
+        counts = {kind: int((ids == token).sum()) for kind, token in self.media_token_ids.items() if token is not None}
+        text = self.tokenizer.decode(ids[0], skip_special_tokens=False)
+        return Encoded(text, ids, ids.shape[-1], dict(out.to(self.device, dtype=self.dtype)), {k: n for k, n in counts.items() if n})
+
+    def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
         """Yield a prefill event, one event per token, then a done event."""
-        ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids.to(self.device)
-        channel = "thought" if prompt.endswith(self.family.thought_prefix) else "content"
+        ids = prompt.ids.to(self.device)
+        channel = "thought" if prompt.text.endswith(self.family.thought_prefix) else "content"
         drafting = sampling.mtp and self.drafter is not None
         mtp = {"drafted": 0, "accepted": 0, "forwards": 0} if drafting else None
         generated: list[int] = []
@@ -184,8 +245,12 @@ class LocalLLM:
         finish = "max_new_tokens"
 
         with torch.inference_mode():
+            # Models with multimodal RoPE (Qwen3.5) keep the position offset of the last prompt's images on the model
+            # and add it in every later forward pass; each prompt starts from its own.
+            if hasattr(self.model.base_model, "rope_deltas"):
+                self.model.base_model.rope_deltas = None
             start = time.perf_counter()
-            out = self._forward(ids, None, 1, drafting)
+            out = self._forward(ids, None, 1, drafting, **self._encoded_media(prompt.media))
             prefill_ms = (time.perf_counter() - start) * 1000
             yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
 
@@ -239,11 +304,29 @@ class LocalLLM:
             "raw": self.tokenizer.decode(generated, skip_special_tokens=False),
         }
 
-    def _forward(self, ids: torch.Tensor, past, keep: int, drafting: bool = False):
+    def _forward(self, ids: torch.Tensor, past, keep: int, drafting: bool = False, **media):
         """One forward pass over `ids`, with the cache of everything before them; logits for the last `keep` positions.
-        The drafter also reads the model's last hidden state and the keys and values its later layers share."""
+        The drafter also reads the model's last hidden state and the keys and values its later layers share.
+        In the prefill, `media` are the encoders' inputs, whose outputs replace the embeddings of the media's tokens."""
         extra = {"output_hidden_states": True, "return_shared_kv_states": True} if drafting else {}
-        return self.model(input_ids=ids, past_key_values=past, use_cache=True, logits_to_keep=keep, **extra)
+        return self.model(input_ids=ids, past_key_values=past, use_cache=True, logits_to_keep=keep, **extra, **media)
+
+    def _encoded_media(self, inputs: dict) -> dict:
+        """Run the vision encoder over the prompt's images and videos before the prefill, as generate() does, and pass
+        its output in their place. Leaving it to the forward pass breaks videos on Gemma 4: transformers 5.20's
+        Gemma4ForConditionalGeneration takes num_frames_per_video but does not hand it on to the video encoder."""
+        if not inputs or "mm_encoder_outputs" not in inspect.signature(self.model.forward).parameters:
+            return inputs
+        base, encoded = self.model.base_model, {}
+        for kind in ("image", "video"):
+            encoder = getattr(base, f"get_{kind}_features", None)
+            args = {k: inputs[k] for k in inspect.signature(encoder).parameters if k in inputs} if encoder else {}
+            if any(k.startswith("pixel_values") for k in args):
+                encoded[kind] = encoder(**args, return_dict=True)
+        if not encoded:
+            return inputs
+        # The pixels go; the rest stays, such as the grid sizes Qwen3.5's positions are computed from.
+        return {**{k: v for k, v in inputs.items() if not k.startswith("pixel_values")}, "mm_encoder_outputs": encoded}
 
     def _one_at_a_time(self, out, s: Sampling) -> Iterator[tuple[int, dict]]:
         """Plain decoding: sample a token, feed it back with the cache for the next position's logits, repeat."""

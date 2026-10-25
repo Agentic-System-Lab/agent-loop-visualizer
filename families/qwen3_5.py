@@ -112,12 +112,12 @@ GROUPS = {"zh": [
          "工具結果包在 `<tool_response>` 和 `</tool_response>` 之間，放在一則 `user` 訊息裡送回模型。"),
         ("</tool_response>", "工具結果結束", "工具結果到這裡結束。"),
     ]),
-    ("視覺", "圖片和影片；這個 app 只送文字，不會出現", [
+    ("視覺", "圖片和影片；附上這類檔案時才會出現", [
         ("<|vision_start|>", "視覺內容開始", "一張圖片或一段影片的 token 從這裡開始。"),
         ("<|vision_end|>", "視覺內容結束", "一張圖片或一段影片的 token 到這裡結束。"),
         ("<|image_pad|>", "圖片佔位",
          "chat template 在圖片的位置寫 `<|vision_start|><|image_pad|><|vision_end|>`；處理器把 `<|image_pad|>` 展開成一串，這些位置的 embedding 換成視覺編碼器的輸出。"),
-        ("<|video_pad|>", "影片佔位", "和 `<|image_pad|>` 一樣，用在影片。"),
+        ("<|video_pad|>", "影片佔位", "和 `<|image_pad|>` 一樣，用在影片：每秒取 2 張畫格，每 2 張一組，前面寫上時間，例如 `<0.3 seconds>`。沒有聲音。"),
         ("<|vision_pad|>", "視覺填充", "保留的視覺填充 token，chat template 不會用到。"),
         ("<|object_ref_start|>", "物件名稱開始", "Qwen-VL 系列做視覺定位（grounding）時，標出指涉的物件名稱。chat template 不會用到。"),
         ("<|object_ref_end|>", "物件名稱結束", "和 `<|object_ref_start|>` 成對。"),
@@ -168,12 +168,12 @@ GROUPS = {"zh": [
          "A tool result goes between `<tool_response>` and `</tool_response>`, in a `user` message sent back to the model."),
         ("</tool_response>", "End of tool response", "The tool result ends here."),
     ]),
-    ("Vision", "images and video; this app sends text only, so they never appear", [
+    ("Vision", "images and video; they appear when you attach one", [
         ("<|vision_start|>", "Start of vision", "An image's or a video's tokens start here."),
         ("<|vision_end|>", "End of vision", "An image's or a video's tokens end here."),
         ("<|image_pad|>", "Image placeholder",
          "The chat template writes `<|vision_start|><|image_pad|><|vision_end|>` where an image goes; the processor expands `<|image_pad|>` into a run of them, and the embeddings at those positions become the vision encoder's output."),
-        ("<|video_pad|>", "Video placeholder", "Like `<|image_pad|>`, for video."),
+        ("<|video_pad|>", "Video placeholder", "Like `<|image_pad|>`, for video: 2 frames a second, in pairs, each pair after its time, such as `<0.3 seconds>`. There is no sound."),
         ("<|vision_pad|>", "Vision padding", "A reserved vision padding token; the chat template never uses it."),
         ("<|object_ref_start|>", "Start of object reference", "Marks the name of the object referred to when Qwen-VL models do visual grounding. The chat template never uses it."),
         ("<|object_ref_end|>", "End of object reference", "Pairs with `<|object_ref_start|>`."),
@@ -236,4 +236,7 @@ QWEN3_5 = Family(
     # The checkpoint ships no generation_config.json; these are the model card's non-thinking text settings.
     sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},
     byte_level=True,
+    # Cap each video frame at the pixels the reference implementation (qwen-vl-utils) allows; transformers asks
+    # for this to be said outright until it becomes the default.
+    processor_kwargs={"cap_pixels_per_frame": True},
 )

@@ -38,6 +38,11 @@ LAYER_TYPES = {
     "zh": {"sliding_attention": "sliding window", "full_attention": "full attention", "linear_attention": "線性 attention"},
     "en": {"sliding_attention": "sliding window", "full_attention": "full attention", "linear_attention": "linear attention"},
 }
+MODALITIES = {
+    "zh": {"text": "文字", "image": "圖片", "audio": "聲音", "video": "影片"},
+    "en": {"text": "text", "image": "image", "audio": "audio", "video": "video"},
+}
+RUN_MIN = 4  # this many of one special token in a row are drawn as one chip with a count, like the hundreds an image becomes
 PARAM_PARTS = {
     "zh": {"language_model": "語言模型", "audio_tower": "音訊編碼器", "vision_tower": "視覺編碼器", "visual": "視覺編碼器"},
     "en": {"language_model": "language model", "audio_tower": "audio encoder", "vision_tower": "vision encoder", "visual": "vision encoder"},
@@ -137,29 +142,82 @@ def stop_meaning(piece: str, family: families.Family, lang: str) -> str:
     return family.stop_tokens.get(piece, {}).get(lang, "")
 
 
-def chip(piece: str, family: families.Family, lang: str) -> str:
-    """A special token as a dark chip; hovering it pops up what the token is for."""
+def chip(piece: str, family: families.Family, lang: str, count: int = 1) -> str:
+    """A special token as a dark chip, with ×count for a run of it; hovering it pops up what the token is for."""
     meaning = meaning_html(piece, family, lang)
     tip = f'<span class="sp-tip">{meaning}</span>' if meaning else ""
-    return f'<span class="sp">{esc(piece)}{tip}</span>'
+    times = f'<span class="sp-n">×{count:,}</span>' if count > 1 else ""
+    return f'<span class="sp">{esc(piece)}{times}{tip}</span>'
 
 
-def special_html(text: str, family: families.Family, lang: str) -> str:
-    """Escape text and turn the family's control tokens, such as <|turn>, into chips."""
+def segments(text: str, family: families.Family) -> list[tuple[str, int]]:
+    """Text split into plain text, (text, 0), and runs of one control token, (token, how many in a row)."""
     out, last = [], 0
     for m in family.special_re.finditer(text):
-        out.append(esc(text[last:m.start()]))
-        out.append(chip(m.group(0), family, lang))
+        if m.start() > last:
+            out.append((text[last:m.start()], 0))
+        if out and out[-1][1] and out[-1][0] == m.group(0):
+            out[-1] = (m.group(0), out[-1][1] + 1)
+        else:
+            out.append((m.group(0), 1))
         last = m.end()
-    out.append(esc(text[last:]))
+    if last < len(text):
+        out.append((text[last:], 0))
+    return out
+
+
+def special_html(text: str, family: families.Family, lang: str, last: int | None = None) -> str:
+    """Escape text and turn the family's control tokens, such as <|turn>, into chips; a run of RUN_MIN or more of one
+    token is one chip with its count. With `last`, only about the last that many characters are drawn, after an
+    ellipsis, a run counting as one token, so a cut never lands inside one."""
+    segs = segments(text, family)
+    cut = False
+    if last is not None:
+        kept, left = [], last
+        for piece, count in reversed(segs):
+            size = len(piece) * (1 if count >= RUN_MIN else max(count, 1))
+            if size > left:
+                if not count and left > 0:
+                    kept.append((piece[-left:], 0))
+                cut = True
+                break
+            kept.append((piece, count))
+            left -= size
+        segs = kept[::-1]
+    out = ["…"] if cut else []
+    for piece, count in segs:
+        if not count:
+            out.append(esc(piece))
+        elif count >= RUN_MIN:
+            out.append(chip(piece, family, lang, count))
+        else:
+            out.append(chip(piece, family, lang) * count)
     return "".join(out)
 
 
 def pretty(text: str) -> str:
+    """A tool result for reading: its JSON indented, and a value that runs over several lines (what code printed,
+    a traceback) written out line by line after a |, instead of as one string full of \\n."""
     try:
-        return json.dumps(json.loads(text), ensure_ascii=False, indent=2)
+        value = json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return text
+    if not isinstance(value, dict) or not any(isinstance(v, str) and "\n" in v.strip() for v in value.values()):
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    lines = []
+    for n, (key, v) in enumerate(value.items(), 1):
+        name = json.dumps(key, ensure_ascii=False)
+        if isinstance(v, str) and "\n" in v.strip():
+            lines += [f"  {name}: |", *("    " + line for line in v.rstrip("\n").split("\n"))]
+        else:
+            body = json.dumps(v, ensure_ascii=False, indent=2).replace("\n", "\n  ")
+            lines.append(f"  {name}: {body}" + ("," if n < len(value) else ""))
+    return "\n".join(["{", *lines, "}"])
+
+
+def media_line(counts: dict, lang: str) -> str:
+    """How many of the context's tokens each kind of media took, e.g. "圖片 266 · 影片 2,016"."""
+    return " · ".join(f"{MODALITIES[lang].get(kind, kind)} {n:,}" for kind, n in counts.items())
 
 
 # ---------- events -> steps ----------
@@ -294,7 +352,7 @@ NODES = [  # key, x, y, title and caption in each language
     ("context", 22, 16, {"zh": ("脈絡 Context", "system · 工具 · 對話"), "en": ("Context", "system · tools · chat")}),
     ("model", 300, 16, {"zh": ("模型 LLM", "LLM"), "en": ("Model", "LLM")}),
     ("harness", 300, 152, {"zh": ("Harness", "解析 · 驗證 · 權限"), "en": ("Harness", "parse · check · ask")}),
-    ("env", 22, 152, {"zh": ("環境 Environment", "時鐘 · 計算 · Wikipedia"), "en": ("Environment", "clock · math · wiki")}),
+    ("env", 22, 152, {"zh": ("環境 Environment", "時鐘 · Wiki · Python"), "en": ("Environment", "clock · wiki · python")}),
     ("stop", 560, 152, {"zh": ("停止", "回覆使用者"), "en": ("Stop", "reply to the user")}),
 ]
 EDGES = [  # key, path, label position and anchor, label in each language
@@ -596,16 +654,15 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
         else:
             start = ctx["added_from"]
             label = pick(lang, "上一步的觀察接回脈絡", "The last step's observation, back in the context")
-        added = prompt[start:]
-        if len(added) > 1500:
-            added = "…" + added[-1500:]
         roles = " · ".join(f"{r} {n}" for r, n in ctx["roles"].items())
         share = pct(ctx["n_tokens"] / ctx["context_length"])
+        media = ctx.get("media_tokens")
+        media = pick(lang, f'<span class="sep">|</span>其中 {media_line(media, lang)} tokens', f'<span class="sep">|</span>of which {media_line(media, lang)} tokens') if media else ""
         parts.append(
             '<section class="stage stage-context"><h4 class="stage-title">'
             + pick(lang, "脈絡 <small>Context · 這一步模型看到的全部</small>", "Context <small>everything the model sees in this step</small>")
-            + f'</h4><p class="meta-line"><b>{ctx["n_tokens"]:,}</b> tokens · {pick(lang, f"上限的 {share}", f"{share} of the limit")} · {esc(roles)}</p>'
-            f'<p class="snippet-label">{label}</p><pre class="snippet">{special_html(added, family, lang)}</pre></section>'
+            + f'</h4><p class="meta-line"><b>{ctx["n_tokens"]:,}</b> tokens · {pick(lang, f"上限的 {share}", f"{share} of the limit")} · {esc(roles)}{media}</p>'
+            f'<p class="snippet-label">{label}</p><pre class="snippet">{special_html(prompt[start:], family, lang, last=1500)}</pre></section>'
         )
 
     if step["prefill"]:
@@ -653,7 +710,7 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
                 body.append('<p class="check ok">' + pick(lang, "沒有工具呼叫 → 把回覆交給使用者，迴圈結束",
                                                           "No tool call → the reply goes to the user, and the loop ends") + "</p>")
         for c in calls:
-            body.append(f'<p class="call-line"><span class="fn">{esc(c["name"])}</span>({esc(json.dumps(c["arguments"], ensure_ascii=False))})</p>')
+            body.append(call_html(c["name"], c["arguments"]))
             if c["errors"]:
                 errors = esc(pick(lang, "；", "; ").join(c["errors"]))
                 body.append(f'<p class="check bad">✗ {errors} → ' + pick(lang, "把錯誤當作觀察送回模型", "the error goes back to the model as an observation") + "</p>")
@@ -703,6 +760,16 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
     return "".join(parts)
 
 
+def call_html(name: str, arguments: dict | None) -> str:
+    """A tool call as name(arguments JSON). An argument that runs over several lines, such as code, is shown as …
+    in the JSON and written out below it."""
+    args = arguments or {}
+    blocks = {k: v for k, v in args.items() if isinstance(v, str) and "\n" in v.strip()}
+    shown = json.dumps({k: "…" if k in blocks else v for k, v in args.items()} if arguments is not None else None, ensure_ascii=False)
+    out = f'<p class="call-line"><span class="fn">{esc(name)}</span>({esc(shown)})</p>'
+    return out + "".join(f'<p class="snippet-label">{esc(k)}</p><pre class="snippet arg">{esc(v)}</pre>' for k, v in blocks.items())
+
+
 def stop_html(data: dict, lang: str) -> str:
     end = data["end"]
     title, desc = STOP_REASONS[lang].get(end["stop_reason"], (end["stop_reason"], ""))
@@ -727,9 +794,10 @@ def context_summary(step: dict, lang: str) -> str:
     ctx = step["context"]
     roles = " · ".join(f"{r} {n}" for r, n in ctx["roles"].items())
     share, chars = pct(ctx["n_tokens"] / ctx["context_length"]), len(ctx["prompt"])
+    media = ctx.get("media_tokens")
     return f"{ctx['n_tokens']:,} / {ctx['context_length']:,} tokens" + pick(
         lang, f"（{share}）· {chars:,} 字元", f" ({share}) · {chars:,} characters"
-    ) + f" · {roles}"
+    ) + f" · {roles}" + (pick(lang, f" · 其中 {media_line(media, lang)} tokens", f" · of which {media_line(media, lang)} tokens") if media else "")
 
 
 def context_html(step: dict, family: families.Family, lang: str) -> str:
@@ -768,6 +836,7 @@ def model_html(info: dict, lang: str) -> str:
         ("sliding window", f"{info['sliding_window']:,} tokens" if info["sliding_window"] else ""),
         (pick(lang, "脈絡上限", "context limit"), f"{info['context_length']:,} tokens"),
         (pick(lang, "詞彙量", "vocabulary"), f"{info['vocab_size']:,}"),
+        (pick(lang, "讀得懂", "reads"), " · ".join(MODALITIES[lang][k] for k in ("text", *info.get("modalities", ())))),
         (pick(lang, "載入時間", "load time"), f"{info['load_seconds']} s"),
     ]
     spec_html = "".join(f"<div><dt>{k}</dt><dd>{esc(v)}</dd></div>" for k, v in specs if v)
@@ -861,15 +930,19 @@ def step_rows(data: dict, lang: str) -> list[dict]:
     return rows
 
 
-def tools_html(tools: dict, enabled: bool, family: families.Family, lang: str) -> str:
+def tools_html(tools: dict, enabled: bool, family: families.Family, lang: str, offered: list[str] | None = None) -> str:
+    """Every tool with its schema and environment; one not in `offered` (when given) is marked as kept from the model."""
     items = []
     for t in tools.values():
         params = ", ".join(
             f'{k}{"" if k in t.parameters.get("required", []) else "?"}: {v["type"]}' for k, v in t.parameters["properties"].items()
         )
+        off = "" if offered is None or t.name in offered else '<p class="check warn">' + pick(
+            lang, "這一輪沒有提供給模型，見側欄的設定", "not offered to the model in this turn; see the sidebar"
+        ) + "</p>"
         items.append(
             f'<li><p class="call-line"><span class="fn">{esc(t.name)}</span>({esc(params)})</p>'
-            f'<p class="tool-desc">{esc(t.description)}</p><p class="result-line">{pick(lang, "環境：", "environment: ")}{esc(t.environment[lang])}</p></li>'
+            f'<p class="tool-desc">{esc(t.description)}</p><p class="result-line">{pick(lang, "環境：", "environment: ")}{esc(t.environment[lang])}</p>{off}</li>'
         )
     note = "" if enabled else '<p class="check warn">' + pick(
         lang, "目前關閉了「使用工具」，模型這一輪看不到這些工具。", "Use tools is off, so the model cannot see these tools in this turn."

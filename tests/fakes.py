@@ -1,10 +1,11 @@
 """A stand-in for llm.LocalLLM that replays scripted model outputs.
 
-It speaks the same interface as the real thing (render, tokenizer, generate, family,
-info, load_drafter), renders prompts in a simplified form of its family's chat format
+It speaks the same interface as the real thing (render, encode, tokenizer, generate, family,
+modalities, info, load_drafter), renders prompts in a simplified form of its family's chat format
 (Gemma 4 or Qwen3.5) and streams each scripted reply token by token, so the harness and
 the UI run end to end without loading any weights. With MTP on, it marks the tokens in a
-fixed pattern as the drafter's: two kept guesses, then one turned down.
+fixed pattern as the drafter's: two kept guesses, then one turned down. Like a processor, encode()
+expands each image, clip or video placeholder, into MEDIA_TOKENS tokens of it between two markers.
 """
 
 import json
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 
 import families
 from families import GEMMA4, QWEN3_5
+from llm import Encoded
 
 STR = '<|"|>'
 
@@ -42,6 +44,7 @@ INFO = {
         "<|audio|>": 258881, "<image|>": 258882, "<audio|>": 258883, "<|video|>": 258884,
     },
     "defaults": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
+    "modalities": ["image", "audio", "video"],
     "drafter_id": None,
     "drafter": None,
 }
@@ -66,6 +69,13 @@ QWEN_INFO = {
     "stop_tokens": ["<|endoftext|>", "<|im_end|>"],
     "special_tokens": {piece: 248044 + i for i, piece in enumerate(QWEN3_5.special_tokens)},
     "defaults": {"temperature": 1.0, "top_p": 1.0, "top_k": 20},
+    "modalities": ["image", "video"],
+}
+MEDIA_TOKENS = 6  # tokens one image, clip or video becomes
+# What the chat template writes for each kind of media, and what the processor turns it into.
+PLACEHOLDERS = {
+    "gemma4": {"image": ("<|image|>", "<|image>", "<image|>"), "audio": ("<|audio|>", "<|audio>", "<audio|>"), "video": ("<|video|>", "<|image>", "<image|>")},
+    "qwen3_5": {"image": ("<|image_pad|>", "<|vision_start|>", "<|vision_end|>"), "video": ("<|video_pad|>", "<|vision_start|>", "<|vision_end|>")},
 }
 
 
@@ -118,6 +128,7 @@ class FakeLLM:
         self.family = family or family_of(model_id or "")
         info = QWEN_INFO if self.family is QWEN3_5 else INFO
         self.model_id = model_id or info["model_id"]
+        self.modalities = tuple(info["modalities"])
         self.outputs = outputs if outputs is not None else []  # shared on purpose: tests append to it
         self.tokenizer = FakeTokenizer(self.family)
         self.context_length = info["context_length"]
@@ -125,6 +136,7 @@ class FakeLLM:
         self.drafter = None
         self.info = {**info, "model_id": self.model_id, "drafter_id": self.drafter_id}
         self.renders: list[dict] = []
+        self.encodes: list[list[dict]] = []  # the media handed to each encode()
         self.prompts: list[str] = []
         self.samplings: list = []
         self.gate = None  # a threading.Event the next generate() waits on, to hold a run open
@@ -149,7 +161,7 @@ class FakeLLM:
                 decls = "".join(f"<|tool>declaration:{t['function']['name']}<tool|>" for t in tools or [])
                 out += "<|turn>system\n" + ("<|think|>\n" if thinking else "") + m["content"] + decls + "<turn|>\n"
             elif role == "user":
-                out += f"<|turn>user\n{m['content']}<turn|>\n"
+                out += f"<|turn>user\n{self._content(m['content'])}<turn|>\n"
             elif role == "assistant":
                 calls = "".join(gemma_call(c["function"]["name"], c["function"]["arguments"]) for c in m.get("tool_calls", []))
                 out += f"<|turn>model\n{m['content']}{calls}"
@@ -171,7 +183,7 @@ class FakeLLM:
                 head = f"# Tools\n\n<tools>{decls}\n</tools>\n\n" if tools else ""
                 out += f"<|im_start|>system\n{head}{m['content']}<|im_end|>\n"
             elif role == "user":
-                out += f"<|im_start|>user\n{m['content']}<|im_end|>\n"
+                out += f"<|im_start|>user\n{self._content(m['content'])}<|im_end|>\n"
             elif role == "assistant":
                 calls = "".join(qwen_call(c["function"]["name"], c["function"]["arguments"]) for c in m.get("tool_calls", []))
                 think = m.get("reasoning_content", "")
@@ -185,10 +197,40 @@ class FakeLLM:
             out += "<|im_start|>assistant\n" + (QWEN3_5.thought_prefix if thinking else "<think>\n\n</think>\n\n")
         return out
 
+    def _content(self, content) -> str:
+        """A message's text, with a placeholder where each image, clip or video goes, as the chat template writes it."""
+        if isinstance(content, str):
+            return content
+        marks = PLACEHOLDERS[self.family.key]
+        out = ""
+        for part in content:
+            if part["type"] == "text":
+                out += part["text"]
+            elif self.family is QWEN3_5:
+                out += f"<|vision_start|>{marks[part['type']][0]}<|vision_end|>"
+            else:
+                out += marks[part["type"]][0]
+        return out
+
+    def encode(self, prompt: str, parts: list[dict]) -> Encoded:
+        self.encodes.append(parts)
+        if not parts:
+            return Encoded(prompt, None, len(self.tokenizer(prompt).input_ids))
+        counts = {}
+        for kind, (mark, start, end) in PLACEHOLDERS[self.family.key].items():
+            n = sum(p["type"] == kind for p in parts)
+            assert prompt.count(mark) == n, (kind, prompt.count(mark), n)  # a processor refuses a mismatch too
+            if n:
+                inner = start + mark * MEDIA_TOKENS + end if self.family is GEMMA4 else mark * MEDIA_TOKENS
+                prompt = prompt.replace(mark, inner)
+                counts[kind] = n * MEDIA_TOKENS
+        return Encoded(prompt, None, len(self.tokenizer(prompt).input_ids), {"pixels": "…"}, counts)
+
     def _id(self, piece: str) -> int:
         return self._ids.setdefault(piece, len(self._ids) + 10)
 
-    def generate(self, prompt, sampling, should_stop):
+    def generate(self, encoded, sampling, should_stop):
+        prompt = encoded.text
         self.prompts.append(prompt)
         self.samplings.append(sampling)
         if self.gate is not None:
@@ -265,7 +307,8 @@ def qwen_tool_call(name: str, **args) -> str:
     return qwen_call(name, args) + "<|im_end|>"
 
 
-def record_run(outputs: list, user: str = "台北現在幾點？", history: list | None = None, sampling=None, family=None, **settings):
+def record_run(outputs: list, user: str = "台北現在幾點？", history: list | None = None, sampling=None, family=None,
+               attachments=(), files=None, **settings):
     """Run the harness to the end on the calling thread; return the run, its events and the fake model."""
     from agent import Run, RunSettings
     from llm import Sampling
@@ -275,6 +318,6 @@ def record_run(outputs: list, user: str = "台北現在幾點？", history: list
         fake.drafter_id = fake.info["drafter_id"] = DRAFTER["model_id"]
         fake.load_drafter()
     events: list[dict] = []
-    run = Run(fake, history or [], user, RunSettings(sampling=sampling or Sampling(), **settings), events.append)
+    run = Run(fake, history or [], user, RunSettings(sampling=sampling or Sampling(), **settings), events.append, attachments, files)
     run.run()
     return run, events, fake

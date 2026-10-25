@@ -6,14 +6,22 @@ the Python function the harness runs. The model only ever produces the call.
 
 The schemas are in English for every page language. What goes wrong is worded in both of the page's
 languages (i18n.py), and the model reads it in the language its run started in.
+
+run_python is the one tool whose environment is not this process: it runs the model's code in a Docker
+container built from sandbox/Dockerfile, with the conversation's files read-only at /data. It is offered
+only when the sidebar lets the model write code, and Docker is needed for it alone: the page then asks
+sandbox_problem() what is missing, tells the user, and leaves the tool out until it is there.
 """
 
 import ast
 import math
 import operator
 import re
+import subprocess
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,6 +31,10 @@ import httpx
 from i18n import pick
 
 WIKI_HEADERS = {"User-Agent": f"agent-loop-visualizer/0.1 (https://github.com/cyyeh/agent-atlas-learning) httpx/{httpx.__version__}"}
+SANDBOX_IMAGE = "agent-loop-sandbox"  # docker build -t agent-loop-sandbox sandbox
+DOCKER_INSTALL = "https://docs.docker.com/get-started/get-docker/"
+SANDBOX_TIMEOUT = 30  # seconds a piece of code may run
+MAX_OUTPUT_CHARS = 1500  # of what the code prints, and of a traceback; the harness cuts the whole result at 2000
 TYPE_CHECKS = {
     "string": lambda v: isinstance(v, str),
     "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
@@ -49,6 +61,7 @@ class Tool:
     parameters: dict
     environment: dict[str, str]  # language -> where the tool runs, as the page names it
     fn: Callable[..., Any]
+    takes_files: bool = False  # the harness also hands fn the conversation's folder, as `files`
 
     def schema(self) -> dict:
         return {
@@ -198,6 +211,66 @@ def read_wikipedia(title: str, lang: str = "en") -> dict:
     }
 
 
+# --- Python: the model's code in a Docker container that cannot reach the network or change the files ---
+
+def sandbox_command(name: str, files: Path | None) -> list[str]:
+    """docker run for one piece of code, read from stdin. The container has no network, a read-only file system
+    except a small /tmp, a cap on memory, CPU and processes, no Linux capabilities, an unprivileged user, and the
+    conversation's files read-only at /data; --rm deletes it afterwards."""
+    cmd = [
+        "docker", "run", "--rm", "-i", "--name", name, "--network", "none",
+        "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--pids-limit", "64",
+        "--read-only", "--tmpfs", "/tmp:rw,size=64m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "--user", "65534:65534", "-e", "HOME=/tmp", "-w", "/tmp",
+    ]
+    if files is not None:
+        cmd += ["-v", f"{Path(files).resolve()}:/data:ro"]
+    return cmd + [SANDBOX_IMAGE, "python", "-I", "-"]
+
+
+def sandbox_problem() -> dict[str, str] | None:
+    """Why run_python cannot run right now, in both languages (Markdown), or None when Docker and the sandbox image
+    are there."""
+    build = f"`docker build -t {SANDBOX_IMAGE} sandbox`"
+    try:
+        found = subprocess.run(["docker", "image", "inspect", SANDBOX_IMAGE], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return {
+            "zh": f"寫程式要用 Docker 當沙箱，但這台電腦還沒有安裝。請先[安裝 Docker]({DOCKER_INSTALL})，再到專案資料夾執行 {build}。",
+            "en": f"Writing code needs Docker as its sandbox, and it is not installed on this computer. [Install Docker]({DOCKER_INSTALL}), "
+            f"then run {build} in the project folder.",
+        }
+    except subprocess.TimeoutExpired:
+        return {"zh": "Docker 沒有回應，確認它已經啟動。", "en": "Docker does not respond; make sure it is running."}
+    if found.returncode == 0:
+        return None
+    if "no such image" in found.stderr.lower() or "not found" in found.stderr.lower():
+        return {"zh": f"還沒有建好沙箱的 image：在專案資料夾執行 {build}（只要一次）。", "en": f"The sandbox image is not built yet: run {build} in the project folder (once)."}
+    return {"zh": "Docker 已經安裝，但沒有在執行。啟動 Docker 之後再試一次。", "en": "Docker is installed but not running. Start Docker and try again."}
+
+
+def run_python(code: str, files: Path | None = None) -> dict:
+    name = f"agent-loop-{uuid.uuid4().hex[:12]}"
+    try:
+        done = subprocess.run(sandbox_command(name, files), input=code, capture_output=True, text=True, timeout=SANDBOX_TIMEOUT)
+    except FileNotFoundError as e:
+        raise ToolError("沒有安裝 Docker，沒辦法執行程式", "Docker is not installed, so the code cannot run") from e
+    except subprocess.TimeoutExpired as e:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30)  # the container outlives a killed client
+        raise ToolError(f"程式執行超過 {SANDBOX_TIMEOUT} 秒，已經停止", f"The code ran for more than {SANDBOX_TIMEOUT} s and was stopped") from e
+    out, err = done.stdout[:MAX_OUTPUT_CHARS], done.stderr[-MAX_OUTPUT_CHARS:]
+    if done.returncode == 125:  # docker run itself failed: no image, Docker not running
+        raise ToolError(f"Docker 無法啟動沙箱：{err.strip()}", f"Docker could not start the sandbox: {err.strip()}")
+    if done.returncode == 137:  # killed by the kernel, nearly always for going over --memory
+        raise ToolError("程式用掉超過 512 MB 記憶體，被停止了", "The code used more than 512 MB of memory and was stopped")
+    if done.returncode != 0:
+        printed = "\n".join(text.strip("\n") for text in (out, err) if text.strip())
+        raise ToolError(f"程式以結束代碼 {done.returncode} 結束：\n{printed}", f"The code exited with code {done.returncode}:\n{printed}")
+    if not out.strip():
+        raise ToolError("程式沒有印出任何東西；用 print() 印出想看的結果", "The code printed nothing; print() what you want to see")
+    return {"stdout": out + ("…(truncated)" if len(done.stdout) > MAX_OUTPUT_CHARS else "")}
+
+
 LANG = {"type": "string", "enum": ["en", "zh"], "default": "en", "description": "Wikipedia language edition"}
 
 TOOLS = {
@@ -253,6 +326,22 @@ TOOLS = {
             },
             environment={"zh": "Wikipedia API（網路）", "en": "Wikipedia API (network)"},
             fn=read_wikipedia,
+        ),
+        Tool(
+            name="run_python",
+            description=(
+                "Run Python 3.12 code in a sandbox and return what it prints. Use it for calculations, data analysis "
+                "and the files the user attached, which are under /data (read-only). numpy and pandas are installed; "
+                f"there is no network, and the code may run for {SANDBOX_TIMEOUT} seconds. print() the results you need."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"code": {"type": "string", "description": "A complete Python program"}},
+                "required": ["code"],
+            },
+            environment={"zh": "Docker 沙箱（無網路）", "en": "Docker sandbox (no network)"},
+            fn=run_python,
+            takes_files=True,
         ),
     ]
 }

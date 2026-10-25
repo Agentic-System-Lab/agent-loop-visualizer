@@ -2,7 +2,9 @@
 
 Agent Loop 可視化 is a Streamlit app that runs a small model on the user's machine (Gemma 4 E2B or
 Qwen3.5 0.8B, through Hugging Face `transformers`) and draws every step of its agent loop: context,
-model, harness, environment, stop, down to each token's probability. It is a teaching project for the
+model, harness, environment, stop, down to each token's probability. A question can carry images, sound
+and video for the model, and, when the sidebar lets the model write code, data files for a `run_python`
+tool that runs in a Docker sandbox. It is a teaching project for the
 Agent Atlas course. The page and its 運作說明 (How it works) guide are in Traditional Chinese and
 English. README.md (English) and README.zh-TW.md (Traditional Chinese) are the full account of what the
 page shows, the architecture, the tests and the known limits; read the parts you are about to change.
@@ -11,8 +13,9 @@ page shows, the architecture, the tests and the known limits; read the parts you
 
 ```bash
 uv sync                                                    # Python 3.12, pinned by uv.lock
-uv run pytest                                              # ~25 s; loads no weights, touches no network
-RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen; -k Qwen for one
+uv run pytest                                              # ~40 s; loads no weights, touches no network
+RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen, ~4 min; -k Qwen for one
+docker build -t agent-loop-sandbox sandbox                 # optional: run_python's sandbox; its tests skip without it
 uv run streamlit run streamlit_app.py                      # http://localhost:8501; MODEL_ID=Qwen/Qwen3.5-0.8B starts on Qwen
 uv run python guide.py _site                               # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
@@ -28,12 +31,14 @@ streamlit_app.py   layout, session state, model menu, background thread; redraws
 agent.py           the harness (Run): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
 llm.py             LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
 families/          everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
-tools.py           tools: the schema the model reads plus the Python function the harness runs
+tools.py           tools: the schema the model reads plus the Python function the harness runs; run_python's docker run
+media.py           attachments: saved per conversation, written into the user message, decoded for the processor (PyAV)
+sandbox/           the Dockerfile of run_python's sandbox image, agent-loop-sandbox
 render.py          pure functions from the event list to HTML: loop diagram, step cards, token heat and popovers, context
 guide.py           the 運作說明 page: content in both languages, code references by text, static HTML for GitHub Pages
 i18n.py            the two languages: LANGS, pick(lang, zh, en), from_locale(); no dependencies
-assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script) and guide.js (the 運作說明 page)
-tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; guide_excerpts.txt is the code the guide quotes
+assets/            style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach)
+tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; samples.py makes a file of every accepted format; guide_excerpts.txt is the code the guide quotes
 ```
 
 ## Rules that keep it working
@@ -89,6 +94,14 @@ tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; guide_e
   `generation_slot()` is a lock shared by every tab.
 - The app listens on localhost only (`.streamlit/config.toml`) because it runs a model on the user's
   machine. Keep it that way.
+- **What a model reads comes from the checkpoint.** `LocalLLM.modalities` is worked out from the config
+  and the processor, not the family. A file of a kind the model does not read is a plain file for
+  `run_python`. `encode()` expands the media into their tokens, and the `context` event carries that
+  expanded text, because it is what the model reads.
+- **Docker only when asked for.** `run_python` is offered only when Let the model write code is on and
+  `tools.sandbox_problem()` finds Docker and the image. Before the switch is on, the page never runs
+  `docker`, so the app works without it. Keep the sandbox's flags (no network, read-only, limits,
+  unprivileged) in `tools.sandbox_command()`.
 
 ## Tests
 
@@ -99,7 +112,10 @@ tests/             pytest; fakes.py is a scripted stand-in for LocalLLM; guide_e
   and skips models missing from the local Hugging Face cache. tests/test_real_model.py loads the real
   weights and runs only with `RUN_MODEL_TESTS=1`. After changing parsing, prompts, stop tokens or the
   decoding loop, run them if the models are available, and say whether they ran or were skipped.
-- Wikipedia is faked over HTTP; the default suite never touches the network.
+- Wikipedia is faked over HTTP; the default suite never touches the network. Tests that need Docker
+  run only when `tools.sandbox_problem()` finds it, and skip otherwise.
+- Every format `media.py` accepts has a sample in tests/samples.py (test_media.py fails otherwise), a
+  decoding test, and a real-model test that asks both models about it. A new format needs all three.
 
 ## Language and style
 

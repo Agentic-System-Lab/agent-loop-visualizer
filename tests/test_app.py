@@ -5,6 +5,7 @@ before the next rerun, the way the page's half-second refresh would. The browser
 is a Chinese one unless a test says otherwise, so the page is in Chinese.
 """
 
+import os
 import re
 import time
 from pathlib import Path
@@ -16,8 +17,9 @@ from streamlit.testing.v1 import AppTest
 import agent
 import llm
 import render
+import tools
 from families import GEMMA4, QWEN3_5
-from fakes import FakeLLM, tool_call
+from fakes import MEDIA_TOKENS, FakeLLM, tool_call
 from llm import Sampling
 
 APP = Path(__file__).resolve().parent.parent / "streamlit_app.py"
@@ -33,7 +35,7 @@ def outputs():
 
 
 @pytest.fixture
-def models(monkeypatch, outputs):
+def models(monkeypatch, outputs, tmp_path, sandbox):
     made = []
 
     class AppLLM(FakeLLM):
@@ -42,9 +44,26 @@ def models(monkeypatch, outputs):
             made.append(self)
 
     monkeypatch.setattr(llm, "LocalLLM", AppLLM)
+    monkeypatch.setenv("AGENT_LOOP_UPLOADS", str(tmp_path / "uploads"))
     st.cache_resource.clear()  # a fresh model and a fresh generation lock per test
+    st.cache_data.clear()  # and a fresh look for Docker
     yield made
     st.cache_resource.clear()
+    st.cache_data.clear()
+
+
+@pytest.fixture
+def sandbox(monkeypatch):
+    """What the page finds when it looks for Docker: a problem in both languages, or None when it is ready.
+    `looked` counts the times it looked. Docker is ready unless a test says otherwise."""
+    state = {"problem": None, "looked": 0}
+
+    def sandbox_problem():
+        state["looked"] += 1
+        return state["problem"]
+
+    monkeypatch.setattr(tools, "sandbox_problem", sandbox_problem)
+    return state
 
 
 @pytest.fixture
@@ -152,19 +171,24 @@ def drawn_text(at) -> str:
 
 # ---------- first load ----------
 
-def test_first_load(at):
-    assert [b.label for b in at.button if b.key and b.key.startswith("example-")] == [
+def example_labels(at) -> list[str]:
+    return [b.label for b in at.button if b.key and b.key.startswith("example-")]
+
+
+def test_first_load(at, sandbox):
+    assert example_labels(at) == [
         "台北現在幾點？紐約呢？",
         "(37.5 × 12) 的平方根，再加上 2 的 20 次方，是多少？",
         "ReAct 這篇論文是誰提出的？用 Wikipedia 查。",
         "Gemma 是哪家公司開發的？第一版什麼時候發布？",
-        "What time is it in Paris right now?",
-        "Who created the Transformer? Ask Wikipedia.",
-        "Write a Python function to test for primes.",
+        "這張收據上的品項加起來是多少？和收據上寫的總計一樣嗎？",
+        "影片裡的紅球是從左邊滾到右邊，還是從右邊滾到左邊？",
+        "把這段錄音的內容寫下來，再翻成繁體中文。",
     ]
     assert {t.label: t.value for t in at.toggle} == {
-        "使用工具": True, "思考模式": False, "執行工具前先問我": False, "MTP 推測解碼": False,
+        "使用工具": True, "讓模型寫程式": False, "思考模式": False, "執行工具前先問我": False, "MTP 推測解碼": False,
     }
+    assert sandbox["looked"] == 0  # writing code is off, so Docker is not needed and not looked for
     assert {s.label: s.value for s in at.slider} == {
         "temperature": 1.0, "top-p": 0.95, "top-k": 64, "步數上限": 6, "每步 token 上限": 1024,
     }
@@ -532,7 +556,7 @@ def test_an_english_browser_gets_the_page_in_english(browser, new_tab, outputs):
     browser["locale"] = "en-US"
     at = new_tab()
     assert at.session_state["lang"] == "en" and lang_switch(at).value == "en"
-    assert {t.label for t in at.toggle} == {"Use tools", "Thinking mode", "Ask me before running a tool", "MTP speculative decoding"}
+    assert {t.label for t in at.toggle} == {"Use tools", "Let the model write code", "Thinking mode", "Ask me before running a tool", "MTP speculative decoding"}
     assert at.button(key="example-0").label == "What time is it in Taipei right now?"
     assert tab(at).options == ["Loop", "Context", "Model"]
 
@@ -583,3 +607,115 @@ def test_the_model_reads_errors_in_the_language_the_turn_started_in(at, outputs)
     outputs += [tool_call("calculator"), "Done.<turn|>"]
     ask(at, "Add it up.")
     assert '"Missing required argument expression"' in at.session_state["history"][2]["content"]
+
+
+# ---------- examples, attachments and writing code ----------
+
+def toggle(at, label):
+    return next(t for t in at.toggle if t.label == label)
+
+
+@pytest.mark.parametrize("locale", ["zh-TW", "en-US"])
+def test_each_page_shows_examples_in_its_own_language_only(browser, new_tab, sandbox, locale):
+    browser["locale"] = locale
+    at = new_tab()
+    toggle(at, "讓模型寫程式" if locale == "zh-TW" else "Let the model write code").set_value(True).run()
+    labels = example_labels(at)
+    assert len(labels) >= 9
+    if locale == "zh-TW":
+        assert all(CJK.search(label) for label in labels), labels
+    else:
+        assert not any(CJK.search(label) for label in labels), labels
+
+
+def test_an_example_with_a_file_attaches_it(at, models, outputs):
+    outputs.append("加起來是 360，收據上寫 370，不一樣。<turn|>")
+    at.button(key="example-4").click().run()
+    settle(at)
+    [run] = at.session_state["runs"]
+    [receipt] = run.attachments
+    assert (receipt.name, receipt.kind) == ("receipt.png", "image")
+    folder = Path(receipt.path).parent
+    assert folder.parent == Path(os.environ["AGENT_LOOP_UPLOADS"]) and (folder / "receipt.png").read_bytes() == (APP.parent / "assets/examples/receipt.png").read_bytes()
+
+    fake = models[0]
+    assert [p["name"] for p in fake.encodes[0]] == ["receipt.png"]  # the image goes to the processor
+    user = at.session_state["history"][0]["content"]
+    assert user[0]["type"] == "image" and user[1] == {"type": "text", "text": run.text}
+    [user_msg, _] = at.chat_message
+    assert any(c == "📎 receipt.png · 19.8 KB" for c in (c.value for c in user_msg.caption))
+    html = page_html(at)
+    assert f'&lt;|image|&gt;<span class="sp-n">×{MEDIA_TOKENS}</span>' in html  # the image's tokens, as one chip
+    assert f"其中 圖片 {MEDIA_TOKENS} tokens" in html
+
+
+def test_media_examples_follow_what_the_model_reads(at):
+    assert "把這段錄音的內容寫下來，再翻成繁體中文。" in example_labels(at)  # Gemma 4 E2B hears
+    next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    labels = example_labels(at)
+    assert "影片裡的紅球是從左邊滾到右邊，還是從右邊滾到左邊？" in labels and "把這段錄音的內容寫下來，再翻成繁體中文。" not in labels  # Qwen3.5 does not
+
+
+def test_writing_code_looks_for_docker_only_once_switched_on(at, sandbox):
+    assert sandbox["looked"] == 0
+    assert not any("寫 Python" in label for label in example_labels(at))
+    assert "打開側欄的「讓模型寫程式」，還有要寫 Python 的範例。" in captions(at)
+
+    sandbox["problem"] = {"zh": "寫程式要用 Docker 當沙箱，但這台電腦還沒有安裝。", "en": "Writing code needs Docker as its sandbox, and it is not installed."}
+    toggle(at, "讓模型寫程式").set_value(True).run()
+    assert sandbox["looked"] >= 1
+    assert [w.value for w in at.warning] == ["寫程式要用 Docker 當沙箱，但這台電腦還沒有安裝。"]
+    python = [b for b in at.button if b.key and b.key.startswith("example-") and "Python" in b.label]
+    assert len(python) == 2 and all(b.disabled for b in python)  # shown, but they cannot run yet
+
+    sandbox["problem"] = None
+    st.cache_data.clear()  # as if 10 s had passed since the last look
+    at.run()
+    assert not at.warning
+    assert not any(b.disabled for b in at.button if b.key and b.key.startswith("example-"))
+
+
+def test_without_docker_the_model_does_not_get_run_python(at, outputs, models, sandbox):
+    sandbox["problem"] = {"zh": "Docker 沒有在執行。", "en": "Docker is not running."}
+    toggle(at, "讓模型寫程式").set_value(True).run()
+    ask(at)
+    assert "run_python" not in [t["function"]["name"] for t in models[0].renders[0]["tools"]]
+    tab(at).set_value("model").run()
+    assert "這一輪沒有提供給模型" in page_html(at)
+
+
+def test_the_csv_example_runs_python_on_the_attached_file(at, outputs, models, monkeypatch):
+    commands = []
+
+    def docker(cmd, **kwargs):
+        commands.append((cmd, kwargs))
+        return type("Done", (), {"returncode": 0, "stdout": "2025-12 244320\n2131200\n", "stderr": ""})()
+
+    monkeypatch.setattr(tools.subprocess, "run", docker)
+    code = 'import pandas as pd\ndf = pd.read_csv("/data/sales.csv")\nprint(df.groupby("month").revenue.sum().idxmax())'
+    outputs += [tool_call("run_python", code=code), "12 月最高，全年 2,131,200。<turn|>"]
+    toggle(at, "讓模型寫程式").set_value(True).run()
+    next(b for b in at.button if b.key and b.key.startswith("example-") and "銷售資料" in b.label).click().run()
+    settle(at)
+
+    [(cmd, kwargs)] = commands
+    [run] = at.session_state["runs"]
+    folder = Path(run.attachments[0].path).parent
+    assert f"{folder.resolve()}:/data:ro" in cmd and kwargs["input"] == code  # the conversation's files, read-only
+    assert run.attachments[0].kind == "file" and models[0].encodes[0] == []  # a data file is not media for the model
+    question = at.session_state["history"][0]["content"]
+    assert question[-1]["text"].endswith("Attached for run_python, which reads them:\n"
+                                         "/data/sales.csv (942 B), whose first line is: month,region,units,revenue")  # the columns, for the code
+    assert "run_python" in [t["function"]["name"] for t in models[0].renders[0]["tools"]]
+    html = page_html(at)
+    assert '<span class="fn">run_python</span>({&quot;code&quot;: &quot;…&quot;})' in html and "df.groupby(&quot;month&quot;)" in html  # the code, written out
+    assert "&quot;stdout&quot;: |\n    2025-12 244320\n    2131200" in html
+
+
+def test_a_new_chat_removes_the_conversations_files(at, outputs):
+    at.button(key="example-4").click().run()
+    settle(at)
+    folder = Path(at.session_state["runs"][0].attachments[0].path).parent
+    assert folder.exists()
+    click(at, "新對話")
+    assert not folder.exists() and at.session_state["runs"] == []

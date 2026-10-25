@@ -19,6 +19,7 @@ body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "So
 .guide { --toc-h: 48px; max-width: 980px; margin: 0 auto; padding: 48px 24px 80px; color: var(--ink); }  /* --toc-h: the table of contents' bar */
 .guide h1, .guide h2 { margin: 0; padding: 0; color: var(--ink); scroll-margin-top: 24px; }
 .g-hero { margin: 0 0 8px; }
+.g-logo { display: block; width: 44px; height: 44px; margin: 0 0 14px; }
 .g-kicker { margin: 0 0 6px; font: 700 12px/1 var(--mono); letter-spacing: .14em; color: var(--accent); }
 .guide h1 { font-size: 30px; line-height: 1.25; font-weight: 700; }
 .g-intro { max-width: 720px; margin: 10px 0 0; font-size: 15.5px; line-height: 1.75; color: var(--ink-2); }

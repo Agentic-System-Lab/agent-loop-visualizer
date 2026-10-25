@@ -61,6 +61,7 @@ class Family:
     model_note: dict[str, str] = field(default_factory=dict)
     sampling: dict | None = None  # recommended temperature / top_p / top_k when a checkpoint ships none
     byte_level: bool = False  # the vocabulary spells bytes as characters, GPT-2 style (BYTE_OF); otherwise it is SentencePiece's
+    processor_kwargs: dict = field(default_factory=dict)  # passed to the processor along with images, audio and video
 
     def show_piece(self, piece: str) -> str:
         """A vocabulary entry as the text it stands for, which is what a token's popover shows: ␣ for a space,

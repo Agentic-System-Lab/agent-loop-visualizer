@@ -1,13 +1,16 @@
 import json
 import math
 import re
+import subprocess
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+import samples
 import tools
-from tools import TOOLS, ToolError, calculator, get_current_time, read_wikipedia, search_wikipedia
+from tools import TOOLS, ToolError, calculator, get_current_time, read_wikipedia, run_python, search_wikipedia
 
 CJK = re.compile(r"[\u4e00-\u9fff\uff00-\uffef]")
 
@@ -15,7 +18,7 @@ CJK = re.compile(r"[\u4e00-\u9fff\uff00-\uffef]")
 # ---------- schema and validation ----------
 
 def test_registry_names_match():
-    assert list(TOOLS) == ["get_current_time", "calculator", "search_wikipedia", "read_wikipedia"]
+    assert list(TOOLS) == ["get_current_time", "calculator", "search_wikipedia", "read_wikipedia", "run_python"]
     for name, tool in TOOLS.items():
         assert tool.name == name
         assert set(tool.environment) == {"zh", "en"} and all(tool.environment.values())
@@ -278,3 +281,134 @@ def test_read_wikipedia_404_suggests_search(monkeypatch):
     monkeypatch.setattr(tools.httpx, "get", FakeHTTP(status=404))
     with pytest.raises(ToolError, match="search_wikipedia"):
         read_wikipedia("No Such Page")
+
+
+# ---------- run_python: the model's code in Docker ----------
+
+class FakeDocker:
+    """Stands in for subprocess.run: records each command and answers with a scripted result."""
+
+    def __init__(self, returncode=0, stdout="", stderr="", raises=None):
+        self.result = SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+        self.raises, self.calls = raises, []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append((cmd, kwargs))
+        if self.raises and cmd[:2] == ["docker", "run"]:
+            raise self.raises
+        return self.result
+
+
+def test_run_python_runs_the_code_in_a_locked_down_container(monkeypatch, tmp_path):
+    docker = FakeDocker(stdout="42\n")
+    monkeypatch.setattr(tools.subprocess, "run", docker)
+    assert run_python("print(6 * 7)", tmp_path) == {"stdout": "42\n"}
+    [(cmd, kwargs)] = docker.calls
+    assert cmd[:3] == ["docker", "run", "--rm"] and cmd[-4:] == [tools.SANDBOX_IMAGE, "python", "-I", "-"]
+    flags = " ".join(cmd)
+    for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges", "--user 65534:65534", "--memory 512m"):
+        assert flag in flags
+    assert f"-v {tmp_path.resolve()}:/data:ro" in flags  # the conversation's files, read-only
+    assert kwargs["input"] == "print(6 * 7)" and kwargs["timeout"] == tools.SANDBOX_TIMEOUT
+
+
+def test_run_python_without_files_mounts_nothing(monkeypatch):
+    docker = FakeDocker(stdout="ok\n")
+    monkeypatch.setattr(tools.subprocess, "run", docker)
+    run_python("print('ok')")
+    assert "-v" not in docker.calls[0][0]
+
+
+@pytest.mark.parametrize("result, zh, en", [
+    (dict(returncode=1, stdout="half\n", stderr="Traceback …\nZeroDivisionError: division by zero\n"),
+     "程式以結束代碼 1 結束：\nhalf\nTraceback …\nZeroDivisionError: division by zero",
+     "The code exited with code 1:\nhalf\nTraceback …\nZeroDivisionError: division by zero"),
+    (dict(returncode=0, stdout="  \n"), "程式沒有印出任何東西；用 print() 印出想看的結果", "The code printed nothing; print() what you want to see"),
+    (dict(returncode=137), "程式用掉超過 512 MB 記憶體，被停止了", "The code used more than 512 MB of memory and was stopped"),
+    (dict(returncode=125, stderr="Unable to find image\n"), "Docker 無法啟動沙箱：Unable to find image", "Docker could not start the sandbox: Unable to find image"),
+])
+def test_run_python_reports_what_went_wrong_in_both_languages(monkeypatch, result, zh, en):
+    monkeypatch.setattr(tools.subprocess, "run", FakeDocker(**result))
+    with pytest.raises(ToolError) as e:
+        run_python("x")
+    assert e.value.text == {"zh": zh, "en": en}
+
+
+def test_run_python_stops_code_that_runs_too_long(monkeypatch):
+    docker = FakeDocker(raises=subprocess.TimeoutExpired("docker", tools.SANDBOX_TIMEOUT))
+    monkeypatch.setattr(tools.subprocess, "run", docker)
+    with pytest.raises(ToolError, match=f"超過 {tools.SANDBOX_TIMEOUT} 秒"):
+        run_python("while True: pass")
+    name = docker.calls[0][0][docker.calls[0][0].index("--name") + 1]
+    assert docker.calls[1][0] == ["docker", "rm", "-f", name]  # killing the client leaves the container running
+
+
+def test_run_python_keeps_the_start_of_long_output(monkeypatch):
+    monkeypatch.setattr(tools.subprocess, "run", FakeDocker(stdout="x" * 5000))
+    out = run_python("print('x' * 5000)")["stdout"]
+    assert out == "x" * tools.MAX_OUTPUT_CHARS + "…(truncated)"
+
+
+@pytest.mark.parametrize("docker, words", [
+    (FakeDocker(raises=None, returncode=0), None),
+    (FakeDocker(returncode=1, stderr="Error: No such image: agent-loop-sandbox"), ("docker build -t agent-loop-sandbox sandbox",) * 2),
+    (FakeDocker(returncode=1, stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock."), ("沒有在執行", "not running")),
+])
+def test_sandbox_problem_says_what_is_missing(monkeypatch, docker, words):
+    monkeypatch.setattr(tools.subprocess, "run", docker)
+    problem = tools.sandbox_problem()
+    if words is None:
+        assert problem is None
+    else:
+        assert words[0] in problem["zh"] and words[1] in problem["en"]
+        assert not CJK.search(problem["en"])
+
+
+def test_sandbox_problem_without_docker_links_to_its_installation(monkeypatch):
+    def missing(cmd, **kwargs):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(tools.subprocess, "run", missing)
+    problem = tools.sandbox_problem()
+    for lang in ("zh", "en"):
+        assert f"]({tools.DOCKER_INSTALL})" in problem[lang] and "docker build -t agent-loop-sandbox sandbox" in problem[lang]
+
+
+@pytest.mark.skipif(tools.sandbox_problem() is not None, reason="needs Docker and the agent-loop-sandbox image")
+def test_the_real_sandbox_reads_the_files_but_cannot_change_them_or_reach_the_network(tmp_path):
+    (tmp_path / "sales.csv").write_text("month,revenue\nJan,10\nFeb,32\n")
+    code = """
+import pandas as pd, socket
+print(pd.read_csv("/data/sales.csv").revenue.sum())
+try:
+    open("/data/new.txt", "w")
+except OSError as e:
+    print("read-only", e.errno)
+try:
+    socket.create_connection(("1.1.1.1", 53), timeout=2)
+except OSError:
+    print("no network")
+"""
+    assert run_python(code, tmp_path)["stdout"].split("\n")[:3] == ["42", "read-only 30", "no network"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["sales.csv"]
+
+
+READERS = {  # code that reads each data format and prints the year's revenue
+    "csv": 'import pandas as pd; print(pd.read_csv("/data/sample.csv").revenue.sum())',
+    "tsv": 'import pandas as pd; print(pd.read_csv("/data/sample.tsv", sep="\\t").revenue.sum())',
+    "json": 'import pandas as pd; print(pd.read_json("/data/sample.json").revenue.sum())',
+    "xlsx": 'import pandas as pd; print(pd.read_excel("/data/sample.xlsx").revenue.sum())',
+    "txt": 'import re; print(sum(int(n) for n in re.findall(r"revenue (\\d+)", open("/data/sample.txt").read())))',
+    "md": 'print(sum(int(l.split("|")[4]) for l in open("/data/sample.md") if l.startswith("| 2025")))',
+}
+
+
+def test_there_is_a_reader_for_every_data_format():
+    assert sorted(READERS) == sorted(samples.DATA)
+
+
+@pytest.mark.skipif(tools.sandbox_problem() is not None, reason="needs Docker and the agent-loop-sandbox image")
+@pytest.mark.parametrize("ext", samples.DATA)
+def test_the_real_sandbox_reads_every_data_format(tmp_path, ext):
+    samples.make(tmp_path, ext)
+    assert run_python(READERS[ext], tmp_path)["stdout"].strip() == str(samples.YEAR_REVENUE)

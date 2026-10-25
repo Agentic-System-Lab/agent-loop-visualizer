@@ -2,9 +2,11 @@
 a run is live, so every function here must work on any prefix of a run's events."""
 
 import base64
+import json
 import re
 import threading
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 
@@ -13,10 +15,11 @@ import families
 import render
 from agent import Run, RunSettings
 from families import GEMMA4, QWEN3_5
-from fakes import DRAFTER, INFO, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
+from fakes import DRAFTER, INFO, MEDIA_TOKENS, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
 from html_check import assert_balanced
 from i18n import LANGS
 from llm import Sampling
+from media import Attachment
 from tools import TOOLS
 
 ANSWER = "現在是下午三點。<turn|>"
@@ -43,8 +46,16 @@ def approved_run_events():
     return events
 
 
+PHOTO = Attachment("photo.png", "image", "/chat/photo.png", 2048)
+CLIP = Attachment("clip.mp4", "video", "/chat/clip.mp4", 90_000)
+SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "assets/examples/sales.csv"), 942)
+CODE = "import math\nprint(math.pi)"
 SCENARIOS = {
     "reply": lambda: record_run([ANSWER])[1],
+    "media": lambda: record_run([tool_call("calculator", expression="6*7"), ANSWER], attachments=[PHOTO, CLIP, SALES])[1],
+    "qwen_media": lambda: record_run([qwen_tool_call("calculator", expression="6*7"), "好。<|im_end|>"], family=QWEN3_5, attachments=[CLIP])[1],
+    # run_python left out of the turn, so the call is refused without Docker; its code is still drawn
+    "code": lambda: record_run([tool_call("run_python", code=CODE), ANSWER], tools=("calculator",))[1],
     "tool": lambda: record_run([tool_call("calculator", expression="6*7"), "答案是 42。<turn|>"])[1],
     "approved": approved_run_events,
     "invalid_and_repeated": lambda: record_run([tool_call("calculator"), tool_call("calculator"), ANSWER])[1],
@@ -77,7 +88,7 @@ def render_everything(data: dict, live: bool, lang: str = "zh") -> list[str]:
         out.append(render.stop_html(data, lang=lang))
     if data["settings"]:
         out.append(render.knobs_html(data["settings"], INFO["defaults"], lang=lang))
-        out.append(render.tools_html(TOOLS, data["settings"]["use_tools"], data["family"], lang=lang))
+        out.append(render.tools_html(TOOLS, data["settings"]["use_tools"], data["family"], lang=lang, offered=data["settings"]["tools"]))
     return [piece for piece in out if piece]
 
 
@@ -114,6 +125,9 @@ EN_SCENARIOS = {
     "max_steps": lambda: record_run([tool_call("get_current_time")] * 3, user="Time?", max_steps=2, lang="en")[1],
     "token_limit": lambda: record_run(["A long reply"], user="Hi", sampling=Sampling(max_new_tokens=6), lang="en")[1],
     "error": lambda: record_run([RuntimeError("boom")], user="Hi", lang="en")[1],
+    "media": lambda: record_run([tool_call("calculator", expression="6*7"), "It is 42.<turn|>"], user="What is this?",
+                                attachments=[PHOTO, CLIP, SALES], lang="en")[1],
+    "code": lambda: record_run([tool_call("run_python", code=CODE), "Pi.<turn|>"], user="Pi?", tools=("calculator",), lang="en")[1],
     "mtp": lambda: record_run([tool_call("calculator", expression="6*7"), "It is 42.<turn|>"], user="6*7?",
                               sampling=Sampling(mtp=True), lang="en")[1],
     "qwen_tool": lambda: record_run(
@@ -747,3 +761,61 @@ def test_diagram_names_the_model():
     assert "Qwen3.5-0.8B" in svg_of(render.diagram_html(None, dark=False, model="Qwen/Qwen3.5-0.8B", lang="zh"))
     started = render.build(record_run([ANSWER])[1][:2])  # before the model box shows live numbers
     assert "gemma-test" in svg_of(render.diagram_html(started, dark=False, model="Qwen/Qwen3.5-0.8B", lang="zh"))  # the run's model wins
+
+
+# ---------- media and code ----------
+
+def test_a_run_of_one_special_token_is_one_chip_with_its_count():
+    text = "<|turn>user\n<|image>" + "<|image|>" * 266 + "<image|>看<|\"|><|\"|>"
+    out = render.special_html(text, GEMMA4, "zh")
+    assert out.count('<span class="sp">&lt;|image|&gt;') == 1 and '<span class="sp-n">×266</span>' in out
+    assert out.count('<span class="sp">&lt;|&quot;|&gt;') == 2  # a short run stays as it is
+    assert_balanced(out)
+
+
+@pytest.mark.parametrize("last", range(0, 26, 3))
+def test_a_cut_snippet_never_splits_a_token_or_a_run(last):
+    text = "前文<|turn>user\n" + "<|image|>" * 266 + "這張圖"  # 26 characters drawn, the run counting as one token
+    out = render.special_html(text, GEMMA4, "zh", last=last)
+    assert out.startswith("…") and out.endswith("這張圖"[-last:] if last else "…")
+    rest = out[1:]
+    plain = ("前文", "user\n", "這張圖")
+    assert not rest or rest.startswith('<span class="sp">') or any(rest.startswith(t[-k:]) for t in plain for k in range(1, len(t) + 1))
+    assert_balanced(out)
+
+
+def test_a_snippet_short_enough_is_not_cut():
+    text = "前文<|turn>user\n" + "<|image|>" * 266 + "這張圖"
+    assert render.special_html(text, GEMMA4, "zh", last=26) == render.special_html(text, GEMMA4, "zh")
+
+
+def test_the_step_card_shows_how_many_tokens_the_media_took():
+    data = render.build(SCENARIOS["media"]())
+    first = render.step_html(data["steps"][0], data, "zh", live=False)
+    assert f"其中 圖片 {MEDIA_TOKENS} · 影片 {MEDIA_TOKENS} tokens" in first
+    assert f'<span class="sp-n">×{MEDIA_TOKENS}</span>' in first  # the newest user message, with its media expanded
+    assert f"of which image {MEDIA_TOKENS} · video {MEDIA_TOKENS} tokens" in render.context_summary(data["steps"][0], "en")
+
+
+def test_code_in_a_call_is_written_out_below_it():
+    data = render.build(SCENARIOS["code"]())
+    card = render.step_html(data["steps"][0], data, "en", live=False)
+    assert '<span class="fn">run_python</span>({&quot;code&quot;: &quot;…&quot;})' in card
+    assert '<pre class="snippet arg">import math\nprint(math.pi)</pre>' in card
+
+
+def test_a_result_over_several_lines_is_written_out_line_by_line():
+    text = json.dumps({"stdout": "December 244320\nYear 2131200\n", "n": 2})
+    assert render.pretty(text) == '{\n  "stdout": |\n    December 244320\n    Year 2131200\n  "n": 2\n}'
+    assert render.pretty(json.dumps({"result": 42, "list": [1]})) == '{\n  "result": 42,\n  "list": [\n    1\n  ]\n}'
+    assert render.pretty('{"stdout": "cut off…(truncated)') == '{"stdout": "cut off…(truncated)'  # no longer JSON: as it is
+
+
+def test_the_model_tab_lists_what_the_model_reads():
+    assert "<dt>讀得懂</dt><dd>文字 · 圖片 · 聲音 · 影片</dd>" in render.model_html(INFO, "zh")
+    assert "<dt>reads</dt><dd>text · image · video</dd>" in render.model_html(QWEN_INFO, "en")
+
+
+def test_a_tool_left_out_of_the_turn_is_marked():
+    html = render.tools_html(TOOLS, True, GEMMA4, "en", offered=["calculator"])
+    assert html.count("not offered to the model in this turn") == len(TOOLS) - 1

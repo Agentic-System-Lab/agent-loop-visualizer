@@ -40,6 +40,8 @@ class Tokenizer:
 class Model:
     """Each forward pass puts nearly all probability on the next scripted token."""
 
+    base_model = None  # no multimodal RoPE to reset
+
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
@@ -63,7 +65,7 @@ def make_llm(script=()):
 
 
 def run(m, prompt="hi", sampling=None, should_stop=lambda: False):
-    events = list(m.generate(prompt, sampling or Sampling(temperature=0), should_stop))
+    events = list(m.generate(m.encode(prompt, []), sampling or Sampling(temperature=0), should_stop))
     return events[0], events[1:-1], events[-1]
 
 
@@ -261,6 +263,8 @@ class Target:
     """At every position the model is sure of the next token of `script` (generated tokens start after the prompt).
     Hidden states and shared keys carry the position they belong to, so tests can see what the drafter was given."""
 
+    base_model = None
+
     def __init__(self, script, prompt_len):
         self.script, self.prompt_len, self.calls = list(script), prompt_len, []
 
@@ -415,6 +419,98 @@ def test_checking_a_guess_leaves_the_distribution_unchanged(draft):
         assert counts[token] / n == pytest.approx(p, abs=0.012), token
 
 
+# ---------- media ----------
+
+class Processor:
+    """Expands a placeholder ("<|tool_call>" here, standing in for an image's) into three of its tokens, as a real
+    processor expands an image into its tokens, and returns made-up inputs for the encoders."""
+
+    feature_extractor = SimpleNamespace(sampling_rate=16000)
+
+    def __init__(self, num_frames=None):
+        self.tokenizer, self.calls = Tokenizer(), []
+        self.video_processor = SimpleNamespace(num_frames=num_frames)  # Gemma 4's takes 32 frames, Qwen3.5's a rate
+
+    def __call__(self, text, return_tensors, **kwargs):
+        from transformers import BatchFeature
+
+        self.calls.append(kwargs)
+        ids = [ID["▁Hi"]] + [ID["<|tool_call>"]] * 3 * text.count("<|tool_call>") + [ID["!"]]
+        return BatchFeature({"input_ids": torch.tensor([ids]), "attention_mask": torch.ones(1, len(ids)),
+                             "pixel_values": torch.ones(2, 2), "image_grid_thw": torch.tensor([[1, 2, 2]])})
+
+
+def media_llm(monkeypatch):
+    m = make_llm()
+    m.processor, m.dtype = Processor(), torch.bfloat16
+    m.media_token_ids = {"image": ID["<|tool_call>"], "audio": ID["<|tool_response>"]}
+    for kind in ("image", "audio", "video"):
+        monkeypatch.setattr(llm.media, f"load_{kind}", lambda path, *rest, kind=kind: (f"{kind}:{path}", {"fps": 2.0}) if kind == "video" else f"{kind}:{path}")
+    return m
+
+
+def test_encode_hands_the_processor_each_kind_of_media_in_order(monkeypatch):
+    m = media_llm(monkeypatch)
+    m.family = llm.families.QWEN3_5
+    parts = [{"type": "image", "path": "a.png"}, {"type": "video", "path": "v.mp4"}, {"type": "image", "path": "b.png"}]
+    encoded = m.encode("look <|tool_call>", parts)
+    [call] = m.processor.calls
+    assert call["images"] == ["image:a.png", "image:b.png"]
+    assert call["videos"] == ["video:v.mp4"] and call["videos_kwargs"] == {"video_metadata": [{"fps": 2.0}]}
+    assert "audio" not in call
+    assert call["cap_pixels_per_frame"] is True  # the family's own processor settings
+    assert encoded.n_tokens == 5 and encoded.media_tokens == {"image": 3}
+    assert encoded.text == " Hi" + "<|tool_call>" * 3 + "!"  # what the model reads: the placeholder expanded
+    assert set(encoded.media) == {"pixel_values", "image_grid_thw"}  # no ids, no attention mask
+    assert encoded.media["pixel_values"].dtype == torch.bfloat16 and encoded.media["image_grid_thw"].dtype == torch.int64
+
+
+def test_a_video_shorter_than_the_frames_a_processor_takes_gives_it_all_it_has(monkeypatch):
+    m = media_llm(monkeypatch)
+    m.processor = Processor(num_frames=32)
+    monkeypatch.setattr(llm.media, "load_video", lambda path: (torch.zeros(30 if "short" in path else 64, 2, 2, 3), {"fps": 10.0}))
+    m.encode("x", [{"type": "video", "path": "short.mp4"}, {"type": "video", "path": "long.mp4"}])
+    assert m.processor.calls[0]["videos_kwargs"]["num_frames"] == 30
+    m.encode("x", [{"type": "video", "path": "long.mp4"}])
+    assert "num_frames" not in m.processor.calls[1]["videos_kwargs"]  # enough frames: the processor's own number
+
+
+def test_encode_without_media_is_the_prompt_tokens(monkeypatch):
+    m = media_llm(monkeypatch)
+    encoded = m.encode("abc", [])
+    assert m.processor.calls == [] and encoded.text == "abc" and encoded.n_tokens == 3 and encoded.media == {}
+
+
+def test_images_go_through_the_vision_encoder_before_the_prefill():
+    seen = {}
+
+    class Base:
+        rope_deltas = "stale"
+
+        def get_image_features(self, pixel_values, image_grid_thw=None, **kwargs):
+            return ("image features", pixel_values, image_grid_thw)
+
+    class Multimodal(Model):
+        base_model = Base()
+
+        def forward(self, input_ids, mm_encoder_outputs=None, **kwargs):
+            pass
+
+        def __call__(self, input_ids, past_key_values=None, use_cache=True, logits_to_keep=1, **media):
+            if past_key_values is None:
+                seen.update(media, rope_deltas=self.base_model.rope_deltas)
+            return super().__call__(input_ids, past_key_values, use_cache, logits_to_keep)
+
+    m = make_llm()
+    m.model = Multimodal(["▁Hi", "<turn|>"])
+    prompt = llm.Encoded("x", torch.tensor([[ID["▁Hi"]]]), 1, {"pixel_values": "pixels", "image_grid_thw": "grid", "mm_token_type_ids": "types"})
+    list(m.generate(prompt, GREEDY, lambda: False))
+    assert seen["mm_encoder_outputs"] == {"image": ("image features", "pixels", "grid")}
+    assert "pixel_values" not in seen  # the forward pass gets the encoder's output instead of the pixels
+    assert seen["image_grid_thw"] == "grid" and seen["mm_token_type_ids"] == "types"  # Qwen3.5 computes positions from these
+    assert seen["rope_deltas"] is None  # the last prompt's image positions do not carry over
+
+
 # ---------- loading helpers ----------
 
 class Loaded(Exception):
@@ -439,14 +535,14 @@ def fake_hub(monkeypatch, model_type="gemma4"):
 
     monkeypatch.setattr(llm, "snapshot_download", snapshot_download)
     monkeypatch.setattr(llm, "AutoConfig", loader("config", SimpleNamespace(model_type=model_type)))
-    monkeypatch.setattr(llm, "AutoTokenizer", loader("tokenizer", "tokenizer"))
+    monkeypatch.setattr(llm, "AutoProcessor", loader("processor", SimpleNamespace(tokenizer="tokenizer")))
     monkeypatch.setattr(llm, "AutoModelForMultimodalLM", loader("model", Loaded))
     monkeypatch.setattr(llm, "AutoModelForCausalLM", loader("drafter", Loaded))
     monkeypatch.setattr(llm, "pick_device", lambda: "cuda")
     return seen
 
 
-def test_the_tokenizer_and_weights_load_from_the_whole_downloaded_model(monkeypatch):
+def test_the_processor_and_weights_load_from_the_whole_downloaded_model(monkeypatch):
     # A cache holding only config.json used to load Gemma's tokenizer locally and fail, and Qwen's empty.
     seen = fake_hub(monkeypatch)
     with pytest.raises(Loaded):
@@ -455,7 +551,7 @@ def test_the_tokenizer_and_weights_load_from_the_whole_downloaded_model(monkeypa
         ("download", "google/gemma-4-E2B-it", "config.json"),
         ("config", "/hub/google/gemma-4-E2B-it", {}),
         ("download", "google/gemma-4-E2B-it", None),
-        ("tokenizer", "/hub/google/gemma-4-E2B-it", {}),
+        ("processor", "/hub/google/gemma-4-E2B-it", {}),
         ("model", "/hub/google/gemma-4-E2B-it", {"dtype": torch.bfloat16, "device_map": "cuda"}),
     ]
 

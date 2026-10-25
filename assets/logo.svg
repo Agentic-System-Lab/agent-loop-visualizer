@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Agent Loop">
+  <!-- The site's logo: the agent loop going round the model, light on a solid tile of the accent color, so it
+       stands out on the page's light and dark backgrounds alike. streamlit_app.py shows it at the top left and
+       as the tab icon; guide.py puts it on the How it works page. -->
+  <rect width="64" height="64" rx="15" fill="#b73d23"/>
+  <path d="M48.7 29.1 A17 17 0 1 1 37.8 16" fill="none" stroke="#fbf9f3" stroke-width="6" stroke-linecap="round"/>
+  <path d="M46.6 19.3 L34.9 23.4 L40.4 8.6 Z" fill="#fbf9f3" stroke="#fbf9f3" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="5.5" fill="#fbf9f3"/>
+</svg>

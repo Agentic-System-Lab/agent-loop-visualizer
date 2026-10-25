@@ -219,16 +219,17 @@ GROUPS = {"zh": [
         ('<|"|>', "字串引號（escape）",
          "工具宣告、呼叫和結果裡的字串前後都包這個 token，取代一般的引號，所以字串裡的引號和括號都不用跳脫。"),
     ]),
-    ("多模態", "圖片、聲音和影片的位置；這個 app 只送文字，不會出現", [
+    ("多模態", "圖片、聲音和影片的位置；附上這類檔案時才會出現", [
         ("<|image|>", "圖片（image）",
          "chat template 在圖片的位置寫入它，處理器再展開成 `<|image>`、一串 `<|image|>`、`<image|>`，這些位置的 embedding 換成視覺編碼器的輸出。"),
         ("<|image>", "圖片開始（begin of image）", "一張圖片的 token 從這裡開始。"),
         ("<image|>", "圖片結束（end of image）", "一張圖片的 token 到這裡結束。"),
         ("<|audio|>", "聲音（audio）",
-         "和 `<|image|>` 一樣是佔位 token：展開成 `<|audio>`、一串 `<|audio|>`、`<audio|>`，換成音訊編碼器的輸出。"),
+         "和 `<|image|>` 一樣是佔位 token：展開成 `<|audio>`、一串 `<|audio|>`、`<audio|>`，換成音訊編碼器的輸出。每 40 ms 一個 token，最多 750 個，所以只聽得到前 30 秒。"),
         ("<|audio>", "聲音開始（begin of audio）", "一段聲音的 token 從這裡開始。"),
         ("<audio|>", "聲音結束（end of audio）", "一段聲音的 token 到這裡結束。"),
-        ("<|video|>", "影片（video）", "影片拆成畫格，每張畫格是 `<|image>`、一串 `<|video|>`、`<image|>`，換成視覺編碼器的輸出。"),
+        ("<|video|>", "影片（video）",
+         "影片平均取 32 張畫格（不到 32 張就全部用），每張前面寫上時間 `mm:ss`，接著 `<|image>`、一串 `<|video|>`、`<image|>`，換成視覺編碼器的輸出。沒有聲音。"),
     ]),
     ("保留", "tokenizer 預留的，對話格式用不到", [
         ("<pad>", "填充（padding）", "把長短不同的序列補成一樣長，才能放進同一批推論，attention 會略過它。這裡一次只跑一條序列，用不到。"),
@@ -263,16 +264,17 @@ GROUPS = {"zh": [
         ('<|"|>', "String quote (escape)",
          "Wraps every string in tool declarations, calls and results in place of ordinary quotes, so quotes and brackets inside a string need no escaping."),
     ]),
-    ("Multimodal", "where images, audio and video go; this app sends text only, so they never appear", [
+    ("Multimodal", "where images, audio and video go; they appear when you attach one", [
         ("<|image|>", "Image",
          "The chat template writes it where an image goes; the processor expands it into `<|image>`, a run of `<|image|>` and `<image|>`, and the embeddings at those positions become the vision encoder's output."),
         ("<|image>", "Begin of image", "An image's tokens start here."),
         ("<image|>", "End of image", "An image's tokens end here."),
         ("<|audio|>", "Audio",
-         "A placeholder like `<|image|>`: it expands into `<|audio>`, a run of `<|audio|>` and `<audio|>`, which become the audio encoder's output."),
+         "A placeholder like `<|image|>`: it expands into `<|audio>`, a run of `<|audio|>` and `<audio|>`, which become the audio encoder's output. One token per 40 ms, at most 750, so only the first 30 seconds are heard."),
         ("<|audio>", "Begin of audio", "A clip's audio tokens start here."),
         ("<audio|>", "End of audio", "A clip's audio tokens end here."),
-        ("<|video|>", "Video", "A video is split into frames, each one `<|image>`, a run of `<|video|>` and `<image|>`, which become the vision encoder's output."),
+        ("<|video|>", "Video",
+         "32 frames are taken evenly from a video (all of them, if it has fewer), each after its time as `mm:ss`, then `<|image>`, a run of `<|video|>` and `<image|>`, which become the vision encoder's output. There is no sound."),
     ]),
     ("Reserved", "kept by the tokenizer; the chat format does not use them", [
         ("<pad>", "Padding", "Pads sequences of different lengths to one length so they fit in one batch; attention skips it. This app runs one sequence at a time and never needs it."),
