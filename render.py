@@ -4,6 +4,9 @@ Streamlit redraws the page on every refresh, so everything here is a pure functi
 of the event list: build() folds the events into steps, and the other functions
 turn steps into HTML strings for st.html. Every function that writes words takes the
 page's language, "zh" or "en" (i18n.py), so switching it redraws a finished run too.
+
+A token shows as much of the model's distribution as the backend reported (backend.TOKEN_DETAILS):
+llm.LocalLLM reports all of it, and what a backend leaves out is left out here too, never filled in.
 """
 
 import base64
@@ -628,28 +631,59 @@ def draft_note(tok: dict, family: families.Family, lang: str) -> str:
 
 
 def tip_html(tok: dict, family: families.Family, lang: str) -> str:
-    rows = []
-    for c in tok["top"]:
-        cls = "c" + (" on" if c["id"] == tok["id"] else "") + ("" if c["kept"] else " cut")
-        rows.append(
-            f'<span class="{cls}"><span class="cp">{esc(family.show_piece(c["piece"]))}</span>'
-            f'<span class="b"><span style="width:{max(c["p"] * 100, 1):.1f}%"></span></span><span>{pct(c["p"])}</span></span>'
-        )
-    outside = "" if any(c["id"] == tok["id"] for c in tok["top"]) else (
-        '<span class="tip-foot">' + pick(lang, f'抽到排名 #{tok["rank"]} 的 token，不在前 5 名。', f'Drew the token ranked #{tok["rank"]}, outside the top 5.') + "</span>"
-    )
+    """A finished token's popover: the token, what it means if it is special, what MTP did there, and the numbers
+    and candidates the backend reported for it (backend.TOKEN_DETAILS); a number it did not report is left out."""
+    numbers = [
+        (pick(lang, "模型給的機率", "model probability"), pct(tok["p"]) if known(tok, "p") else None),
+        (pick(lang, "排名", "rank"), f'#{tok["rank"]}' if known(tok, "rank") else None),
+        (pick(lang, "取樣時的機率", "sampling probability"), pct(tok["p_sampled"]) if known(tok, "p_sampled") else None),
+        (pick(lang, "剩下的候選", "candidates left"), f'{tok["kept"]:,}' if known(tok, "kept") else None),
+    ]
+    grid = "".join(f"<span>{label}</span><b>{value}</b>" for label, value in numbers if value is not None)
     n = tok["index"] + 1
-    top = pick(lang, "前 5 名候選（模型原始分布，灰色 = 被剃掉）", "top 5 by model probability; gray = cut")
     return (
         f'<span class="tip"><span class="tip-piece">{esc(family.show_piece(tok["piece"]))}</span>'
         f'<span class="tip-sub">token id {tok["id"]} · {pick(lang, f"第 {n} 個生成的 token", f"generated token #{n}")}</span>'
         f'{special_note(tok, family, lang)}{draft_note(tok, family, lang)}'
-        f'<span class="tip-grid"><span>{pick(lang, "模型給的機率", "model probability")}</span><b>{pct(tok["p"])}</b>'
-        f'<span>{pick(lang, "排名", "rank")}</span><b>#{tok["rank"]}</b>'
-        f'<span>{pick(lang, "取樣時的機率", "sampling probability")}</span><b>{pct(tok["p_sampled"])}</b>'
-        f'<span>{pick(lang, "剩下的候選", "candidates left")}</span><b>{tok["kept"]:,}</b></span>'
-        f'<span class="tip-label">{top}</span>{"".join(rows)}{outside}</span>'
+        + (f'<span class="tip-grid">{grid}</span>' if grid else "")
+        + f'{candidates_html(tok, family, lang)}</span>'
     )
+
+
+def candidates_html(tok: dict, family: families.Family, lang: str) -> str:
+    """The most likely tokens at this position, the chosen one highlighted and those top-k / top-p cut grayed out,
+    when the backend reported them; a candidate it did not say was cut or kept is drawn as it is."""
+    top = tok.get("top")
+    if not top:
+        return ""
+    rows = []
+    for c in top:
+        cls = "c" + (" on" if c["id"] == tok["id"] else "") + (" cut" if c.get("kept") is False else "")
+        rows.append(
+            f'<span class="{cls}"><span class="cp">{esc(family.show_piece(c["piece"]))}</span>'
+            f'<span class="b"><span style="width:{max(c["p"] * 100, 1):.1f}%"></span></span><span>{pct(c["p"])}</span></span>'
+        )
+    if any(c["id"] == tok["id"] for c in top):
+        outside = ""
+    elif known(tok, "rank"):
+        outside = pick(lang, f'抽到排名 #{tok["rank"]} 的 token，不在前 5 名。', f'Drew the token ranked #{tok["rank"]}, outside the top 5.')
+    else:
+        outside = pick(lang, "抽到的 token 不在前 5 名。", "Drew a token outside the top 5.")
+    if any(known(c, "kept") for c in top):
+        label = pick(lang, "前 5 名候選（模型原始分布，灰色 = 被剃掉）", "top 5 by model probability; gray = cut")
+    else:
+        label = pick(lang, "前 5 名候選（模型原始分布）", "top 5 by model probability")
+    return f'<span class="tip-label">{label}</span>{"".join(rows)}' + (f'<span class="tip-foot">{outside}</span>' if outside else "")
+
+
+def known(item: dict, key: str) -> bool:
+    """Whether the backend reported `key` (one of backend.TOKEN_DETAILS, or a candidate's kept)."""
+    return item.get(key) is not None
+
+
+def reported(tokens: list[dict], key: str) -> bool:
+    """Whether the backend reports `key` for its tokens: some token has it, or there are no tokens yet to tell."""
+    return not tokens or any(known(t, key) for t in tokens)
 
 
 def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family, lang: str) -> str:
@@ -664,7 +698,7 @@ def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family, la
             body, style = esc(tok["piece"]), ""
         else:
             body = esc(tok["text"] or family.show_piece(tok["piece"])).replace("\n", '<span class="nl">↵</span>\n')
-            style = f' style="--h:{heat(tok["p"])}"'
+            style = f' style="--h:{heat(tok["p"])}"' if known(tok, "p") else ""
         if with_tips:
             tip = tip_html(tok, family, lang)
         elif note := special_note(tok, family, lang):
@@ -675,7 +709,9 @@ def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family, la
     return f'<div class="tokens">{"".join(out)}</div>'
 
 
-def token_legend(s: dict, live: bool, lang: str) -> str:
+def token_legend(s: dict, live: bool, lang: str, tokens: list[dict] = ()) -> str:
+    """How to read the tokens. The heat scale and the candidates are mentioned only if the backend reports them
+    for `tokens` (the run's tokens so far)."""
     if s.get("temperature", 1) <= 0:
         how = pick(lang, "temperature 0 = greedy：每一步都直接選機率最高的 token。", "temperature 0 = greedy: every token is simply the most likely one.")
     else:
@@ -685,9 +721,15 @@ def token_legend(s: dict, live: bool, lang: str) -> str:
             f"每一步：logits ÷ T {t} → 留前 {k or '全部'} 個 → 累積機率到 {p} 為止 → 抽樣。",
             f"Each token: logits ÷ T {t} → keep {f'the top {k}' if k else 'them all'} → up to a cumulative probability of {p} → sample.",
         )
-    hint = pick(lang, "生成中，完成後可以滑過 token 看候選", "generating; hover over the tokens once it is done") if live else pick(
-        lang, "滑過 token 看候選", "hover over a token to see the candidates"
-    )
+    if reported(tokens, "top"):
+        hint = pick(lang, "生成中，完成後可以滑過 token 看候選", "generating; hover over the tokens once it is done") if live else pick(
+            lang, "滑過 token 看候選", "hover over a token to see the candidates"
+        )
+    else:
+        hint = pick(lang, "生成中，完成後可以滑過 token 看它的 id", "generating; hover over the tokens once it is done") if live else pick(
+            lang, "滑過 token 看它的 id", "hover over a token to see its id"
+        )
+    scale = f'<span class="heat-scale">{pick(lang, "機率高 <i></i> 低", "likely <i></i> unlikely")}</span>' if reported(tokens, "p") else ""
     drafted = pick(
         lang, '<span><span class="tok drafted">底線</span> = MTP 草稿猜中</span>', '<span><span class="tok drafted">underline</span> = guessed by the MTP drafter</span>'
     ) if s.get("mtp") else ""
@@ -699,7 +741,7 @@ def token_legend(s: dict, live: bool, lang: str) -> str:
         "a run of underlined tokens and the plain token after it come from the same forward pass of the model.",
     ) + "</p>" if s.get("mtp") else ""
     return (
-        f'<p class="tok-legend"><span class="heat-scale">{pick(lang, "機率高 <i></i> 低", "likely <i></i> unlikely")}</span>'
+        f'<p class="tok-legend">{scale}'
         + pick(
             lang,
             '<span><em>斜體</em> = 思考</span><span><span class="mono">等寬</span> = 工具呼叫</span>'
@@ -780,7 +822,8 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
             how = pick(lang, "一次推論，一次一個 token", "one inference, one token at a time")
         parts.append(
             f'<section class="stage stage-model"><h4 class="stage-title">{pick(lang, "模型", "Model")} <small>LLM · {how}</small></h4>'
-            f'<p class="meta-line">{meta}</p>{token_legend(s, live, lang)}{tokens_html(step["tokens"], not live, family, lang)}</section>'
+            f'<p class="meta-line">{meta}</p>{token_legend(s, live, lang, [t for st in data["steps"] for t in st["tokens"]])}'
+            f'{tokens_html(step["tokens"], not live, family, lang)}</section>'
         )
 
     if step["parsed"]:
@@ -995,7 +1038,7 @@ def step_rows(data: dict, lang: str) -> list[dict]:
     for s in data["steps"]:
         if not s["context"]:
             continue
-        probs = [t["p"] for t in s["tokens"] if not t["special"]]
+        probs = [t["p"] for t in s["tokens"] if not t["special"] and known(t, "p")]
         done = s["done"] or {}
         rows.append({
             "step": s["n"],

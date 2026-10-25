@@ -86,6 +86,7 @@ i18n.py            兩種語言：pick() 依語言挑文字，from_locale() 從�
 render.py          把事件列表轉成 HTML：迴圈圖、step 卡片、token 熱度與浮窗、脈絡檢視
 agent.py           harness：組 prompt → 生成 → 解析 → 驗證 →（先問你）→ 執行工具 → 接回脈絡 → 判斷要不要停
 llm.py             本機推論，自己寫的解碼迴圈；MTP 的草稿與驗證也在這裡
+backend.py         harness 和畫面透過它使用模型的 Backend：render、encode、generate，以及 token 事件的欄位；app 跑的是 llm.py 這一個
 families/          跟著模型走的東西：每個模型家族怎麼寫回合、思考、工具呼叫，哪些 token 會停、各是什麼意思
   __init__.py      Family 的定義、模型選單 MODELS、MTP 草稿模型 DRAFTERS、依 config.json 的 model_type 找家族
   gemma4.py        Gemma 4：輸出的 parser 與 24 個特殊 token 的說明
@@ -108,7 +109,7 @@ agent 在背景 thread 執行，每走到一個階段就 append 一個事件；U
 
 模型讀到的錯誤（參數不對、工具失敗、你拒絕了）也用這一輪開始時網頁的語言寫，因為它們會原封不動變成觀察；system prompt 兩種語言都一樣，所以模型的行為不跟著網頁語言變。
 
-一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→ `tool_start` → `tool_result`，最後是 `run_end`。`context` 帶的是模型實際讀到的 prompt（每個附件都展開成它的 token），以及每種媒體佔了幾個 token（`media_tokens`）。`tool_result` 帶著模型讀的觀察，另外還有工具做給你看的圖（`images`：`run_python` 畫的圖的路徑），模型讀不到。
+一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→ `tool_start` → `tool_result`，最後是 `run_end`。`context` 帶的是模型實際讀到的 prompt（每個附件都展開成它的 token），以及每種媒體佔了幾個 token（`media_tokens`）。`token` 帶著這個 token，以及 backend 知道的話，它的機率、排名、前 5 名候選和 MTP 草稿模型猜了什麼（`backend.TOKEN_DETAILS`）：`llm.py` 全都知道；backend 沒有回報的，畫面就不畫，不會拿沒量過的數字來填。`tool_result` 帶著模型讀的觀察，另外還有工具做給你看的圖（`images`：`run_python` 畫的圖的路徑），模型讀不到。
 
 ### 為什麼自己寫解碼迴圈
 
@@ -199,7 +200,7 @@ uv run pytest                                          # 約 40 秒，不載入�
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma（含 MTP 草稿模型）和 Qwen，約 4 分鐘；加 -k Qwen 只跑一個
 ```
 
-大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，介面和 `LocalLLM` 一樣，所以 harness 和網頁可以從頭跑到尾。
+大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，和 `LocalLLM` 一樣是一個 `Backend`（`backend.py`），所以 harness 和網頁可以從頭跑到尾。
 
 網頁收的每一種檔案格式都有測試：`tests/samples.py` 用範例的檔案做出每種格式的小檔案（收據的每種圖片格式、錄音的每種聲音格式、滾動的球的每種影片格式、銷售資料的每種資料格式）。`media.py` 多收了一種格式卻沒有對應的範例檔，`test_media.py` 就會失敗；`test_real_model.py` 拿每一種格式問兩個模型。需要 Docker 的測試只在 Docker 和沙箱 image 都在時才跑。
 
@@ -211,14 +212,14 @@ RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma�
 | `test_qwen3_5.py` | Qwen3.5 的 parser：XML 工具呼叫、照 schema 轉型別、思考、各種格式錯誤；用 Qwen 格式跑完整個 harness |
 | `test_families.py` | 每個家族都說明了它用到的 token、中英文說明列出同樣的 token、`model_type` 找得到家族；token 顯示成它代表的文字，只是一個字一部分的 byte 顯示成 `<0xF0>`；每個家族都用中英文說明它 checkpoint 裡的檔案，兩種語言提到同樣的欄位和 token；每個模型和草稿模型都照固定的 commit 下載 |
 | `test_tools.py` | schema 驗證與預設值、計算機的 AST 白名單（拒絕 `__import__` 之類）、時區、Wikipedia（HTTP 用假的）；`run_python` 鎖住的 `docker run`、各種錯誤（traceback、沒有輸出、記憶體太多、跑太久、沒有 image）、Docker 沒準備好或 image 過舊時缺什麼，都有中英文兩種；記號後面的圖存檔時不蓋掉現有檔案、只收 PNG、最多四張、程式出錯就不收；image 的版本 label 和用 hash 安裝的 pip；有 Docker 時，真的沙箱讀得到 `/data` 但改不了、連不上網路，讀得了每一種資料格式，送得回中文標籤畫得出來的圖，pip（和它的 certifi）也是修正 emSign 之後的版本 |
-| `test_llm.py` | 自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；`encode()` 照順序把每種媒體和家族的設定交給 processor、短影片給它全部畫格；圖片和影片在 prefill 前先跑視覺編碼器，上一個 prompt 的位置偏移不會留下來；greedy 遇到兩個 token 打平時和 `generate()` 一樣拿 id 小的；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布；模型照固定的 revision 下載到 `models/`（`AGENT_LOOP_MODELS` 可以換位置，`HF_HUB_CACHE` 不行），模型資料夾的檔案、大小（經過快取的連結）和說明提到的欄位 |
-| `test_agent.py` | harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止；附件變成問題裡的 part 和給 `run_python` 的說明、每一輪的媒體都交給 processor、展開後的脈絡仍然只把工具結果標成新加入、`run_python` 拿到這段對話的資料夾、沒有 `run_python` 的一輪；模型讀到圖在哪裡，圖本身只給頁面 |
-| `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；一串同樣的特殊 token 畫成一個標籤加個數、截斷的片段不會切開 token、媒體佔了幾個 token、好幾行的程式碼和輸出照行寫出來、這一輪沒提供的工具、一次執行和每一步的圖；模型資料夾卡片：檔案的順序、大小和說明、家族有說明但 checkpoint 沒有的檔案、草稿模型的資料夾、跳脫；英文畫面上沒有留下中文 |
+| `test_llm.py` | `LocalLLM` 有 `Backend` 的每個方法和屬性，它的 token 帶著每個欄位和細節；自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；`encode()` 照順序把每種媒體和家族的設定交給 processor、短影片給它全部畫格；圖片和影片在 prefill 前先跑視覺編碼器，上一個 prompt 的位置偏移不會留下來；greedy 遇到兩個 token 打平時和 `generate()` 一樣拿 id 小的；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布；模型照固定的 revision 下載到 `models/`（`AGENT_LOOP_MODELS` 可以換位置，`HF_HUB_CACHE` 不行），模型資料夾的檔案、大小（經過快取的連結）和說明提到的欄位 |
+| `test_agent.py` | 假模型是一個 `Backend`，它的 token 帶的欄位和 `LocalLLM` 的一樣；harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止；附件變成問題裡的 part 和給 `run_python` 的說明、每一輪的媒體都交給 processor、展開後的脈絡仍然只把工具結果標成新加入、`run_python` 拿到這段對話的資料夾、沒有 `run_python` 的一輪；模型讀到圖在哪裡，圖本身只給頁面 |
+| `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；一串同樣的特殊 token 畫成一個標籤加個數、截斷的片段不會切開 token、媒體佔了幾個 token、好幾行的程式碼和輸出照行寫出來、這一輪沒提供的工具、一次執行和每一步的圖；模型資料夾卡片：檔案的順序、大小和說明、家族有說明但 checkpoint 沒有的檔案、草稿模型的資料夾、跳脫；backend 沒回報機率、或只回報 log 機率時，token 照它帶的內容畫，不多畫；英文畫面上沒有留下中文 |
 | `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案 |
 | `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（已經下載到 `models/` 才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、token 浮窗顯示的是它代表的文字、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字），用真的 processor、問題附上圖片和影片時也一樣；每個模型（和草稿模型）資料夾裡的每個檔案都有說明，說明提到的欄位在檔案裡都找得到 |
 | `test_media.py` | 網頁收的每一種格式都有範例檔、被當成正確的種類（聲音對 Qwen 是一般檔案）、解碼得出來；存檔的名字不重複也不含奇怪字元；問題的 part 和寫出文字檔欄位名稱的說明；照片轉正、聲音改成模型的取樣率、影片畫格平均取、畫格率跟著調整；每種聲音和影片播放時的類型，以及 MKV 影片改顯示的畫格 |
 | `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到、事件表指向真的送出事件的那一行、HTML 標籤成對；每段引用的程式和 `tests/guide_excerpts.txt` 一致，改到那段程式才會變，只是換了行號不會；中英文每一段指向同樣的程式和段落，英文版沒有留下中文；產生的靜態頁有亮色和暗色兩套配色與迴圈圖、寫出對應的 commit，根目錄的頁面會送到正確的語言 |
-| `test_real_model.py` | 預設跳過。每個模型：greedy 解碼和 `model.generate()` 一致，純文字、附上圖片、影片和（Gemma）錄音都一樣，之後再問純文字也一樣；真的模型能呼叫計算機並回答；每一種圖片格式都讀得出收據的總計、每一種聲音格式都寫得出錄音的內容（Gemma；Qwen 收到的是一般檔案）、每一種影片格式都看得出球往哪邊滾、每一種資料格式都能用 `run_python` 打開，也寫得出在沙箱裡跑得動的程式（有 Docker 時）；Gemma 開 MTP 時 greedy 輸出和不開一模一樣（附上圖片也是），而且草稿真的有被收下 |
+| `test_real_model.py` | 預設跳過。每個模型：載入的模型是一個 `Backend`；greedy 解碼和 `model.generate()` 一致，純文字、附上圖片、影片和（Gemma）錄音都一樣，之後再問純文字也一樣；真的模型能呼叫計算機並回答；每一種圖片格式都讀得出收據的總計、每一種聲音格式都寫得出錄音的內容（Gemma；Qwen 收到的是一般檔案）、每一種影片格式都看得出球往哪邊滾、每一種資料格式都能用 `run_python` 打開，也寫得出在沙箱裡跑得動的程式（有 Docker 時）；Gemma 開 MTP 時 greedy 輸出和不開一模一樣（附上圖片也是），而且草稿真的有被收下 |
 
 ## 已知限制
 

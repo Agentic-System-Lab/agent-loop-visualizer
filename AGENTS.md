@@ -30,6 +30,7 @@ are not changing.
 streamlit_app.py   layout, session state, model menu, background thread; redraws every 0.5 s while a run is live
 agent.py           the harness (Run): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
 llm.py             LocalLLM: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
+backend.py         Backend: what agent.py and the page ask of whatever runs the model (LocalLLM, tests' FakeLLM); Sampling, Encoded, the token event's fields
 families/          everything model-specific: one Family per model family; MODELS and DRAFTERS in __init__.py
 tools.py           tools: the schema the model reads plus the Python function the harness runs; run_python's docker run
 media.py           attachments: saved per conversation, written into the user message, decoded for the processor (PyAV)
@@ -49,6 +50,8 @@ models/            downloaded models (llm.MODELS_DIR), which git ignores; AGENT_
   page only draws it, which is why stop and approve can rerun the script without interrupting the loop.
   A new or changed event needs render.py, the `EVENTS` table in guide.py (tests check that it lists
   every event the harness sends and points at the line that sends it) and the event list in both READMEs.
+  The harness and the page reach the model only through `backend.Backend`; a token event's probabilities,
+  rank, candidates and MTP draft (`backend.TOKEN_DETAILS`) are optional, and render.py leaves out what is missing.
 - **Nothing model-specific outside `families/`.** agent.py, llm.py and render.py have no "if Gemma".
   Parsing output, the tokens that switch to thinking / tool call / reply, stop tokens, special-token
   explanations, notes on the files of its checkpoints and recommended sampling all live on the

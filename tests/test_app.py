@@ -21,9 +21,9 @@ import agent
 import llm
 import render
 import tools
+from backend import Sampling
 from families import GEMMA4, QWEN3_5
 from fakes import MEDIA_TOKENS, FakeLLM, tool_call
-from llm import Sampling
 
 APP = Path(__file__).resolve().parent.parent / "streamlit_app.py"
 ANSWER = "答案是 42。<turn|>"

@@ -25,6 +25,9 @@
 [[llm.py|def generate(self, prompt]]
     def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
 
+[[backend.py|class Backend(Protocol):]]
+    class Backend(Protocol):
+
 [[tools.py|TOOLS = {]]
     TOOLS = {
 
@@ -233,7 +236,7 @@ families/__init__.py: class FileNote:
 [[llm.py|def load_drafter(self):]]
     def load_drafter(self):
 
-streamlit_app.py: @st.cache_resource(max_entries=1 … def current_llm() -> LocalLLM:
+streamlit_app.py: @st.cache_resource(max_entries=1 … def current_llm() -> Backend:
     @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
     def load_llm(model_id: str) -> LocalLLM:
         llm = LocalLLM(model_id)
@@ -241,7 +244,7 @@ streamlit_app.py: @st.cache_resource(max_entries=1 … def current_llm() -> Loca
         return llm
 
 
-    def current_llm() -> LocalLLM:
+    def current_llm() -> Backend:
         model_id = st.session_state.model_id
         with st.spinner(tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")):
             llm = load_llm(model_id)
@@ -261,7 +264,7 @@ streamlit_app.py: @st.cache_resource(max_entries=1 … def current_llm() -> Loca
     if not slot.lock.acquire(blocking=False):
 
 streamlit_app.py: def start_run(
-    def start_run(llm: LocalLLM, text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
+    def start_run(llm: Backend, text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
         """Ask the question in a new run, with `uploads` (file name, contents) saved in the conversation's folder first."""
         slot = generation_slot()
         if not slot.lock.acquire(blocking=False):
@@ -278,7 +281,7 @@ streamlit_app.py: def start_run(
         return True
 
 streamlit_app.py: def current_settings(
-    def current_settings(llm: LocalLLM) -> RunSettings:
+    def current_settings(llm: Backend) -> RunSettings:
         s = st.session_state
         return RunSettings(
             sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens, mtp=s.mtp and llm.drafter is not None),
@@ -294,7 +297,7 @@ streamlit_app.py: class LiveRun:
     class LiveRun:
         """One user turn: the harness thread and the events it has emitted so far."""
 
-        def __init__(self, llm: LocalLLM, history: list[dict], text: str, attachments: list[media.Attachment], files: Path,
+        def __init__(self, llm: Backend, history: list[dict], text: str, attachments: list[media.Attachment], files: Path,
                      settings: RunSettings, slot: Slot):
             self.text = text
             self.attachments = attachments
@@ -326,8 +329,8 @@ streamlit_app.py: class LiveRun:
 [[agent.py|self.messages = [*history,]]
     self.messages = [*history, {"role": "user", "content": media.user_content(user_text, list(attachments))}]
 
-agent.py: def __init__(self, llm: LocalLLM, history
-    def __init__(self, llm: LocalLLM, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
+agent.py: def __init__(self, llm: Backend, history
+    def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
                  attachments: list[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.llm = llm
@@ -651,6 +654,9 @@ llm.py: def _sample(self, logits
 
 [[render.py|def heat(p: float)]]
     def heat(p: float) -> str:
+
+[[backend.py|TOKEN_DETAILS = (]]
+    TOKEN_DETAILS = ("p", "logprob", "rank", "p_sampled", "kept", "top", "draft")
 
 == mtp ==
 

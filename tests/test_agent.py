@@ -10,8 +10,9 @@ import pytest
 
 import agent
 from agent import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, Run, RunSettings, common_prefix
+from backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
+from families import GEMMA4, QWEN3_5
 from fakes import MEDIA_TOKENS, FakeLLM, record_run, tool_call
-from llm import Sampling
 from media import Attachment
 from tools import TOOLS, ToolError, ToolResult
 
@@ -47,6 +48,14 @@ def wait_for(predicate, timeout=5.0):
 
 
 # ---------- a run that ends with a reply ----------
+
+@pytest.mark.parametrize(("family", "answer"), [(GEMMA4, ANSWER), (QWEN3_5, "現在是下午三點。<|im_end|>")])
+def test_the_fake_model_is_a_backend_whose_tokens_carry_what_local_inference_sends(family, answer):
+    assert isinstance(FakeLLM(family=family), Backend)
+    _, events, _ = record_run([answer], family=family)
+    tokens = [e for e in events if e["type"] == "token"]
+    assert tokens and all(set(t) == {"type", "step", "t", *TOKEN_FIELDS, *TOKEN_DETAILS} - {"draft"} for t in tokens)
+
 
 def test_plain_reply_stops_without_a_tool_call():
     run, events, _ = record_run([ANSWER])

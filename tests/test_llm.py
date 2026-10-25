@@ -1,5 +1,6 @@
 """The hand-written decoding loop, run against a tiny scripted model and tokenizer."""
 
+import inspect
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ import torch
 
 import families
 import llm
+from backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend
 from families import GEMMA4, FileNote
 from llm import LocalLLM, Sampling
 
@@ -163,6 +165,26 @@ def test_token_events_carry_sampling_details():
     assert tok["id"] == ID["▁Hi"] and tok["rank"] == 1 and tok["p"] > 0.99
     assert len(tok["top"]) == llm.TOP_N
     assert done["tok_per_s"] is None or done["tok_per_s"] > 0
+
+
+def test_token_events_carry_every_field_and_every_detail_a_backend_can_send():
+    _, tokens, _ = run(make_llm(["▁Hi", "!", "<turn|>"]))
+    assert all(set(t) == {"type", *TOKEN_FIELDS, *TOKEN_DETAILS} - {"draft"} for t in tokens)
+
+
+def test_local_llm_has_every_method_of_a_backend_with_its_parameters():
+    for name in ("warmup", "load_drafter", "render", "encode", "generate"):
+        wanted = list(inspect.signature(getattr(Backend, name)).parameters)
+        params = inspect.signature(getattr(LocalLLM, name)).parameters
+        assert list(params)[: len(wanted)] == wanted, name
+        assert all(p.default is not p.empty for p in list(params.values())[len(wanted):]), name  # anything more is optional
+
+
+def test_local_llm_sets_every_attribute_of_a_backend_when_it_loads():
+    # Loading needs real weights (test_real_model.py checks a loaded model), so look for where __init__ sets each one.
+    init = inspect.getsource(LocalLLM.__init__)
+    for name in Backend.__annotations__:
+        assert f"self.{name} = " in init, name
 
 
 # ---------- _sample ----------

@@ -16,6 +16,7 @@ import render
 import samples
 import tools
 from agent import SYSTEM_WITH_TOOLS, Run, RunSettings
+from backend import Backend
 from html_check import assert_balanced
 from llm import LocalLLM, Sampling
 from test_render import render_everything
@@ -46,6 +47,10 @@ def test_model_info_feeds_the_ui(gemma):
     assert_balanced(render.special_tokens_html(info, lang="zh"))
     assert_balanced(render.folder_html(info, lang="zh"))
     assert {f["name"] for f in info["folder"]["files"]} >= {"config.json", "tokenizer.json", "chat_template.jinja"}
+
+
+def test_the_loaded_model_is_a_backend(gemma):
+    assert isinstance(gemma, Backend)
 
 
 def test_greedy_decoding_matches_generate(gemma):

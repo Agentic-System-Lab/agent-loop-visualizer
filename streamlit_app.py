@@ -34,8 +34,9 @@ import media
 import render
 import tools
 from agent import Run, RunSettings
+from backend import Backend, Sampling
 from i18n import LANGS, from_locale, pick
-from llm import LocalLLM, Sampling
+from llm import LocalLLM
 from tools import TOOLS
 
 # The model menu; MODEL_ID picks the one selected at first, and may name a model the menu does not list.
@@ -108,7 +109,7 @@ def load_llm(model_id: str) -> LocalLLM:
     return llm
 
 
-def current_llm() -> LocalLLM:
+def current_llm() -> Backend:
     model_id = st.session_state.model_id
     with st.spinner(tr(f"載入 {model_id}（第一次要下載權重；之後約 10–20 秒）…", f"Loading {model_id} (the first time downloads the weights; after that it takes about 10–20 s)…")):
         llm = load_llm(model_id)
@@ -139,7 +140,7 @@ def generation_slot() -> Slot:
 class LiveRun:
     """One user turn: the harness thread and the events it has emitted so far."""
 
-    def __init__(self, llm: LocalLLM, history: list[dict], text: str, attachments: list[media.Attachment], files: Path,
+    def __init__(self, llm: Backend, history: list[dict], text: str, attachments: list[media.Attachment], files: Path,
                  settings: RunSettings, slot: Slot):
         self.text = text
         self.attachments = attachments
@@ -186,7 +187,7 @@ def chat_folder() -> Path:
     return UPLOADS / st.session_state.chat_id
 
 
-def current_settings(llm: LocalLLM) -> RunSettings:
+def current_settings(llm: Backend) -> RunSettings:
     s = st.session_state
     return RunSettings(
         sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens, mtp=s.mtp and llm.drafter is not None),
@@ -219,7 +220,7 @@ def offered_tools() -> tuple[str, ...]:
     return tuple(name for name in TOOLS if name != "run_python" or code_ready())
 
 
-def start_run(llm: LocalLLM, text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
+def start_run(llm: Backend, text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
     """Ask the question in a new run, with `uploads` (file name, contents) saved in the conversation's folder first."""
     slot = generation_slot()
     if not slot.lock.acquire(blocking=False):
@@ -277,7 +278,7 @@ def show_run(run_index: int):
 
 # ---------- sidebar ----------
 
-def sidebar(llm: LocalLLM, live: bool, busy: bool):
+def sidebar(llm: Backend, live: bool, busy: bool):
     info, lang = llm.info, st.session_state.lang
     with st.sidebar:
         st.markdown(tr("### Agent Loop 可視化", "### Agent Loop Visualizer"))
@@ -318,7 +319,7 @@ def sidebar(llm: LocalLLM, live: bool, busy: bool):
         st.caption(tr("設定會套用到下一個問題。", "Settings apply to the next question."))
 
 
-def mtp_help(llm: LocalLLM) -> str:
+def mtp_help(llm: Backend) -> str:
     if not llm.drafter_id:
         return tr("這個模型沒有搭配的 MTP 草稿模型，目前只有 Gemma 4 E2B 有。", "This model has no MTP drafter to go with it; for now only Gemma 4 E2B has one.")
     return tr(
@@ -332,7 +333,7 @@ def mtp_help(llm: LocalLLM) -> str:
 
 # ---------- left: chat ----------
 
-def chat_panel(llm: LocalLLM, live_run: LiveRun | None, other: LiveRun | None):
+def chat_panel(llm: Backend, live_run: LiveRun | None, other: LiveRun | None):
     runs = st.session_state.runs
     busy = live_run is not None or other is not None
     box = st.container(height=BOX_HEIGHT, border=False, key="chat_box")
@@ -388,7 +389,7 @@ def chat_panel(llm: LocalLLM, live_run: LiveRun | None, other: LiveRun | None):
         sample_picker(sample_row, samples, llm, busy)
 
 
-def sample_picker(row, samples: list[str], llm: LocalLLM, busy: bool):
+def sample_picker(row, samples: list[str], llm: Backend, busy: bool):
     """The sample files from assets/examples that this model can use, to ask a question of one's own about: a file
     picked here goes with the next question typed in the input box, as one attached with the + would."""
     def label(name: str) -> str:
@@ -405,7 +406,7 @@ def uploaded(sent) -> list[tuple[str, bytes]]:
     return files + ([("recording.wav", audio.getvalue())] if (audio := sent.get("audio")) else [])
 
 
-def examples(llm: LocalLLM, busy: bool):
+def examples(llm: Backend, busy: bool):
     """The page language's examples that this model can try: one that attaches a file shows only if the model reads
     that kind, and one that needs Python only once the model may write code, disabled until Docker is ready."""
     lang, hidden = st.session_state.lang, False
@@ -487,7 +488,7 @@ def assistant_message(i: int, run: LiveRun):
 
 # ---------- right: the loop ----------
 
-def viz_panel(llm: LocalLLM):
+def viz_panel(llm: Backend):
     runs = st.session_state.runs
     index = st.session_state.view
     run = runs[index] if runs and index is not None else None
@@ -550,7 +551,7 @@ def context_panel(index: int | None, data: dict | None):
     st.html(render.CONTEXT_LEGEND[lang] + render.context_html(step, data["family"], lang))
 
 
-def model_panel(llm: LocalLLM, data: dict | None):
+def model_panel(llm: Backend, data: dict | None):
     lang = st.session_state.lang
     st.html(render.model_html(llm.info, lang))
     settings = data["settings"] if data else {**DEFAULTS, **{k: st.session_state[k] for k in DEFAULTS}}

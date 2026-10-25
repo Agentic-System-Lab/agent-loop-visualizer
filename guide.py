@@ -375,6 +375,12 @@ SECTIONS = [
                    "打開 MTP 時再加上一個草稿模型（{{mtp}}）。",
              "en": "`llm.py`: local inference, with a hand-written decoding loop, `generate()` ([[llm.py|def generate(self, prompt]]), "
                    "and sampling, `_sample()`; with MTP on, a drafter joins in ({{mtp}})."},
+            {"zh": "`backend.py`：harness 和畫面對「跑模型的那一層」的全部要求，`Backend`（[[backend.py|class Backend(Protocol):]]）："
+                   "`render()`、`encode()`、`generate()`，以及 token 事件裡哪些欄位一定有、哪些要 backend 知道才有。"
+                   "`llm.py` 的 `LocalLLM` 是其中一種；改用 vLLM 這類推論伺服器，就是再寫一種。",
+             "en": "`backend.py`: everything the harness and the page ask of whatever runs the model, `Backend` ([[backend.py|class Backend(Protocol):]]): "
+                   "`render()`, `encode()` and `generate()`, and which fields of a token event are always there and which only when the backend knows them. "
+                   "`LocalLLM` in `llm.py` is one backend; running the model on a serving engine such as vLLM would mean writing another."},
             {"zh": "`families/`：跟著模型走的東西。`gemma4.py`、`qwen3_5.py` 各自負責讀懂自己模型的輸出，並說明它的特殊 token（{{families}}）。",
              "en": "`families/`: everything that goes with the model. `gemma4.py` and `qwen3_5.py` each read their own model's output "
                    "and explain its special tokens ({{families}})."},
@@ -614,19 +620,21 @@ SECTIONS = [
             {"zh": "送出問題：載入模型、開一條 thread 跑 agent", "en": "Sending a question: load the model, start a thread for the agent"},
             {"zh": "輸入框和範例按鈕都走 `start_run()`：拿鎖、凍結設定、開 thread。",
              "en": "The input box and the example buttons both go through `start_run()`: take the lock, freeze the settings, start a thread."}, (
-        {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`。`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，"
+        {"zh": "畫面每次重跑，先由 `current_llm()` 照側欄選的模型拿到 `LocalLLM`；畫面的其他地方只把它當成一個 `Backend`（{{overview}}）。"
+               "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，"
                "記憶體裡同時只留一個模型，換模型時舊的就會被放掉。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
                "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[llm.py|def _sampling_defaults(self)]]）。"
                "側欄的模型選單換了之後會開新對話（[[streamlit_app.py|key=\"model_id\", on_change=new_chat]]），MTP 也回到關閉；"
                "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[llm.py|def load_drafter(self):]]）。",
-         "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar. `load_llm()` is cached with "
+         "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar; the rest of the page "
+               "takes it for just a `Backend` ({{overview}}). `load_llm()` is cached with "
                "`st.cache_resource(max_entries=1)`, so only one model stays in memory, and switching models lets the old one go. The first time "
                "a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "
                "generation_config.json, so its recommendations come from the family ([[llm.py|def _sampling_defaults(self)]]). "
                "Switching models in the sidebar's menu starts a new conversation ([[streamlit_app.py|key=\"model_id\", on_change=new_chat]]) "
                "and turns MTP back off; the first time MTP speculative decoding is switched on, `current_llm()` also loads the drafter "
                "([[llm.py|def load_drafter(self):]])."},
-        Code("streamlit_app.py", "@st.cache_resource(max_entries=1", end="def current_llm() -> LocalLLM:"),
+        Code("streamlit_app.py", "@st.cache_resource(max_entries=1", end="def current_llm() -> Backend:"),
         {"zh": "輸入框（[[streamlit_app.py|sent = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。輸入框可以附上檔案，模型讀得懂聲音時還能錄音；"
                "有些範例也會附上 `assets/examples/` 裡的範例檔，輸入框上方也列出這些檔案，選了的會附在你自己打的問題裡。`start_run()` 先用不等待的方式拿一把全域的鎖"
                "（[[streamlit_app.py|if not slot.lock.acquire(blocking=False):]]）："
@@ -670,7 +678,7 @@ SECTIONS = [
                "both families accept; each family's chat template takes care of its own format. With files attached, that message's `content` "
                "is a list of parts ({{media}}). `self.tools` are the tools the model gets this turn, and `self.files` is the conversation's folder. "
                "`_stop` and `_decided` are the two synchronization tools the UI thread signals the agent with."},
-        Code("agent.py", "def __init__(self, llm: LocalLLM, history"),
+        Code("agent.py", "def __init__(self, llm: Backend, history"),
         {"zh": "`run()` 一開始拿出這個模型的 family，決定這一輪模型看得到什麼：收集 `self.tools` 裡每個工具的 `schema()` 給 chat template"
                "（關掉「使用工具」時一個都沒有），"
                "另外留一份「工具名稱 → 參數 schema」給 parser（Qwen 的參數值是純文字，要靠 schema 才知道型別）；"
@@ -868,11 +876,15 @@ SECTIONS = [
         Code("llm.py", "def _sample(self, logits"),
         {"zh": "回傳的資料就是浮窗裡的數字：`p` 是被選中的 token 在原始分布的機率；`rank` 是它的名次；"
                "`kept` 是剃完還剩幾個候選；`p_sampled` 是它在剃完、重新正規化後的分布裡的機率。"
-               "step 卡片上 token 的底色深淺就是用 `p` 算的（[[render.py|def heat(p: float)]]）：越深，代表模型原本越不看好它，卻被抽中了。",
+               "step 卡片上 token 的底色深淺就是用 `p` 算的（[[render.py|def heat(p: float)]]）：越深，代表模型原本越不看好它，卻被抽中了。"
+               "這些數字列在 `backend.py` 的 `TOKEN_DETAILS`（[[backend.py|TOKEN_DETAILS = (]]）：別的 backend，例如推論伺服器，"
+               "不一定知道，不知道的就不畫，不會用別的數字代替。",
          "en": "What it returns are the numbers in the popover: `p` is the chosen token's probability in the model's own distribution; `rank` "
                "is its place; `kept` is how many candidates were left after the cuts; `p_sampled` is its probability in the cut and "
                "renormalized distribution. The shade behind a token in a step card comes from `p` ([[render.py|def heat(p: float)]]): "
-               "the darker it is, the less the model expected that token, and yet it was drawn."},
+               "the darker it is, the less the model expected that token, and yet it was drawn. These numbers are listed in `backend.py`'s "
+               "`TOKEN_DETAILS` ([[backend.py|TOKEN_DETAILS = (]]): another backend, a serving engine say, may not know them, and what it "
+               "does not know is left out, never drawn from some other number."},
     )),
     Section("mtp", "model",
             {"zh": "MTP：草稿模型先猜，主模型一次驗證", "en": "MTP: the drafter guesses, the model checks them all at once"},
@@ -1225,8 +1237,10 @@ EVENTS = [
      {"zh": "prompt 的 token 數、prefill 耗時", "en": "the prompt's token count, the prefill time"},
      {"zh": "迴圈圖「模型」格、模型分頁的 prefill ms", "en": "the Model box in the loop diagram, prefill ms in the Model tab"}),
     ("token", "llm.py", '"type": "token",',
-     {"zh": "id、piece、文字、channel、是否為特殊 token、機率、排名、前 5 名候選；開 MTP 時還有 `draft`（草稿猜了什麼、有沒有收下）",
-      "en": "id, piece, text, channel, whether it is special, probability, rank, the top 5 candidates; with MTP, also `draft` (what the drafter guessed and whether it was kept)"},
+     {"zh": "id、piece、文字、channel、是否為特殊 token、機率、排名、前 5 名候選；開 MTP 時還有 `draft`（草稿猜了什麼、有沒有收下）。"
+            "機率以後的欄位要 backend 知道才有，`llm.py` 全都有",
+      "en": "id, piece, text, channel, whether it is special, probability, rank, the top 5 candidates; with MTP, also `draft` (what the drafter guessed and whether it was kept). "
+            "The fields from the probability on are there only when the backend knows them, and `llm.py` knows them all"},
      {"zh": "token 的熱度顏色、底線與浮窗、左邊逐字出現的回覆", "en": "the token's heat color, underline and popover; the reply appearing bit by bit on the left"}),
     ("model_end", "agent.py", 'self.emit("model_end"',
      {"zh": "停止原因、停止 token、token 數、tok/s、MTP 統計、原始輸出", "en": "why it stopped, the stop token, the token count, tok/s, the MTP counts, the raw output"},

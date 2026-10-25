@@ -5,7 +5,8 @@ reads what came out. A tool call is parsed, validated, optionally approved by th
 user, executed, and its result goes back into the conversation for the next step.
 A reply without a tool call ends the run; so do the step limit, the per-step token
 limit, repeated malformed calls and the stop button. Every stage is emitted as an
-event so the browser can draw it.
+event so the browser can draw it. The model is whatever Backend (backend.py) the page
+hands it, so the loop is the same whichever runs the model.
 
 A run keeps the page's language from when it started: the errors and refusals the model reads come
 back in it. The system prompt is the same in both languages.
@@ -23,8 +24,8 @@ from pathlib import Path
 from typing import Callable
 
 import media
+from backend import Backend, Sampling
 from i18n import pick
-from llm import LocalLLM, Sampling
 from tools import TOOLS, ToolError, ToolResult
 
 MAX_RESULT_CHARS = 2000
@@ -62,7 +63,7 @@ def common_prefix(a: str, b: str) -> int:
 
 
 class Run:
-    def __init__(self, llm: LocalLLM, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
+    def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
                  attachments: list[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.llm = llm
