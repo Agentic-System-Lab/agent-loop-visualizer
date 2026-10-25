@@ -365,7 +365,7 @@ def chat_panel(llm: LocalLLM, live_run: LiveRun | None, other: LiveRun | None):
                       f"An agent from another tab is still running (“{other.text[:30]}”), perhaps left over from before a reload. "
                       "No new question can be sent until it ends."))
         st.button(tr("停止那個 agent", "Stop that agent"), icon=":material/stop_circle:", on_click=other.run.stop, width="stretch")
-    types = media.accepted(llm.modalities, python=code_allowed())
+    types = media.accepted(llm.modalities, python=code_ready())  # a data file is no use to the model without run_python
     sent = st.chat_input(
         tr("問一個問題，也可以附上檔案…", "Ask a question; you can attach files…") if types else tr("問一個問題…", "Ask a question…"),
         key="chat_input", disabled=busy, accept_file="multiple" if types else False, file_type=types or None,

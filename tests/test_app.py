@@ -675,6 +675,20 @@ def test_writing_code_looks_for_docker_only_once_switched_on(at, sandbox):
     assert not any(b.disabled for b in at.button if b.key and b.key.startswith("example-"))
 
 
+def test_the_input_takes_data_files_only_once_the_model_can_run_code(at, sandbox):
+    def types():
+        return list(at.chat_input[0].proto.file_type)
+
+    assert ".png" in types() and ".csv" not in types()
+    sandbox["problem"] = {"zh": "Docker 沒有在執行。", "en": "Docker is not running."}
+    toggle(at, "讓模型寫程式").set_value(True).run()
+    assert ".csv" not in types()  # switched on, but no Docker yet: no tool to read it
+    sandbox["problem"] = None
+    st.cache_data.clear()
+    at.run()
+    assert ".csv" in types() and ".xlsx" in types()
+
+
 def test_without_docker_the_model_does_not_get_run_python(at, outputs, models, sandbox):
     sandbox["problem"] = {"zh": "Docker 沒有在執行。", "en": "Docker is not running."}
     toggle(at, "讓模型寫程式").set_value(True).run()
