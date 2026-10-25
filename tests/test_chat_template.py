@@ -15,7 +15,7 @@ from fakes import FakeLLM, gemma_call, qwen_call
 from harness import families, media
 from harness.agent import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, Run, RunSettings
 from harness.backends import simple_backend
-from harness.backends.simple_backend import MODELS_DIR, LocalLLM
+from harness.backends.simple_backend import MODELS_DIR, SimpleBackend
 from harness.tools import TOOLS
 from html_check import assert_balanced
 
@@ -30,7 +30,7 @@ OBSERVATION = {"gemma4": "response:{name}{{value:", "qwen3_5": "<|im_start|>user
 
 @pytest.fixture(scope="module", params=list(families.MODELS))
 def model(request):
-    """A LocalLLM with the real tokenizer and family but no weights."""
+    """A SimpleBackend with the real tokenizer and family but no weights."""
     from transformers import AutoConfig, AutoTokenizer
 
     # Look for the files themselves: with only config.json cached, local_files_only=True fails on Gemma's
@@ -40,7 +40,7 @@ def model(request):
     if not all(isinstance(f, str) for f in files):
         pytest.skip(f"{request.param} at {revision} is not downloaded into {MODELS_DIR}")
     folder = os.path.dirname(files[0])
-    m = LocalLLM.__new__(LocalLLM)
+    m = SimpleBackend.__new__(SimpleBackend)
     m.tokenizer = AutoTokenizer.from_pretrained(folder)
     m.config = AutoConfig.from_pretrained(folder)
     m.family = families.for_model_type(m.config.model_type)
@@ -50,11 +50,11 @@ def model(request):
 
 @pytest.fixture(scope="module")
 def with_processor(model):
-    """The same, with the real processor in front of the tokenizer, as LocalLLM loads it, for prompts with media."""
+    """The same, with the real processor in front of the tokenizer, as SimpleBackend loads it, for prompts with media."""
     import torch
     from transformers import AutoProcessor
 
-    m = LocalLLM.__new__(LocalLLM)
+    m = SimpleBackend.__new__(SimpleBackend)
     m.processor = AutoProcessor.from_pretrained(model.folder)
     m.tokenizer, m.family, m.device, m.dtype = m.processor.tokenizer, model.family, "cpu", torch.float32
     m.media_token_ids = {kind: getattr(model.config, f"{kind}_token_id", None) for kind in ("image", "video")}

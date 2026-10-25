@@ -6,7 +6,7 @@ turn steps into HTML strings for st.html. Every function that writes words takes
 page's language, "zh" or "en" (i18n.py), so switching it redraws a finished run too.
 
 A token shows as much of the model's distribution as the backend reported (backend.TOKEN_DETAILS):
-simple_backend.LocalLLM reports all of it, and what a backend leaves out is left out here too, never filled in.
+simple_backend.SimpleBackend reports all of it, and what a backend leaves out is left out here too, never filled in.
 """
 
 import base64

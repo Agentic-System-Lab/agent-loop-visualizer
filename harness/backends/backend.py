@@ -2,12 +2,12 @@
 
 The harness (agent.Run) and the page (app/page.py) reach the model only through a Backend. It renders the
 conversation into a prompt with the model's chat template, encodes the prompt into the tokens the model reads,
-and generates, yielding the events render.py draws. simple_backend.LocalLLM is the backend the app runs: transformers on
+and generates, yielding the events render.py draws. simple_backend.SimpleBackend is the backend the app runs: transformers on
 this machine, with a hand-written decoding loop that sees the whole distribution at every token.
 tests/fakes.FakeLLM replays scripted replies. A backend that asks a serving engine such as vLLM, SGLang or
 Ollama would be one more; this module says what it has to provide.
 
-Such an engine tells less about each token than LocalLLM's own loop does: a few log probabilities at most, not
+Such an engine tells less about each token than SimpleBackend's own loop does: a few log probabilities at most, not
 what temperature, top-k and top-p left of the distribution, nor what an MTP drafter guessed. So a token event
 has the fields every backend sends (TOKEN_FIELDS) and the ones a backend sends only when it knows them
 (TOKEN_DETAILS). render.py draws a token with whichever details it has and leaves the rest out, so the page
@@ -36,7 +36,7 @@ class Encoded:
     """A prompt as the model reads it (Backend.encode)."""
 
     text: str  # the prompt, with each placeholder of an image, clip or video expanded into the tokens it takes
-    ids: object  # its token ids, in the form the backend's generate() takes (LocalLLM: a tensor of shape (1, n_tokens))
+    ids: object  # its token ids, in the form the backend's generate() takes (SimpleBackend: a tensor of shape (1, n_tokens))
     n_tokens: int
     media: dict = field(default_factory=dict)  # the processor's inputs for the encoders (pixels, audio features), for the prefill
     media_tokens: dict = field(default_factory=dict)  # kind -> how many of the tokens are that kind of media

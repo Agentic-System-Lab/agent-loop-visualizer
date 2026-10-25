@@ -1,12 +1,12 @@
 """Running the model on a vLLM server instead of on this machine.
 
 With VLLM_URL set (say http://localhost:8000, where `vllm serve Qwen/Qwen3.5-0.8B` listens), the page runs the
-model through VLLMBackend, a Backend (backend.py) like simple_backend.LocalLLM. The harness, the tools and the page stay the
+model through VLLMBackend, a Backend (backend.py) like simple_backend.SimpleBackend. The harness, the tools and the page stay the
 same; what changes is how much of the model the page can see, which depends on how the server was started.
 
 The prompt stays exact. Everything of the checkpoint but its weights (the config, the tokenizer, the chat
 template) is downloaded into models/ at the revision families.REVISIONS pins, the prompt is rendered and
-tokenized here as LocalLLM does it, and the server gets the token ids, so it reads exactly what the Context tab
+tokenized here as SimpleBackend does it, and the server gets the token ids, so it reads exactly what the Context tab
 shows. Each token comes back as its id with its log probability and those of the most likely tokens at its
 position. What those numbers are depends on the server's --logprobs-mode, which no route tells, so the backend
 works it out at load (logprobs_mode). By default (raw_logprobs) they are the model's own distribution, from which
@@ -153,7 +153,7 @@ def _checkpoint_files(model_id: str) -> str:
 
 def _generation_config(folder: str, config) -> GenerationConfig:
     """The checkpoint's generation_config.json, or, when it ships none (Qwen3.5), one made from its config.json, as
-    transformers makes it for the model LocalLLM loads."""
+    transformers makes it for the model SimpleBackend loads."""
     try:
         return GenerationConfig.from_pretrained(folder)
     except OSError:
@@ -168,7 +168,7 @@ def unsupported(model_id: str, why: str) -> ServerError:
 
 
 def checkpoint_modalities(config, processor) -> tuple[str, ...]:
-    """What the checkpoint reads besides text, worked out as LocalLLM._modalities does: an encoder in the config and a
+    """What the checkpoint reads besides text, worked out as SimpleBackend._modalities does: an encoder in the config and a
     part of the processor to feed it. Whether the server takes each one is asked separately (VLLMBackend._probe)."""
     reads = {
         "image": getattr(config, "vision_config", None) is not None and hasattr(processor, "image_processor"),
@@ -201,7 +201,7 @@ def _wav(samples: np.ndarray, rate: int) -> bytes:
 
 def content_part(part: dict, audio_rate: int) -> dict:
     """One image, clip or video of the conversation as /inference/v1/generate takes it, a data URL. An image goes as
-    PNG, turned upright by its EXIF, and a clip as WAV, both decoded here as LocalLLM decodes them (media.py); a video
+    PNG, turned upright by its EXIF, and a clip as WAV, both decoded here as SimpleBackend decodes them (media.py); a video
     goes as the file itself, and the server picks its frames."""
     kind, path = part["type"], part["path"]
     if kind == "image":
@@ -262,7 +262,7 @@ def mtp_counts(spec: dict | None, n_tokens: int) -> dict | None:
     """A step's speculative decoding counts as the page shows MTP's (drafted, accepted, forwards), plus which tokens
     were guesses when the server counted each verify step. vLLM counts a verify step's kept guesses before it cuts the
     step at a stop token, so when the stop token is one of them, the guesses after it count too; once the guesses are
-    known, only those up to the stop token count as kept, as in LocalLLM."""
+    known, only those up to the stop token count as kept, as in SimpleBackend."""
     if not spec:
         return None
     counts = {"drafted": spec["num_draft_tokens"], "accepted": spec["num_accepted_draft_tokens"], "forwards": spec["num_spec_steps"]}
@@ -302,7 +302,7 @@ class VLLMBackend:
         if not any(config.model_type in f.model_types for f in families.FAMILIES.values()):
             raise unsupported(model_id, f"model_type {config.model_type!r}")
         self.family = families.for_model_type(config.model_type)
-        # The same tokenizer and chat template LocalLLM loads, so the prompt is the same string and the same tokens.
+        # The same tokenizer and chat template SimpleBackend loads, so the prompt is the same string and the same tokens.
         self.processor = AutoProcessor.from_pretrained(files)
         self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
         self.generation_config = _generation_config(files, config)
@@ -441,7 +441,7 @@ class VLLMBackend:
         return self.tokenizer.convert_ids_to_tokens(token_id)
 
     def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
-        """The chat template's string for the messages and tool schemas, rendered here, as LocalLLM renders it."""
+        """The chat template's string for the messages and tool schemas, rendered here, as SimpleBackend renders it."""
         return self.tokenizer.apply_chat_template(
             messages, tools=tools or None, tokenize=False, add_generation_prompt=generation_prompt, enable_thinking=thinking
         )
@@ -463,7 +463,7 @@ class VLLMBackend:
                        {"content_parts": files, "prompt_token_ids": expanded}, dict(counts))
 
     def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
-        """Yield the events LocalLLM.generate yields, from the server's stream: prefill once the first token is back
+        """Yield the events SimpleBackend.generate yields, from the server's stream: prefill once the first token is back
         (its time is the time to the first token), one event per token, then done."""
         channel = "thought" if prompt.text.endswith(self.family.thought_prefix) else "content"
         generated: list[int] = []
@@ -488,7 +488,7 @@ class VLLMBackend:
                     break
                 generated.append(token_id)
 
-                # From here on, as in LocalLLM.generate.
+                # From here on, as in SimpleBackend.generate.
                 piece = self.piece(token_id)
                 special = token_id in self.special_ids
                 if piece in self.family.channel_switch:
@@ -648,7 +648,7 @@ class VLLMBackend:
         if entry is None or (entry["logprob"] <= UNREPORTED and not entry.get("top_logprobs")):  # vLLM's mark for "not reported"
             return {}
         listed = {e["token_id"]: e["logprob"] for e in entry.get("top_logprobs") or []}
-        # The page's rank counts the tokens more likely than the chosen one, as LocalLLM's does. vLLM's counts those at
+        # The page's rank counts the tokens more likely than the chosen one, as SimpleBackend's does. vLLM's counts those at
         # least as likely (it compares with >=), so a token tied for first, which bfloat16 logits make common, would be
         # #2; and with speculative decoding it compares the logits, while the log probabilities listed come from a
         # log-softmax of their own, where two logits a hair apart can tie. So while a listed token is no likelier than
@@ -670,7 +670,7 @@ class VLLMBackend:
         the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
         details = {"rank": rank} if rank else {}
         if self.logprobs_mode == "raw_logprobs":
-            # Equally likely tokens go lowest id first, as in LocalLLM.
+            # Equally likely tokens go lowest id first, as in SimpleBackend.
             ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
             if rank is not None and rank > TOP_N:  # listed only because it was chosen
                 ranked = [c for c in ranked if c[0] != token_id]

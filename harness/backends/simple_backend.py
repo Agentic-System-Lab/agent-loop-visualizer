@@ -3,7 +3,7 @@
 transformers' generate() hides the distribution at each step, so this module runs
 the loop itself: one forward pass per token, then temperature, top-k and top-p,
 then a sample. Every token comes back with its probability, its rank and the
-strongest alternatives, which is what the visualization shows. LocalLLM is the
+strongest alternatives, which is what the visualization shows. SimpleBackend is the
 Backend (backend.py) the app runs, and it fills in every detail a token event can carry.
 
 Nothing here is specific to one model: which tokens stop a generation and which
@@ -127,7 +127,7 @@ def empty_cache():
         torch.mps.empty_cache()
 
 
-class LocalLLM:
+class SimpleBackend:
     def __init__(self, model_id: str):
         self.model_id = model_id
         self.device = pick_device()

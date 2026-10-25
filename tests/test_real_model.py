@@ -17,7 +17,7 @@ from app import render
 from harness import families, media, tools
 from harness.agent import SYSTEM_WITH_TOOLS, Run, RunSettings
 from harness.backends.backend import Backend
-from harness.backends.simple_backend import LocalLLM, Sampling
+from harness.backends.simple_backend import SimpleBackend, Sampling
 from harness.tools import TOOLS
 from html_check import assert_balanced
 from test_render import render_everything
@@ -32,7 +32,7 @@ pytestmark = [
 
 @pytest.fixture(scope="module", params=list(families.MODELS))
 def gemma(request):
-    return LocalLLM(request.param)
+    return SimpleBackend(request.param)
 
 
 def test_model_info_feeds_the_ui(gemma):
@@ -107,12 +107,12 @@ def test_mtp_writes_what_plain_decoding_writes(gemma):
 
 # ---------- images, sound and video ----------
 
-def attach(name: str, model: LocalLLM) -> media.Attachment:
+def attach(name: str, model: SimpleBackend) -> media.Attachment:
     path = SAMPLES / name
     return media.Attachment(name, media.kind_of(name, model.modalities), str(path), path.stat().st_size)
 
 
-def media_prompt(model: LocalLLM, names: list[str], question: str):
+def media_prompt(model: SimpleBackend, names: list[str], question: str):
     files = [attach(name, model) for name in names]
     messages = [{"role": "user", "content": media.user_content(question, files)}]
     return model.encode(model.render(messages, None, False), media.parts(messages))
@@ -233,8 +233,8 @@ def test_letting_a_warmed_up_model_go_hands_its_gpu_memory_back():
     script = """
 import gc, sys, torch
 sys.path.insert(0, sys.argv[1])
-from harness.backends.simple_backend import LocalLLM, empty_cache
-llm = LocalLLM("Qwen/Qwen3.5-0.8B")
+from harness.backends.simple_backend import SimpleBackend, empty_cache
+llm = SimpleBackend("Qwen/Qwen3.5-0.8B")
 llm.warmup()
 loaded = torch.cuda.memory_reserved()
 del llm
