@@ -2,6 +2,8 @@
 
 [English](README.md) | 繁體中文
 
+![上方可以切換到「運作說明」頁，右上角可以切換語言，側欄可以選模型；左邊是對話，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot-zh.png)
+
 此為[Agent Atlas 技術與實戰交流](https://cyyeh.github.io/agent-atlas-learning/)的專案之一。
 
 - 模型：側欄可以選 [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) 或 [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)，在本機用 Hugging Face `transformers` 推論
@@ -14,8 +16,6 @@
 左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到。不同模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
 
 [運作說明](https://cyyeh.github.io/agent-loop-visualizer/zh/)把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段。它放在 GitHub Pages 上，app 上方的「運作說明」會在新分頁打開它，語言和網頁當下的語言一樣。
-
-![上方可以切換到「運作說明」頁，右上角可以切換語言，側欄可以選模型；左邊是對話，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot-zh.png)
 
 ## 畫面上看得到什麼
 
