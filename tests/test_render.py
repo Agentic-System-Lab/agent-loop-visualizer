@@ -11,17 +11,16 @@ from pathlib import Path
 
 import pytest
 
-import agent
-import families
-import render
-from agent import Run, RunSettings
-from families import GEMMA4, QWEN3_5
+from app import render
 from fakes import DRAFTER, INFO, MEDIA_TOKENS, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
+from harness import agent, families
+from harness.agent import Run, RunSettings
+from harness.backends.backend import TOKEN_DETAILS, Sampling
+from harness.families import GEMMA4, QWEN3_5
+from harness.i18n import LANGS
+from harness.media import Attachment
+from harness.tools import TOOLS, ToolResult
 from html_check import assert_balanced
-from i18n import LANGS
-from llm import Sampling
-from media import Attachment
-from tools import TOOLS, ToolResult
 
 ANSWER = "現在是下午三點。<turn|>"
 
@@ -47,9 +46,21 @@ def approved_run_events():
     return events
 
 
+def as_reported(events: list[dict], details: tuple[str, ...] = ()) -> list[dict]:
+    """A run's events as a backend would send them that knows only `details` (of backend.TOKEN_DETAILS) about each
+    token, such as a serving engine that reports no log probabilities, or only the token's and the top few."""
+    def token(event):
+        out = {k: v for k, v in event.items() if k not in TOKEN_DETAILS or k in details}
+        if "top" in out and "kept" not in details:  # nor which candidates top-k and top-p cut
+            out["top"] = [{k: v for k, v in c.items() if k != "kept"} for c in out["top"]]
+        return out
+    return [token(e) if e["type"] == "token" else e for e in events]
+
+
+LOGPROBS = ("p", "logprob", "top")  # what an OpenAI-style API's log probabilities give
 PHOTO = Attachment("photo.png", "image", "/chat/photo.png", 2048)
 CLIP = Attachment("clip.mp4", "video", "/chat/clip.mp4", 90_000)
-SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "assets/examples/sales.csv"), 942)
+SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "app/assets/examples/sales.csv"), 942)
 CODE = "import math\nprint(math.pi)"
 SCENARIOS = {
     "reply": lambda: record_run([ANSWER])[1],
@@ -66,6 +77,8 @@ SCENARIOS = {
     "mtp": lambda: record_run([tool_call("calculator", expression="6*7"), "答案是 42。<turn|>"], sampling=Sampling(mtp=True))[1],
     "qwen_tool": lambda: record_run(
         [qwen_tool_call("calculator", expression="6*7"), "答案是 42。<|im_end|>"], family=QWEN3_5)[1],
+    "no_details": lambda: as_reported(record_run([tool_call("calculator", expression="6*7"), "答案是 42。<turn|>"])[1]),
+    "logprobs": lambda: as_reported(record_run([tool_call("calculator", expression="6*7"), "答案是 42。<turn|>"])[1], LOGPROBS),
     "qwen_thinking": lambda: record_run(
         ["要算一下\n</think>\n\n" + qwen_tool_call("calculator", expression="1"), "想好了\n</think>\n\n好。<|im_end|>"],
         family=QWEN3_5, thinking=True)[1],
@@ -133,6 +146,9 @@ EN_SCENARIOS = {
                               sampling=Sampling(mtp=True), lang="en")[1],
     "qwen_tool": lambda: record_run(
         [qwen_tool_call("calculator", expression="6*7"), "It is 42.<|im_end|>"], user="6*7?", family=QWEN3_5, lang="en")[1],
+    "no_details": lambda: as_reported(record_run([tool_call("calculator", expression="6*7"), "It is 42.<turn|>"], user="6*7?", lang="en")[1]),
+    "logprobs": lambda: as_reported(
+        record_run([tool_call("calculator", expression="6*7"), "It is 42.<turn|>"], user="6*7?", lang="en")[1], LOGPROBS),
 }
 
 
@@ -455,6 +471,48 @@ def test_token_tooltip():
     assert "不在前 5 名" not in html and 'class="c on"' in html
 
 
+@pytest.mark.parametrize("lang", LANGS)
+def test_a_token_without_details_shows_its_id_and_no_numbers(lang):
+    tok = {"index": 2, "id": 7, "piece": "▁Hi", "text": " Hi", "special": False, "channel": "content"}
+    html = render.tip_html(tok, GEMMA4, lang=lang)
+    assert '<span class="tip-piece">␣Hi</span>' in html and "token id 7" in html
+    assert "tip-grid" not in html and "tip-label" not in html and "None" not in html
+    assert "--h:" not in render.tokens_html([tok], True, GEMMA4, lang=lang)  # no heat without a probability
+
+
+def test_a_token_with_log_probabilities_shows_them_and_marks_no_candidate_cut():
+    tok = {
+        "index": 0, "id": 7, "piece": "▁Hi", "text": " Hi", "special": False, "channel": "content", "p": 0.02, "logprob": -3.9,
+        "top": [{"id": 1, "piece": "a", "p": 0.5}, {"id": 2, "piece": "b", "p": 0.2}],
+    }
+    html = render.tip_html(tok, GEMMA4, lang="zh")
+    assert "<span>模型給的機率</span><b>2.00%</b>" in html and '<span class="cp">a</span>' in html
+    assert "排名" not in html and "取樣時的機率" not in html and "剩下的候選" not in html
+    assert " cut" not in html and "灰色" not in html and "前 5 名候選（模型原始分布）" in html
+    assert "抽到的 token 不在前 5 名。" in html
+    assert "Drew a token outside the top 5." in render.tip_html(tok, GEMMA4, lang="en")
+    assert "--h:0.588" in render.tokens_html([tok], True, GEMMA4, lang="zh")
+
+
+def test_the_legend_mentions_heat_and_candidates_only_when_the_tokens_carry_them():
+    def legend(scenario):
+        data = render.build(SCENARIOS[scenario]())
+        return render.step_html(data["steps"][0], data, lang="zh", live=False)
+
+    assert "heat-scale" in legend("tool") and "滑過 token 看候選" in legend("tool")
+    assert "heat-scale" in legend("logprobs") and "滑過 token 看候選" in legend("logprobs")
+    bare = legend("no_details")
+    assert "heat-scale" not in bare and "滑過 token 看它的 id" in bare and "--h:" not in bare
+    # before the first token there is nothing to tell by, so the legend is the full one
+    assert "heat-scale" in render.token_legend({"temperature": 1}, live=True, lang="zh", tokens=[])
+
+
+def test_step_rows_have_no_mean_probability_when_the_tokens_carry_none():
+    rows = render.step_rows(render.build(SCENARIOS["no_details"]()), lang="zh")
+    assert [r["平均機率"] for r in rows] == [None, None]
+    assert [r["平均機率"] for r in render.step_rows(render.build(SCENARIOS["logprobs"]()), lang="zh")] == [0.9, 0.9]
+
+
 def test_qwen_tokens_show_as_text_not_as_their_byte_spelling():
     """Qwen's vocabulary writes 如果 as å¦Ĥæŀľ; the popover, its candidates and a byte token's body show the text."""
     tok = {
@@ -546,6 +604,7 @@ def test_knobs_say_whether_mtp_is_on():
     s = {"temperature": 0.7, "top_k": 0, "top_p": 0.9, "max_new_tokens": 512, "max_steps": 4}
     assert "MTP 推測解碼 <b>關</b>" in render.knobs_html(s, INFO["defaults"], lang="zh")
     assert "MTP 推測解碼 <b>開</b>" in render.knobs_html({**s, "mtp": True}, INFO["defaults"], lang="zh")
+    assert "MTP speculative decoding <b>the server&#x27;s</b>" in render.knobs_html({**s, "mtp": None}, INFO["defaults"], lang="en")
 
 
 def test_model_card_names_the_drafter():

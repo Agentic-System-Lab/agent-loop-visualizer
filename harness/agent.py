@@ -5,7 +5,8 @@ reads what came out. A tool call is parsed, validated, optionally approved by th
 user, executed, and its result goes back into the conversation for the next step.
 A reply without a tool call ends the run; so do the step limit, the per-step token
 limit, repeated malformed calls and the stop button. Every stage is emitted as an
-event so the browser can draw it.
+event so the browser can draw it. The model is whatever Backend (backend.py) the page
+hands it, so the loop is the same whichever runs the model.
 
 A run keeps the page's language from when it started: the errors and refusals the model reads come
 back in it. The system prompt is the same in both languages.
@@ -22,10 +23,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-import media
-from i18n import pick
-from llm import LocalLLM, Sampling
-from tools import TOOLS, ToolError, ToolResult
+from harness import media
+from harness.backends.backend import Backend, Sampling
+from harness.i18n import pick
+from harness.tools import TOOLS, ToolError, ToolResult
 
 MAX_RESULT_CHARS = 2000
 MAX_FORMAT_ERRORS = 3
@@ -62,7 +63,7 @@ def common_prefix(a: str, b: str) -> int:
 
 
 class Run:
-    def __init__(self, llm: LocalLLM, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
+    def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
                  attachments: list[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.llm = llm
@@ -189,7 +190,11 @@ class Run:
                     stop_reason = "format_errors"
                     break
         except Exception as e:  # surface model or tool crashes in the UI instead of a silent hang
-            self.emit("error", message=f"{type(e).__name__}: {e}")
+            # A backend's error says what went wrong in both languages (vllm_backend.ServerError), and the page shows
+            # the one it is in; other errors are Python's own, in English.
+            both = getattr(e, "text", None)
+            texts = {"text": {lang: f"{type(e).__name__}: {t}" for lang, t in both.items()}} if isinstance(both, dict) else {}
+            self.emit("error", message=f"{type(e).__name__}: {e}", **texts)
             stop_reason = "error"
 
         self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)

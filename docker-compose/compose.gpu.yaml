@@ -1,0 +1,36 @@
+# compose.yaml's vLLM server on NVIDIA GPUs, for Linux with the NVIDIA Container Toolkit: vLLM's own CUDA image, at
+# the same version, with the same flags but one, plus two on the GPU's memory and two on speculative decoding. The page
+# adds this file when Docker has the nvidia runtime, or when AGENT_LOOP_VLLM_DEVICE=gpu; by hand:
+#
+#     docker compose -f docker-compose/compose.yaml -f docker-compose/compose.gpu.yaml up -d
+services:
+  vllm:
+    build: !reset null  # nothing to build: the image is vLLM's own
+    image: vllm/vllm-openai:v0.32.0
+    # compose.yaml's command without --skip-mm-profiling: on a GPU, measuring what the image encoder needs takes
+    # seconds, and keeps the KV cache from taking memory the encoder will need.
+    command:
+      - ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      - --revision=${VLLM_REVISION:-2fc06364715b967f1860aea9cf38778875588b17}
+      - --served-model-name=${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      - --enable-scale-out
+      - --max-model-len=auto
+      # A KV cache of the CPU's size (2 GiB, G being GiB to vLLM), so the server takes what the model needs and no more,
+      # rather than 92% of the GPU's memory. vLLM then uses gpu_memory_utilization only to refuse to start unless that
+      # much of the memory is free, and at its 0.92 a small card beside the page's own CUDA context, or a GPU that
+      # shares the machine's memory (a DGX Spark, say), never is.
+      - --kv-cache-memory-bytes=${VLLM_KV_CACHE_MEMORY_BYTES:-2G}
+      - --gpu-memory-utilization=${VLLM_GPU_MEMORY_UTILIZATION:-0.3}
+      # Speculative decoding (MTP): the page sets the model's --speculative-config from families.VLLM_SPECULATIVE, as
+      # JSON, unless the sidebar's MTP switch is off; by hand it is off ("None"). vLLM's CPU image runs neither model's,
+      # so compose.yaml has neither flag. With a config, each step's counts in detail are what the page marks the guesses
+      # from; without one vLLM refuses any but "none".
+      - --speculative-config=${VLLM_SPECULATIVE_CONFIG:-None}
+      - --per-request-spec-decode-metrics=${VLLM_SPEC_DECODE_METRICS:-none}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

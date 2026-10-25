@@ -3,7 +3,8 @@
 transformers' generate() hides the distribution at each step, so this module runs
 the loop itself: one forward pass per token, then temperature, top-k and top-p,
 then a sample. Every token comes back with its probability, its rank and the
-strongest alternatives, which is what the visualization shows.
+strongest alternatives, which is what the visualization shows. LocalLLM is the
+Backend (backend.py) the app runs, and it fills in every detail a token event can carry.
 
 Nothing here is specific to one model: which tokens stop a generation and which
 ones switch between thinking, tool calls and the reply come from the model's family.
@@ -26,7 +27,6 @@ import os
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -34,35 +34,17 @@ import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoProcessor
 
-import families
-import media
+from harness import families, media
+from harness.backends.backend import Encoded, Sampling
 
 TOP_N = 5
-ROOT = Path(__file__).resolve().parent
-# Models download into models/ next to this file, which git ignores, rather than into the shared
+ROOT = Path(__file__).resolve().parents[2]  # the project's folder
+# Models download into the project's models/, which git ignores, rather than into the shared
 # ~/.cache/huggingface/hub, so they are easy to find and leave with the project. AGENT_LOOP_MODELS puts them
-# elsewhere; HF_HUB_CACHE does not, because it is often set once for every project on a machine.
-MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser()
-
-
-@dataclass
-class Sampling:
-    temperature: float = 1.0
-    top_p: float = 0.95
-    top_k: int = 64
-    max_new_tokens: int = 1024
-    mtp: bool = False  # let the MTP drafter guess ahead, once it is loaded (LocalLLM.load_drafter)
-
-
-@dataclass
-class Encoded:
-    """A prompt as the model reads it (LocalLLM.encode)."""
-
-    text: str  # the prompt, with each placeholder of an image, clip or video expanded into the tokens it takes
-    ids: object  # its token ids, a tensor of shape (1, n_tokens)
-    n_tokens: int
-    media: dict = field(default_factory=dict)  # the processor's inputs for the encoders (pixels, audio features), for the prefill
-    media_tokens: dict = field(default_factory=dict)  # kind -> how many of the tokens are that kind of media
+# elsewhere; HF_HUB_CACHE does not, because it is often set once for every project on a machine. A relative
+# AGENT_LOOP_MODELS is named in full from where the app started, because vLLM's container mounts the folder too, and
+# Docker Compose would take it from docker-compose/ (or, without a slash, as the name of a Docker volume).
+MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser().absolute()
 
 
 def _download(model_id: str, only: str | None = None) -> str:
@@ -130,6 +112,19 @@ def pick_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def empty_cache():
+    """Hand back to the system the memory PyTorch keeps for reuse after a model was let go (app.page.release_model):
+    a GPU's, or on a Mac the memory MPS shares with everything else. On CUDA, cuBLAS's workspaces go first: cuBLAS keeps
+    one for good from the first matmul, and when that came out of the segment transformers reserved for the weights,
+    empty_cache() could hand back none of it, the whole model's size."""
+    if torch.cuda.is_available():
+        if hasattr(torch._C, "_cuda_clearCublasWorkspaces"):
+            torch._C._cuda_clearCublasWorkspaces()
+        torch.cuda.empty_cache()
+    elif torch.backends.mps.is_available():
+        torch.mps.empty_cache()
 
 
 class LocalLLM:

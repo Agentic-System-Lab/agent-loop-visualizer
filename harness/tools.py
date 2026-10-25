@@ -33,10 +33,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from i18n import pick
+from harness.i18n import pick
 
 WIKI_HEADERS = {"User-Agent": f"agent-loop-visualizer/0.1 (https://github.com/cyyeh/agent-atlas-learning) httpx/{httpx.__version__}"}
-SANDBOX_IMAGE = "agent-loop-sandbox"  # docker build -t agent-loop-sandbox sandbox
+SANDBOX_IMAGE = "agent-loop-sandbox"  # docker build -t agent-loop-sandbox harness/sandbox
 SANDBOX_VERSION = "2"  # the agent-loop-sandbox.version label in sandbox/Dockerfile; an older image is rebuilt
 DOCKER_INSTALL = "https://docs.docker.com/get-started/get-docker/"
 SANDBOX_TIMEOUT = 30  # seconds a piece of code may run
@@ -258,7 +258,7 @@ def sandbox_command(name: str, files: Path | None) -> list[str]:
 def sandbox_problem() -> dict[str, str] | None:
     """Why run_python cannot run right now, in both languages (Markdown), or None when Docker and an up-to-date
     sandbox image are there."""
-    build = f"`docker build -t {SANDBOX_IMAGE} sandbox`"
+    build = f"`docker build -t {SANDBOX_IMAGE} harness/sandbox`"
     label = '{{ index .Config.Labels "agent-loop-sandbox.version" }}'
     try:
         found = subprocess.run(["docker", "image", "inspect", "--format", label, SANDBOX_IMAGE], capture_output=True, text=True, timeout=10)

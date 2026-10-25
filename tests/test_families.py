@@ -4,9 +4,9 @@ import re
 
 import pytest
 
-import families
-from families import GEMMA4, QWEN3_5
-from i18n import LANGS
+from harness import families
+from harness.families import GEMMA4, QWEN3_5
+from harness.i18n import LANGS
 
 CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
 
@@ -51,6 +51,13 @@ def test_a_byte_that_is_only_part_of_a_character_shows_in_hex():
 def test_every_model_and_drafter_downloads_at_a_pinned_commit():
     assert set(families.REVISIONS) == set(families.MODELS) | set(families.DRAFTERS.values())
     assert all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in families.REVISIONS.values())
+
+
+def test_vllm_drafts_a_listed_model_with_the_mtp_layer_in_its_checkpoint_or_the_drafter_transformers_uses():
+    assert set(families.VLLM_SPECULATIVE) <= set(families.MODELS)
+    for model_id, config in families.VLLM_SPECULATIVE.items():
+        assert config["num_speculative_tokens"] > 0
+        assert config.get("model") == families.DRAFTERS.get(model_id) or config == {"method": "mtp", "num_speculative_tokens": config["num_speculative_tokens"]}
 
 
 def test_the_menu_lists_one_model_of_each_family():

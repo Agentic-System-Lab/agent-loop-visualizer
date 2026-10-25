@@ -1,0 +1,56 @@
+# A vLLM server in Docker: what runs the model when the sidebar's "What runs the model" is vLLM (Docker). The page
+# (vllm_docker.py) starts it with the model picked in the sidebar,
+#
+#     VLLM_MODEL=<Hugging Face id> VLLM_REVISION=<its commit in families.REVISIONS> docker compose -f docker-compose/compose.yaml up -d
+#
+# waits until it answers, and runs `docker compose down` when transformers is picked again. Started by hand, it serves
+# Qwen3.5 0.8B unless VLLM_MODEL and VLLM_REVISION say otherwise, and VLLM_URL=http://localhost:8000 points the page
+# at it. The container never downloads: it reads models/ read-only, so the weights have to be there first (the page
+# downloads them before it starts the server).
+#
+# This file runs vLLM on the CPU, which works wherever Docker does; on a Mac it runs in Docker's Linux VM, with the
+# memory Docker Desktop gives that. On Linux with an NVIDIA GPU and the NVIDIA Container Toolkit, compose.gpu.yaml
+# runs it on the GPU instead, and the page adds it by itself when Docker has the nvidia runtime:
+#
+#     docker compose -f docker-compose/compose.yaml -f docker-compose/compose.gpu.yaml up -d
+name: agent-loop-vllm
+
+services:
+  vllm:
+    build: vllm-cpu
+    image: agent-loop-vllm-cpu:0.32.0-1  # vLLM's version, then vllm-cpu/'s: bump that when the folder changes
+    command:
+      - ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      - --revision=${VLLM_REVISION:-2fc06364715b967f1860aea9cf38778875588b17}
+      # Offline, vLLM names the model by its folder in models/; the page asks for it by its id.
+      - --served-model-name=${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+      # /inference/v1/generate as well: every token's rank, and the images, sound and video the model reads.
+      - --enable-scale-out
+      # As long a context as the KV cache holds.
+      - --max-model-len=auto
+      # At startup vLLM runs the image encoder on the largest image it takes, to measure the memory it needs. On a
+      # CPU that takes more than 10 minutes, and the KV cache's size is set by VLLM_CPU_KVCACHE_SPACE anyway.
+      - --skip-mm-profiling
+    ports:
+      - 127.0.0.1:${VLLM_PORT:-8000}:8000  # this machine only, like the page itself
+    volumes:
+      - ${AGENT_LOOP_MODELS:-../models}:/models:ro  # the project's models/; by hand, a full path, since Compose takes a relative one from here
+      # What vLLM compiles for a model, the first start's longest wait, kept for the next container that loads it.
+      - compile-cache:/root/.cache/vllm
+    environment:
+      HF_HUB_CACHE: /models
+      HF_HUB_OFFLINE: "1"
+      # GiB for the KV cache. Without it, vLLM's CPU backend wants 92% of Docker's memory, and refuses to start when
+      # other containers hold some of it.
+      VLLM_CPU_KVCACHE_SPACE: ${VLLM_CPU_KVCACHE_SPACE:-2}
+      # Seconds one step may take before vLLM gives up on its engine, and the server with it. On a CPU, the first
+      # image or video through Gemma 4's vision encoder takes minutes, more than the 300 vLLM allows by default.
+      VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: ${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS:-1800}
+    shm_size: 4gb  # vLLM's processes talk through shared memory, and Docker gives a container only 64 MB of it
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      start_period: 30m
+
+volumes:
+  compile-cache:

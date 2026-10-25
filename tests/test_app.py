@@ -6,10 +6,12 @@ is a Chinese one unless a test says otherwise, so the page is in Chinese.
 """
 
 import base64
+import gc
 import io
-import os
 import re
 import time
+import tomllib
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,18 +19,16 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-import agent
-import llm
-import render
-import tools
-from families import GEMMA4, QWEN3_5
+from app import page, render
 from fakes import MEDIA_TOKENS, FakeLLM, tool_call
-from llm import Sampling
+from harness import agent, tools
+from harness.backends import vllm_backend, vllm_docker
+from harness.backends.backend import Sampling
+from harness.families import GEMMA4, QWEN3_5
 
 APP = Path(__file__).resolve().parent.parent / "streamlit_app.py"
 ANSWER = "答案是 42。<turn|>"
 CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
-LANG_COOKIE = "agent_loop_lang"  # streamlit_app.LANG_COOKIE; the app is a script, not a module to import
 
 
 @pytest.fixture
@@ -46,8 +46,10 @@ def models(monkeypatch, outputs, tmp_path, sandbox):
             super().__init__(outputs, model_id)
             made.append(self)
 
-    monkeypatch.setattr(llm, "LocalLLM", AppLLM)
-    monkeypatch.setenv("AGENT_LOOP_UPLOADS", str(tmp_path / "uploads"))
+    # The page module is imported once, so what it read from the environment and imported is changed on it.
+    monkeypatch.setattr(page, "LocalLLM", AppLLM)
+    monkeypatch.setattr(page, "UPLOADS", tmp_path / "uploads")
+    monkeypatch.setattr(page, "VLLM_URL", None)
     st.cache_resource.clear()  # a fresh model and a fresh generation lock per test
     st.cache_data.clear()  # and a fresh look for Docker
     yield made
@@ -416,6 +418,346 @@ def test_reset_turns_mtp_off(at):
     assert mtp_toggle(at).value is False
 
 
+# ---------- a vLLM server runs the model ----------
+
+@pytest.fixture
+def vllm(monkeypatch, models, outputs):
+    """The page with VLLM_URL set. The server serves Qwen3.5 under the name "qwen", and a fake model with what a
+    VLLMBackend has (the server in its info, nothing about weights loaded here) stands in for the backend; the server
+    takes images but refused video, and sends sampling masks. `made` holds each one the page makes; set `down` and the
+    server cannot be reached, `defaults` for the decoding the checkpoint recommends, or `adapters` for the LoRA
+    adapters it serves too."""
+    state = {"made": [], "down": False, "adapters": []}
+
+    class ServedLLM(FakeLLM):
+        def __init__(self, model_id, url):
+            super().__init__(outputs, model_id)
+            self.modalities = ("image",)
+            self.drafter_id = None
+            unknown = ("device", "dtype", "parameters", "parameter_parts", "load_seconds")
+            refused = {"video": {"zh": "伺服器不收：At most 0 video(s) may be provided in one prompt.",
+                                 "en": "the server refused it: At most 0 video(s) may be provided in one prompt."}}
+            self.info = {k: v for k, v in self.info.items() if k not in unknown} | {"modalities": ["image"], "drafter_id": None, "server": {
+                "engine": "vLLM", "version": "0.32.0", "url": url, "served_as": "qwen", "logprobs_mode": "processed_logprobs", "generate_api": True,
+                "sampling_mask": True, "refuses_greedy": True, "refused": refused}}
+            self.info["defaults"] = state.get("defaults", self.info["defaults"])
+            state["made"].append(self)
+
+    def served_models(url, transport=None):
+        if state["down"]:
+            raise vllm_backend.ServerError(f"連不上 {url} 的 vLLM 伺服器。", f"Could not reach the vLLM server at {url}.")
+        return [{"id": "qwen", "root": "Qwen/Qwen3.5-0.8B", "max_model_len": 8192}, *state["adapters"]]
+
+    monkeypatch.setattr(page, "VLLM_URL", "http://localhost:8000")
+    monkeypatch.setattr(vllm_backend, "VLLMBackend", ServedLLM)
+    monkeypatch.setattr(vllm_backend, "served_models", served_models)
+    return state
+
+
+def test_with_vllm_url_the_page_runs_what_the_server_serves(vllm, at, models, outputs):
+    menu = next(s for s in at.selectbox if s.label == "模型")
+    assert menu.options == ["Qwen3.5 0.8B (Alibaba)"] and menu.value == "Qwen/Qwen3.5-0.8B"
+    assert models == [] and [m.model_id for m in vllm["made"]] == ["Qwen/Qwen3.5-0.8B"]  # nothing loaded on this machine
+    assert "`Qwen/Qwen3.5-0.8B` · Qwen3.5 · vLLM 0.32.0 · http://localhost:8000" in captions(at)
+    outputs.append("答案是 42。<|im_end|>")
+    ask(at)
+    assert "答案是 42。" in drawn_text(at) and vllm["made"][0].prompts
+
+
+def test_the_menu_leaves_out_the_lora_adapters_the_server_serves(vllm, new_tab):
+    vllm["adapters"] = [{"id": "sql-lora", "root": "/adapters/sql", "parent": "qwen", "max_model_len": None}]
+    st.cache_data.clear()
+    at = new_tab()
+    assert next(s for s in at.selectbox if s.label == "模型").options == ["Qwen3.5 0.8B (Alibaba)"]
+
+
+@pytest.mark.parametrize(("locale", "message"), [("zh-TW", "ServerError: vLLM 伺服器在生成時出錯：out of memory"),
+                                                 ("en-US", "ServerError: The vLLM server failed while generating: out of memory")])
+def test_a_vllm_error_mid_run_is_shown_in_the_pages_language(vllm, browser, new_tab, outputs, locale, message):
+    browser["locale"] = locale
+    at = new_tab()
+    outputs.append(vllm_backend.ServerError("vLLM 伺服器在生成時出錯：out of memory", "The vLLM server failed while generating: out of memory"))
+    ask(at, "Hi")
+    assert [e.value for e in at.error] == [message] and message in page_html(at)
+
+
+def test_with_vllm_the_sidebar_says_the_server_decides_speculative_decoding(vllm, at):
+    assert mtp_toggle(at).disabled and mtp_toggle(at).value is False
+    assert "--speculative-config" in mtp_toggle(at).help and "--per-request-spec-decode-metrics" in mtp_toggle(at).help
+    assert "detailed" in mtp_toggle(at).help  # which tokens were guesses, underlined
+    tab(at).set_value("model").run()
+    assert "MTP 推測解碼 <b>由伺服器決定</b>" in page_html(at)
+
+
+def test_with_vllm_the_model_reads_what_the_server_takes_and_the_page_says_what_it_refused(vllm, at):
+    labels = example_labels(at)
+    assert "這張收據上的品項加起來是多少？和收據上寫的總計一樣嗎？" in labels
+    assert "影片裡的紅球是從左邊滾到右邊，還是從右邊滾到左邊？" not in labels  # the server refused video
+    assert "台北現在幾點？紐約呢？" in labels
+    assert "這個模型讀得懂圖片：用輸入框左邊的 ＋ 附上檔案。" in captions(at)
+    assert "這台 vLLM 伺服器不收影片，所以不能附上；原因寫在模型分頁。" in captions(at)
+    assert ".png" in at.chat_input[0].proto.file_type and ".mp4" not in at.chat_input[0].proto.file_type
+    tab(at).set_value("model").run()
+    html = page_html(at)
+    assert "這個 checkpoint 讀得懂、但這台伺服器不收的媒體" in html and "<b>影片</b>：伺服器不收：At most 0 video(s)" in html
+    assert "它也送回 sampling mask，所以看得到剩下幾個候選。" in html and "所以不接受 temperature 0 和 top-k 0，側欄就從 0.05 和 1 開始" in html
+
+
+def test_a_vllm_server_that_sends_sampling_masks_gets_no_greedy_or_unlimited_top_k_from_the_sidebar(vllm, browser, new_tab, outputs):
+    vllm["defaults"] = {"temperature": 0.0, "top_p": 1.0, "top_k": 0}  # a checkpoint that recommends greedy decoding
+    browser["locale"] = "en-US"
+    at = new_tab()
+    temperature, top_k = (next(s for s in at.slider if s.label == label) for label in ("temperature", "top-k"))
+    assert (temperature.min, top_k.min) == (0.05, 1)
+    assert "--return-sampling-mask" in temperature.help and "greedy" in temperature.help and "0 (no limit) is not allowed" in top_k.help
+    assert (at.session_state["temperature"], at.session_state["top_k"]) == (0.05, 128)  # the nearest settings the server takes
+    outputs.append("Hello.<|im_end|>")
+    ask(at, "Hi")
+    sampling = vllm["made"][0].samplings[-1]
+    assert (sampling.temperature, sampling.top_k) == (0.05, 128)
+
+
+def test_with_vllm_the_model_tab_says_the_server_runs_it(vllm, at):
+    tab(at).set_value("model").run()
+    html = page_html(at)
+    assert "Qwen3.5 家族，由 http://localhost:8000 的 vLLM 伺服器跑" in html and "<dd>vLLM 0.32.0</dd>" in html
+    assert "transformers 跑" not in html and 'class="params-bar"' not in html and "None" not in drawn_text(at)
+    assert "伺服器自己讀權重" in html
+
+
+def test_a_vllm_server_that_goes_down_later_is_said_not_a_traceback(vllm, at):
+    vllm["down"] = True
+    st.cache_data.clear()  # as when the menu's minute is up
+    at.run()
+    assert not at.exception and [e.value for e in at.error] == ["連不上 http://localhost:8000 的 vLLM 伺服器。"]
+
+
+@pytest.mark.parametrize(("locale", "message"), [("zh-TW", "連不上 http://localhost:8000 的 vLLM 伺服器。"),
+                                                 ("en-US", "Could not reach the vLLM server at http://localhost:8000.")])
+def test_a_vllm_server_that_cannot_be_reached_is_said_in_the_page_language(vllm, browser, new_tab, locale, message):
+    vllm["down"] = True
+    browser["locale"] = locale
+    at = new_tab()
+    assert [e.value for e in at.error] == [message] and not at.chat_input
+    vllm["down"] = False
+    st.cache_data.clear()  # the menu is not cached while the server is down; this only makes sure of it
+    at.run()
+    assert not at.exception and not at.error and at.chat_input
+
+
+# ---------- vLLM in Docker, picked in the sidebar ----------
+
+@pytest.fixture
+def docker_vllm(monkeypatch, models, outputs):
+    """The page without VLLM_URL, with vllm_docker faked: start() records the models it was asked for and whether with
+    MTP (`asked`), and returns a server on `device` (the CPU unless a test says otherwise; or raises `fail`, a
+    DockerError), drafting as vllm_docker.speculative() says it can there. serving() knows what was started, chosen()
+    what was asked for until stop(), and stop() counts. A fake model stands in for the VLLMBackend the page makes for the
+    server; `made` holds each, with the URL it was given."""
+    state = {"started": [], "asked": [], "stopped": 0, "fail": None, "made": [], "up": None, "chosen": None, "device": "cpu"}
+
+    class DockerLLM(FakeLLM):
+        def __init__(self, model_id, url):
+            super().__init__(outputs, model_id)
+            self.url, self.drafter_id = url, None
+            unknown = ("device", "dtype", "parameters", "parameter_parts", "load_seconds")
+            self.info = {k: v for k, v in self.info.items() if k not in unknown} | {"drafter_id": None, "server": {
+                "engine": "vLLM", "version": "0.32.0", "url": url, "served_as": model_id, "logprobs_mode": "raw_logprobs",
+                "generate_api": True, "sampling_mask": False, "refused": {}}}
+            state["made"].append(self)
+
+    def drafts(model_id, mtp, device):
+        return mtp and vllm_docker.speculative(model_id, device) is not None
+
+    def start(model_id, say, mtp=False):
+        state["started"].append(model_id)
+        state["asked"].append(mtp)
+        state["chosen"] = {"model": model_id, "mtp": drafts(model_id, mtp, state["device"])}
+        say("download", "")
+        say("up", "Container agent-loop-vllm-vllm-1  Started")
+        say("load", "(APIServer pid=1) INFO Application startup complete.")
+        if state["fail"]:
+            raise state["fail"]
+        state["up"] = {"model": model_id, "url": "http://127.0.0.1:8000", "device": state["device"], "mtp": state["chosen"]["mtp"]}
+        return dict(state["up"])
+
+    def serving(model_id, mtp=False):
+        up = state["up"]
+        return dict(up) if up and up["model"] == model_id and up["mtp"] == drafts(model_id, mtp, up["device"]) else None
+
+    def stop():
+        state["stopped"] += 1
+        state["up"] = state["chosen"] = None
+
+    monkeypatch.setattr(page, "VLLM_URL", None)
+    monkeypatch.setattr(vllm_backend, "VLLMBackend", DockerLLM)
+    monkeypatch.setattr(vllm_docker, "start", start)
+    monkeypatch.setattr(vllm_docker, "serving", serving)
+    monkeypatch.setattr(vllm_docker, "chosen", lambda: dict(state["chosen"]) if state["chosen"] else None)
+    monkeypatch.setattr(vllm_docker, "stop", stop)
+    return state
+
+
+def engine(at):
+    return next(b for b in at.button_group if b.key == "engine")
+
+
+def pick_engine(at, value):
+    engine(at).set_value(value).run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_without_vllm_url_transformers_runs_the_model_and_docker_is_left_alone(docker_vllm, at, models):
+    assert engine(at).value == "local" and engine(at).options == ["transformers", "vLLM (Docker)"]  # the same in both languages: full-width parentheses wrap the switch
+    assert [m.model_id for m in models] == ["google/gemma-4-E2B-it"] and docker_vllm["started"] == [] and docker_vllm["stopped"] == 0
+
+
+def test_picking_vllm_starts_it_in_docker_after_letting_the_local_model_go(docker_vllm, at, models, outputs):
+    local = weakref.ref(models.pop())
+    pick_engine(at, "vllm")
+    gc.collect()
+    assert local() is None  # nothing keeps the weights here once vLLM holds the model
+    assert docker_vllm["started"] == ["google/gemma-4-E2B-it"] and [m.url for m in docker_vllm["made"]] == ["http://127.0.0.1:8000"]
+    assert models == [] and "`google/gemma-4-E2B-it` · Gemma 4 · vLLM 0.32.0 · http://127.0.0.1:8000 · Docker（CPU）" in captions(at)
+    assert mtp_toggle(at).disabled and mtp_toggle(at).value is False
+    outputs.append(ANSWER)
+    ask(at)
+    assert "答案是 42。" in drawn_text(at) and docker_vllm["made"][0].prompts
+    at.run()
+    assert docker_vllm["started"] == ["google/gemma-4-E2B-it"]  # a rerun finds the server up and starts nothing
+
+
+def test_the_model_here_is_freed_the_moment_it_is_let_go_though_the_last_run_drew_the_page_with_it(docker_vllm, at, models, monkeypatch):
+    # Streamlit keeps the last run's fragment and format functions; had they held the model, release_model() could not
+    # free it, and the memory it emptied would come back only later, beside vLLM.
+    assert at.pills and models[0].modalities  # the sample files, labelled from the model, were drawn
+    local, freed = weakref.ref(models.pop()), []
+    release = page.release_model
+
+    def release_and_look():
+        release()
+        freed.append(local() is None)
+    monkeypatch.setattr(page, "release_model", release_and_look)
+    pick_engine(at, "vllm")
+    assert freed == [True]
+
+
+def test_picking_transformers_again_stops_vllms_container_and_loads_the_model_here(docker_vllm, at, models):
+    pick_engine(at, "vllm")
+    pick_engine(at, "local")
+    assert docker_vllm["stopped"] == 1 and [m.model_id for m in models] == ["google/gemma-4-E2B-it"] * 2
+    assert not any("Docker" in c for c in captions(at))
+
+
+def test_a_new_tab_or_a_reload_while_vllm_runs_joins_its_server_rather_than_loading_the_model_here(docker_vllm, new_tab, models):
+    first = pick_engine(new_tab(), "vllm")
+    next(s for s in first.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    models.clear()
+    second = new_tab()
+    assert engine(second).value == "vllm" and second.session_state["model_id"] == "Qwen/Qwen3.5-0.8B"  # the model the server runs
+    assert models == [] and docker_vllm["started"] == ["google/gemma-4-E2B-it", "Qwen/Qwen3.5-0.8B"]  # nothing loaded here or started again
+
+
+def test_a_tab_open_on_transformers_follows_another_that_picks_vllm_and_back(docker_vllm, new_tab, models):
+    first, second = new_tab(), new_tab()
+    pick_engine(second, "vllm")
+    models.clear()
+    first.run()
+    assert not first.exception and engine(first).value == "vllm" and models == [] and docker_vllm["started"] == ["google/gemma-4-E2B-it"]
+    pick_engine(first, "local")
+    second.run()
+    assert not second.exception and engine(second).value == "local" and docker_vllm["started"] == ["google/gemma-4-E2B-it"]
+    assert docker_vllm["stopped"] == 1 and [m.model_id for m in models] == ["google/gemma-4-E2B-it"]  # loaded here once, for both
+
+
+def test_on_a_gpu_vllm_starts_with_mtp_and_the_switch_starts_it_again_without(docker_vllm, at):
+    docker_vllm["device"] = "gpu"
+    pick_engine(at, "vllm")
+    assert docker_vllm["asked"] == [True] and mtp_toggle(at).value is True and not mtp_toggle(at).disabled  # on by default
+    assert any(c.endswith("Docker（GPU） · MTP") for c in captions(at)) and "--speculative-config" not in mtp_toggle(at).help
+    tab(at).set_value("model").run()
+    assert "MTP 推測解碼 <b>開</b>" in page_html(at)
+    mtp_toggle(at).set_value(False).run()
+    assert not at.exception and docker_vllm["started"] == ["google/gemma-4-E2B-it"] * 2 and docker_vllm["asked"] == [True, False]
+    at.run()
+    assert len(docker_vllm["started"]) == 2 and mtp_toggle(at).value is False  # a rerun the same way starts nothing
+    click(at, "還原成模型建議值")
+    assert docker_vllm["asked"] == [True, False, True]  # MTP's default on vLLM is on
+
+
+def test_on_a_cpu_vllm_runs_without_mtp_and_the_switch_says_why(docker_vllm, browser, new_tab):
+    browser["locale"] = "en-US"
+    at = pick_engine(new_tab(), "vllm")
+    toggle = next(t for t in at.toggle if t.label == "MTP speculative decoding")
+    assert docker_vllm["asked"] == [True] and toggle.disabled and toggle.value is False and "CPU image" in toggle.help
+    assert not any("MTP" in c for c in captions(at))
+
+
+def test_a_tab_on_vllm_follows_the_mtp_another_tab_picked_without_starting_it_again(docker_vllm, new_tab):
+    docker_vllm["device"] = "gpu"
+    first = pick_engine(new_tab(), "vllm")
+    second = new_tab()
+    assert engine(second).value == "vllm" and mtp_toggle(second).value is True
+    mtp_toggle(first).set_value(False).run()
+    second.run()
+    assert not second.exception and mtp_toggle(second).value is False and docker_vllm["asked"] == [True, False]
+
+
+def test_with_transformers_a_model_without_a_drafter_says_vllm_on_a_gpu_can(at):
+    next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    assert mtp_toggle(at).disabled and "vLLM（Docker）" not in mtp_toggle(at).help and "vLLM (Docker)" in mtp_toggle(at).help
+
+
+def test_another_model_on_vllm_starts_the_server_with_it(docker_vllm, at):
+    pick_engine(at, "vllm")
+    next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    assert not at.exception and docker_vllm["started"] == ["google/gemma-4-E2B-it", "Qwen/Qwen3.5-0.8B"]
+    assert docker_vllm["made"][-1].model_id == "Qwen/Qwen3.5-0.8B"
+
+
+@pytest.mark.parametrize(("locale", "message", "again"), [("zh-TW", "vLLM 載入時用完了記憶體。", "再試一次"),
+                                                          ("en-US", "vLLM ran out of memory while loading.", "Try again")])
+def test_a_vllm_that_did_not_start_is_said_in_the_page_language_and_tried_again_only_when_asked(docker_vllm, browser, new_tab, locale, message, again):
+    browser["locale"] = locale
+    docker_vllm["fail"] = vllm_docker.DockerError("vLLM 載入時用完了記憶體。", "vLLM ran out of memory while loading.")
+    at = pick_engine(new_tab(), "vllm")
+    assert [e.value for e in at.error] == [message] and not at.chat_input and buttons(at, again)
+    at.run()
+    assert docker_vllm["started"] == ["google/gemma-4-E2B-it"]  # not again on every rerun
+    docker_vllm["fail"] = None
+    click(at, again)
+    assert docker_vllm["started"] == ["google/gemma-4-E2B-it"] * 2 and not at.error and at.chat_input
+
+
+def test_after_vllm_failed_transformers_can_be_picked_again(docker_vllm, at, models):
+    docker_vllm["fail"] = vllm_docker.DockerError("Docker 沒有回應，確認它已經啟動。", "Docker does not respond; make sure it is running.")
+    pick_engine(at, "vllm")
+    assert at.error and engine(at).value == "vllm"  # the switch is still there
+    pick_engine(at, "local")
+    assert not at.error and at.chat_input and models[-1].model_id == "google/gemma-4-E2B-it"
+
+
+def test_streamlit_does_not_collect_garbage_after_every_script_run():
+    # A full collection holds the GIL for 100-250 ms in this process (torch, transformers, the tokenizers, every run's
+    # tokens), and a script run ends as a question starts and on every redraw of a live run: the agent's thread could
+    # not read the vLLM stream meanwhile, and its tokens came in all at once, at thousands of tok/s.
+    config = tomllib.loads((APP.parent / ".streamlit" / "config.toml").read_text())
+    assert config["runner"]["postScriptGC"] is False
+
+
+def test_a_rerun_waits_for_the_script_run_in_progress_rather_than_running_beside_it():
+    # With fast reruns, Streamlit starts each rerun in a new thread and leaves the last run to stop at its next
+    # Streamlit call: picking vLLM while the model here loaded (a minute) let that load finish beside vLLM's server,
+    # after the model had been let go.
+    config = tomllib.loads((APP.parent / ".streamlit" / "config.toml").read_text())
+    assert config["runner"]["fastReruns"] is False
+
+
+def test_with_vllm_url_the_server_is_given_and_there_is_nothing_to_switch(vllm, at):
+    assert not any(b.key == "engine" for b in at.button_group)
+
+
 # ---------- the guide ----------
 
 @pytest.mark.parametrize("lang, title", [("zh", "運作說明"), ("en", "How it works")])
@@ -574,9 +916,9 @@ def test_an_english_browser_gets_the_page_in_english(browser, new_tab, outputs):
 
 
 def test_the_language_picked_last_time_wins_over_the_browser(browser, new_tab):
-    browser["cookies"] = {LANG_COOKIE: "en"}
+    browser["cookies"] = {page.LANG_COOKIE: "en"}
     assert new_tab().session_state["lang"] == "en"
-    browser["cookies"] = {LANG_COOKIE: "klingon"}  # not a language the page has: the browser's then
+    browser["cookies"] = {page.LANG_COOKIE: "klingon"}  # not a language the page has: the browser's then
     assert new_tab().session_state["lang"] == "zh"
 
 
@@ -584,9 +926,9 @@ def test_picking_a_language_remembers_it_in_a_cookie(at):
     assert "document.cookie" not in "".join(h.value for h in at.html)  # nothing picked, nothing written
     lang_switch(at).set_value("en").run()
     [script] = [h.value for h in at.html if "document.cookie" in h.value]
-    assert f"document.cookie = '{LANG_COOKIE}=en; path=/; max-age=31536000; SameSite=Lax';" in script
+    assert f"document.cookie = '{page.LANG_COOKIE}=en; path=/; max-age=31536000; SameSite=Lax';" in script
     lang_switch(at).set_value("zh").run()
-    assert any(f"'{LANG_COOKIE}=zh;" in h.value for h in at.html)
+    assert any(f"'{page.LANG_COOKIE}=zh;" in h.value for h in at.html)
 
 
 def test_switching_language_keeps_the_conversation_and_the_settings(at, outputs):
@@ -640,7 +982,7 @@ def test_an_example_with_a_file_attaches_it(at, models, outputs):
     [receipt] = run.attachments
     assert (receipt.name, receipt.kind) == ("receipt.png", "image")
     folder = Path(receipt.path).parent
-    assert folder.parent == Path(os.environ["AGENT_LOOP_UPLOADS"]) and (folder / "receipt.png").read_bytes() == (APP.parent / "assets/examples/receipt.png").read_bytes()
+    assert folder.parent == page.UPLOADS and (folder / "receipt.png").read_bytes() == (APP.parent / "app/assets/examples/receipt.png").read_bytes()
 
     fake = models[0]
     assert [p["name"] for p in fake.encodes[0]] == ["receipt.png"]  # the image goes to the processor
@@ -672,7 +1014,7 @@ def test_a_sample_file_goes_with_a_question_of_ones_own(at, models, outputs):
     [run] = at.session_state["runs"]
     [receipt] = run.attachments
     assert (run.text, receipt.name, receipt.kind) == ("收據上有幾個品項？", "receipt.png", "image")
-    assert Path(receipt.path).read_bytes() == (APP.parent / "assets/examples/receipt.png").read_bytes()
+    assert Path(receipt.path).read_bytes() == (APP.parent / "app/assets/examples/receipt.png").read_bytes()
     assert [p["name"] for p in models[0].encodes[0]] == ["receipt.png"]
     assert sample_picker(at).value == [] and at.chat_input[0].placeholder != "問一個關於 receipt.png 的問題…"  # it went with that question only
 

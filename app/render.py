@@ -4,6 +4,9 @@ Streamlit redraws the page on every refresh, so everything here is a pure functi
 of the event list: build() folds the events into steps, and the other functions
 turn steps into HTML strings for st.html. Every function that writes words takes the
 page's language, "zh" or "en" (i18n.py), so switching it redraws a finished run too.
+
+A token shows as much of the model's distribution as the backend reported (backend.TOKEN_DETAILS):
+simple_backend.LocalLLM reports all of it, and what a backend leaves out is left out here too, never filled in.
 """
 
 import base64
@@ -11,8 +14,8 @@ import html
 import json
 import re
 
-import families
-from i18n import pick
+from harness import families
+from harness.i18n import pick
 
 STOP_REASONS = {
     "zh": {
@@ -316,7 +319,7 @@ def build(events: list[dict]) -> dict:
         elif kind == "run_end":
             data["end"] = ev
         elif kind == "error":
-            data["error"] = ev["message"]
+            data["error"] = ev.get("text") or ev["message"]
         elif data["steps"]:
             step = data["steps"][-1]
             step["t1"] = ev["t"]
@@ -326,6 +329,7 @@ def build(events: list[dict]) -> dict:
                 step[kind] = ev
             elif kind == "model_end":
                 step["done"] = ev
+                step["tokens"] = with_drafts(step["tokens"], ev.get("mtp") or {})
             elif kind == "tool_call":
                 step["calls"][ev["call_id"]] = {**ev, "approval": None, "started": False, "result": None}
             elif kind == "approval_request":
@@ -345,6 +349,16 @@ def build(events: list[dict]) -> dict:
             elif kind == "tool_result":
                 step["calls"][ev["call_id"]]["result"] = ev
     return data
+
+
+def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:
+    """Mark the guesses a server reported only at the end of a step (vllm_backend.drafted_tokens: the places in kept_at
+    and turned_down_at), as simple_backend.py marks them while generating. The server does not say what a guess turned down was."""
+    kept, turned_down = set(mtp.get("kept_at", ())), set(mtp.get("turned_down_at", ()))
+    if not kept and not turned_down:
+        return tokens
+    marks = {**{i: {"piece": None, "accepted": False} for i in turned_down}, **{i: {"accepted": True} for i in kept}}
+    return [{**t, "draft": {"piece": t["piece"], **marks[t["index"]]}} if t["index"] in marks and "draft" not in t else t for t in tokens]
 
 
 def images(steps: list[dict]) -> list[str]:
@@ -617,6 +631,14 @@ def draft_note(tok: dict, family: families.Family, lang: str) -> str:
             "<b>MTP: the drafter guessed it</b>The drafter guessed this token first, and the model kept it after checking it "
             "in the same forward pass (in greedy decoding it had to be the top token; when sampling, it is kept with its sampling probability).",
         ) + "</span>"
+    if draft["piece"] is None:  # a server that counts the guesses it turned down but does not say what they were
+        return '<span class="tip-draft">' + pick(
+            lang,
+            "<b>MTP：草稿被退回</b>草稿模型在這裡猜了另一個 token（伺服器沒說是哪一個），主模型沒有收下，"
+            "這個 token 由主模型自己選，後面的猜測一起作廢。",
+            "<b>MTP: the guess was turned down</b>The drafter guessed another token here (the server does not say which), and the "
+            "model did not keep it. The model picked this token itself, and the guesses after it were dropped.",
+        ) + "</span>"
     guess = f'<span class="tk">{esc(family.show_piece(draft["piece"]))}</span>'
     return '<span class="tip-draft">' + pick(
         lang,
@@ -628,28 +650,59 @@ def draft_note(tok: dict, family: families.Family, lang: str) -> str:
 
 
 def tip_html(tok: dict, family: families.Family, lang: str) -> str:
-    rows = []
-    for c in tok["top"]:
-        cls = "c" + (" on" if c["id"] == tok["id"] else "") + ("" if c["kept"] else " cut")
-        rows.append(
-            f'<span class="{cls}"><span class="cp">{esc(family.show_piece(c["piece"]))}</span>'
-            f'<span class="b"><span style="width:{max(c["p"] * 100, 1):.1f}%"></span></span><span>{pct(c["p"])}</span></span>'
-        )
-    outside = "" if any(c["id"] == tok["id"] for c in tok["top"]) else (
-        '<span class="tip-foot">' + pick(lang, f'抽到排名 #{tok["rank"]} 的 token，不在前 5 名。', f'Drew the token ranked #{tok["rank"]}, outside the top 5.') + "</span>"
-    )
+    """A finished token's popover: the token, what it means if it is special, what MTP did there, and the numbers
+    and candidates the backend reported for it (backend.TOKEN_DETAILS); a number it did not report is left out."""
+    numbers = [
+        (pick(lang, "模型給的機率", "model probability"), pct(tok["p"]) if known(tok, "p") else None),
+        (pick(lang, "排名", "rank"), f'#{tok["rank"]}' if known(tok, "rank") else None),
+        (pick(lang, "取樣時的機率", "sampling probability"), pct(tok["p_sampled"]) if known(tok, "p_sampled") else None),
+        (pick(lang, "剩下的候選", "candidates left"), f'{tok["kept"]:,}' if known(tok, "kept") else None),
+    ]
+    grid = "".join(f"<span>{label}</span><b>{value}</b>" for label, value in numbers if value is not None)
     n = tok["index"] + 1
-    top = pick(lang, "前 5 名候選（模型原始分布，灰色 = 被剃掉）", "top 5 by model probability; gray = cut")
     return (
         f'<span class="tip"><span class="tip-piece">{esc(family.show_piece(tok["piece"]))}</span>'
         f'<span class="tip-sub">token id {tok["id"]} · {pick(lang, f"第 {n} 個生成的 token", f"generated token #{n}")}</span>'
         f'{special_note(tok, family, lang)}{draft_note(tok, family, lang)}'
-        f'<span class="tip-grid"><span>{pick(lang, "模型給的機率", "model probability")}</span><b>{pct(tok["p"])}</b>'
-        f'<span>{pick(lang, "排名", "rank")}</span><b>#{tok["rank"]}</b>'
-        f'<span>{pick(lang, "取樣時的機率", "sampling probability")}</span><b>{pct(tok["p_sampled"])}</b>'
-        f'<span>{pick(lang, "剩下的候選", "candidates left")}</span><b>{tok["kept"]:,}</b></span>'
-        f'<span class="tip-label">{top}</span>{"".join(rows)}{outside}</span>'
+        + (f'<span class="tip-grid">{grid}</span>' if grid else "")
+        + f'{candidates_html(tok, family, lang)}</span>'
     )
+
+
+def candidates_html(tok: dict, family: families.Family, lang: str) -> str:
+    """The most likely tokens at this position, the chosen one highlighted and those top-k / top-p cut grayed out,
+    when the backend reported them; a candidate it did not say was cut or kept is drawn as it is."""
+    top = tok.get("top")
+    if not top:
+        return ""
+    rows = []
+    for c in top:
+        cls = "c" + (" on" if c["id"] == tok["id"] else "") + (" cut" if c.get("kept") is False else "")
+        rows.append(
+            f'<span class="{cls}"><span class="cp">{esc(family.show_piece(c["piece"]))}</span>'
+            f'<span class="b"><span style="width:{max(c["p"] * 100, 1):.1f}%"></span></span><span>{pct(c["p"])}</span></span>'
+        )
+    if any(c["id"] == tok["id"] for c in top):
+        outside = ""
+    elif known(tok, "rank"):
+        outside = pick(lang, f'抽到排名 #{tok["rank"]} 的 token，不在前 5 名。', f'Drew the token ranked #{tok["rank"]}, outside the top 5.')
+    else:
+        outside = pick(lang, "抽到的 token 不在前 5 名。", "Drew a token outside the top 5.")
+    if any(known(c, "kept") for c in top):
+        label = pick(lang, "前 5 名候選（模型原始分布，灰色 = 被剃掉）", "top 5 by model probability; gray = cut")
+    else:
+        label = pick(lang, "前 5 名候選（模型原始分布）", "top 5 by model probability")
+    return f'<span class="tip-label">{label}</span>{"".join(rows)}' + (f'<span class="tip-foot">{outside}</span>' if outside else "")
+
+
+def known(item: dict, key: str) -> bool:
+    """Whether the backend reported `key` (one of backend.TOKEN_DETAILS, or a candidate's kept)."""
+    return item.get(key) is not None
+
+
+def reported(tokens: list[dict], key: str) -> bool:
+    """Whether the backend reports `key` for its tokens: some token has it, or there are no tokens yet to tell."""
+    return not tokens or any(known(t, key) for t in tokens)
 
 
 def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family, lang: str) -> str:
@@ -664,7 +717,7 @@ def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family, la
             body, style = esc(tok["piece"]), ""
         else:
             body = esc(tok["text"] or family.show_piece(tok["piece"])).replace("\n", '<span class="nl">↵</span>\n')
-            style = f' style="--h:{heat(tok["p"])}"'
+            style = f' style="--h:{heat(tok["p"])}"' if known(tok, "p") else ""
         if with_tips:
             tip = tip_html(tok, family, lang)
         elif note := special_note(tok, family, lang):
@@ -675,7 +728,9 @@ def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family, la
     return f'<div class="tokens">{"".join(out)}</div>'
 
 
-def token_legend(s: dict, live: bool, lang: str) -> str:
+def token_legend(s: dict, live: bool, lang: str, tokens: list[dict] = ()) -> str:
+    """How to read the tokens. The heat scale and the candidates are mentioned only if the backend reports them
+    for `tokens` (the run's tokens so far)."""
     if s.get("temperature", 1) <= 0:
         how = pick(lang, "temperature 0 = greedy：每一步都直接選機率最高的 token。", "temperature 0 = greedy: every token is simply the most likely one.")
     else:
@@ -685,21 +740,28 @@ def token_legend(s: dict, live: bool, lang: str) -> str:
             f"每一步：logits ÷ T {t} → 留前 {k or '全部'} 個 → 累積機率到 {p} 為止 → 抽樣。",
             f"Each token: logits ÷ T {t} → keep {f'the top {k}' if k else 'them all'} → up to a cumulative probability of {p} → sample.",
         )
-    hint = pick(lang, "生成中，完成後可以滑過 token 看候選", "generating; hover over the tokens once it is done") if live else pick(
-        lang, "滑過 token 看候選", "hover over a token to see the candidates"
-    )
+    if reported(tokens, "top"):
+        hint = pick(lang, "生成中，完成後可以滑過 token 看候選", "generating; hover over the tokens once it is done") if live else pick(
+            lang, "滑過 token 看候選", "hover over a token to see the candidates"
+        )
+    else:
+        hint = pick(lang, "生成中，完成後可以滑過 token 看它的 id", "generating; hover over the tokens once it is done") if live else pick(
+            lang, "滑過 token 看它的 id", "hover over a token to see its id"
+        )
+    scale = f'<span class="heat-scale">{pick(lang, "機率高 <i></i> 低", "likely <i></i> unlikely")}</span>' if reported(tokens, "p") else ""
+    drafts = s.get("mtp") or any(t.get("draft") for t in tokens)  # asked for in the sidebar, or reported by a server
     drafted = pick(
         lang, '<span><span class="tok drafted">底線</span> = MTP 草稿猜中</span>', '<span><span class="tok drafted">underline</span> = guessed by the MTP drafter</span>'
-    ) if s.get("mtp") else ""
+    ) if drafts else ""
     mtp = '<p class="tok-legend">' + pick(
         lang,
         "MTP：每個沒有底線的 token 之後，草稿模型先猜接下來幾個，主模型一次 forward 全部驗證；"
         "一串底線加上後面那個沒有底線的 token，是主模型同一次 forward 的產出。",
         "MTP: after each token without an underline, the drafter guesses the next few and the model checks them all in one forward pass; "
         "a run of underlined tokens and the plain token after it come from the same forward pass of the model.",
-    ) + "</p>" if s.get("mtp") else ""
+    ) + "</p>" if drafts else ""
     return (
-        f'<p class="tok-legend"><span class="heat-scale">{pick(lang, "機率高 <i></i> 低", "likely <i></i> unlikely")}</span>'
+        f'<p class="tok-legend">{scale}'
         + pick(
             lang,
             '<span><em>斜體</em> = 思考</span><span><span class="mono">等寬</span> = 工具呼叫</span>'
@@ -774,13 +836,14 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
                     f'MTP kept <b>{mtp["accepted"]}</b> / {mtp["drafted"]} guesses{f" ({rate})" if rate else ""} · '
                     f'{mtp["forwards"]} decoding forward passes ({plain} without MTP)',
                 )
-        if s.get("mtp"):
+        if s.get("mtp") or (step["done"] or {}).get("mtp"):  # asked for in the sidebar, or done by a server started with it
             how = pick(lang, "一次推論；草稿模型先猜，主模型一次驗證好幾個 token", "one inference; the drafter guesses, the model checks several tokens at once")
         else:
             how = pick(lang, "一次推論，一次一個 token", "one inference, one token at a time")
         parts.append(
             f'<section class="stage stage-model"><h4 class="stage-title">{pick(lang, "模型", "Model")} <small>LLM · {how}</small></h4>'
-            f'<p class="meta-line">{meta}</p>{token_legend(s, live, lang)}{tokens_html(step["tokens"], not live, family, lang)}</section>'
+            f'<p class="meta-line">{meta}</p>{token_legend(s, live, lang, [t for st in data["steps"] for t in st["tokens"]])}'
+            f'{tokens_html(step["tokens"], not live, family, lang)}</section>'
         )
 
     if step["parsed"]:
@@ -853,6 +916,12 @@ def call_html(name: str, arguments: dict | None) -> str:
     return out + "".join(f'<p class="snippet-label">{esc(k)}</p><pre class="snippet arg">{esc(v)}</pre>' for k, v in blocks.items())
 
 
+def error_text(data: dict, lang: str) -> str | None:
+    """The run's error, in the page's language when the error said it in both (a backend's)."""
+    error = data["error"]
+    return error[lang] if isinstance(error, dict) else error
+
+
 def stop_html(data: dict, lang: str) -> str:
     end = data["end"]
     title, desc = STOP_REASONS[lang].get(end["stop_reason"], (end["stop_reason"], ""))
@@ -862,7 +931,7 @@ def stop_html(data: dict, lang: str) -> str:
         stop_chip, meaning = chip(piece, data["family"], lang), stop_meaning(piece, data["family"], lang)
         desc += pick(lang, f" 最後停在 {stop_chip}（{meaning}）。", f" It stopped at {stop_chip} ({meaning}).")
     gen = sum(len(s["tokens"]) for s in data["steps"])
-    error = f'<p class="check bad">{esc(data["error"])}</p>' if data["error"] else ""
+    error = f'<p class="check bad">{esc(error_text(data, lang))}</p>' if data["error"] else ""
     cls = "stop-card is-error" if end["stop_reason"] == "error" else "stop-card"
     totals = pick(lang, f'共 {len(data["steps"])} 步 · 生成 {gen:,} tokens', f'{n_steps(len(data["steps"]), lang)} · {gen:,} tokens generated')
     return (
@@ -896,22 +965,25 @@ def context_html(step: dict, family: families.Family, lang: str) -> str:
 # ---------- model tab ----------
 
 def model_html(info: dict, lang: str) -> str:
+    """The model's card. A model a server runs (info["server"], vllm_backend.py) has no device, precision, parameter
+    count or load time here, since its weights are not loaded on this machine; the card leaves those out."""
     family = families.get(info["family"])
-    total = info["parameters"]
+    server = info.get("server")
     colors = {"language_model": "var(--c-model)", "audio_tower": "var(--c-env)", "vision_tower": "var(--c-context)", "visual": "var(--c-context)"}
     other = pick(lang, "其他", "other")
-    parts = {PARAM_PARTS[lang].get(k, other): 0 for k in info["parameter_parts"]}
+    parts = {PARAM_PARTS[lang].get(k, other): 0 for k in info.get("parameter_parts", {})}
     color_of = {}
-    for key, n in info["parameter_parts"].items():
+    for key, n in info.get("parameter_parts", {}).items():
         label = PARAM_PARTS[lang].get(key, other)
         parts[label] += n
         color_of[label] = colors.get(key, "var(--muted)")
     bar = "".join(f'<span style="flex:{n};background:{color_of[label]}" title="{label}"></span>' for label, n in parts.items())
     legend = "".join(f'<li><i style="background:{color_of[label]}"></i>{label} {fmt_params(n)}</li>' for label, n in parts.items())
     specs = [
+        (pick(lang, "伺服器", "server"), f'{server["engine"]} {server.get("version") or ""}'.strip()) if server else
         (pick(lang, "裝置", "device"), info["device"].upper()),
-        (pick(lang, "精度", "precision"), info["dtype"]),
-        (pick(lang, "總參數", "parameters"), fmt_params(total)),
+        (pick(lang, "精度", "precision"), info.get("dtype")),
+        (pick(lang, "總參數", "parameters"), fmt_params(info["parameters"]) if info.get("parameters") else None),
         (pick(lang, "層數", "layers"), info["layers"]),
         (pick(lang, "隱藏層維度", "hidden size"), f"{info['hidden_size']:,}"),
         (pick(lang, "注意力頭數", "attention heads"), f"{info['attention_heads']} Q / {info['kv_heads']} KV"),
@@ -920,22 +992,61 @@ def model_html(info: dict, lang: str) -> str:
         (pick(lang, "脈絡上限", "context limit"), f"{info['context_length']:,} tokens"),
         (pick(lang, "詞彙量", "vocabulary"), f"{info['vocab_size']:,}"),
         (pick(lang, "讀得懂", "reads"), " · ".join(MODALITIES[lang][k] for k in ("text", *info.get("modalities", ())))),
-        (pick(lang, "載入時間", "load time"), f"{info['load_seconds']} s"),
+        (pick(lang, "載入時間", "load time"), f"{info['load_seconds']} s" if info.get("load_seconds") is not None else None),
     ]
     spec_html = "".join(f"<div><dt>{k}</dt><dd>{esc(v)}</dd></div>" for k, v in specs if v)
     stops = "".join(f'<li><span class="sp">{esc(p)}</span> {stop_meaning(p, family, lang)}</li>' for p in info["stop_tokens"])
     name, arch = esc(family.name), esc(info["architecture"])
+    if server:
+        engine, url = esc(server["engine"]), esc(server["url"])
+        mode = server.get("logprobs_mode", "raw_logprobs")
+        if mode == "raw_logprobs":
+            back = pick(lang, "每個 token 回來時帶著它的機率和前 5 名候選；取樣時剃掉了哪些候選，留在伺服器上。",
+                        "Each token comes back with its probability and the top 5 candidates; which candidates the sampling cut stays on the server. ")
+        elif mode == "processed_logprobs":
+            back = pick(lang, "伺服器用 `--logprobs-mode processed_logprobs` 啟動：每個 token 帶回來的是它被抽出來時的機率"
+                              "（套過 temperature、top-k、top-p 之後），不是模型原本的機率，所以看不到模型給的機率和前 5 名。",
+                        "The server was started with `--logprobs-mode processed_logprobs`: each token comes back with its probability in the distribution "
+                        "it was drawn from (after temperature, top-k and top-p), not the model's own, so the model probability and the top 5 do not show. ")
+            if server.get("sampling_mask"):
+                back += pick(lang, "它也送回 sampling mask，所以看得到剩下幾個候選。", "It also sends sampling masks, so how many candidates were left shows too. ")
+            if server.get("refuses_greedy"):
+                back += pick(lang, "它啟動時加了 `--return-sampling-mask`，所以不接受 temperature 0 和 top-k 0，側欄就從 0.05 和 1 開始。",
+                             "It was started with `--return-sampling-mask`, so it refuses temperature 0 and top-k 0, and the sidebar starts at 0.05 and 1. ")
+        else:
+            back = pick(lang, f"伺服器用 `--logprobs-mode {mode}` 啟動，回來的是 logits 而不是機率，所以都不會當成機率顯示。",
+                        f"The server was started with `--logprobs-mode {mode}`, so what comes back is logits, not probabilities, and none of them shows as one. ")
+        where = pick(lang, f"{name} 家族，由 {url} 的 {engine} 伺服器跑（{arch}）：prompt 在這裡 render 成 token id 送過去。",
+                     f"The {name} family, run by the {engine} server at {url} ({arch}): the prompt is rendered into token ids here and sent there. ") + prose_html(back)
+    else:
+        where = pick(lang, f"{name} 家族，在你的電腦上用 transformers 跑（{arch}）。", f"The {name} family, running on your computer with transformers ({arch}). ")
     return (
         '<div class="card">'
         f'<h4><a href="https://huggingface.co/{esc(info["model_id"])}" target="_blank" rel="noopener">{esc(info["model_id"])}</a></h4>'
         '<p class="card-sub">'
-        + pick(lang, f"{name} 家族，在你的電腦上用 transformers 跑（{arch}）。", f"The {name} family, running on your computer with transformers ({arch}). ")
+        + where
         + f'{prose_html(family.model_note.get(lang, ""))}</p>'
         f'<dl class="specs">{spec_html}</dl>'
-        f'<div class="params-bar">{bar}</div><ul class="params-legend">{legend}</ul>'
-        f'<p class="card-sub stops-label">{pick(lang, "停止 token：生成到這些 token 就交回 harness", "Stop tokens: generating one of these hands control back to the harness")}</p>'
+        + refused_html(server, lang)
+        + (f'<div class="params-bar">{bar}</div><ul class="params-legend">{legend}</ul>' if parts else "")
+        + f'<p class="card-sub stops-label">{pick(lang, "停止 token：生成到這些 token 就交回 harness", "Stop tokens: generating one of these hands control back to the harness")}</p>'
         f'<ul class="stop-list">{stops}</ul>'
         f'{drafter_html(info, lang)}</div>'
+    )
+
+
+def refused_html(server: dict | None, lang: str) -> str:
+    """The media the checkpoint reads but the server did not take (vllm_backend.VLLMBackend._probe), and why."""
+    refused = (server or {}).get("refused")
+    if not refused:
+        return ""
+    reasons: dict[str, list[str]] = {}  # one reason, such as no --enable-scale-out, often covers every kind
+    for kind, why in refused.items():
+        reasons.setdefault(why[lang], []).append(MODALITIES[lang][kind])
+    items = "".join(f'<li><b>{pick(lang, "、", ", ").join(kinds)}</b>{pick(lang, "：", ": ")}{prose_html(why)}</li>' for why, kinds in reasons.items())
+    return (
+        f'<p class="card-sub stops-label">{pick(lang, "這個 checkpoint 讀得懂、但這台伺服器不收的媒體：", "Media the checkpoint reads but this server does not take:")}</p>'
+        f'<ul class="refused-list">{items}</ul>'
     )
 
 
@@ -971,7 +1082,9 @@ def knobs_html(s: dict, defaults: dict, lang: str) -> str:
         ("top-k", s["top_k"] or pick(lang, "不限", "no limit"), pick(lang, "只保留機率最高的 k 個候選。", "Keeps only the k most likely candidates.")),
         ("top-p", s["top_p"], pick(lang, "從機率最高的開始累加，總和達到 p 就停（nucleus sampling）。",
                                    "Adds up probabilities from the most likely down and stops once the sum reaches p (nucleus sampling).")),
-        (pick(lang, "MTP 推測解碼", "MTP speculative decoding"), pick(lang, "開", "on") if s.get("mtp") else pick(lang, "關", "off"),
+        (pick(lang, "MTP 推測解碼", "MTP speculative decoding"),
+         # None: a vLLM server's own --speculative-config decides
+         pick(lang, "由伺服器決定", "the server's") if "mtp" in s and s["mtp"] is None else pick(lang, "開", "on") if s.get("mtp") else pick(lang, "關", "off"),
          pick(lang, "草稿模型先猜接下來幾個 token，主模型一次 forward 全部驗證。收下的 token 跟不開時的分布一樣，只是少跑幾次 forward。",
               "The drafter guesses the next few tokens, and the model checks them all in one forward pass. "
               "The tokens kept follow the same distribution as without it; it just takes fewer forward passes.")),
@@ -995,7 +1108,7 @@ def step_rows(data: dict, lang: str) -> list[dict]:
     for s in data["steps"]:
         if not s["context"]:
             continue
-        probs = [t["p"] for t in s["tokens"] if not t["special"]]
+        probs = [t["p"] for t in s["tokens"] if not t["special"] and known(t, "p")]
         done = s["done"] or {}
         rows.append({
             "step": s["n"],
@@ -1006,7 +1119,7 @@ def step_rows(data: dict, lang: str) -> list[dict]:
             pick(lang, "平均機率", "mean probability"): round(sum(probs) / len(probs), 3) if probs else None,
             pick(lang, "停止", "stop"): done.get("stop_piece") or done.get("finish"),
         })
-        if data["settings"].get("mtp"):
+        if data["settings"].get("mtp") or any((st["done"] or {}).get("mtp") for st in data["steps"]):
             mtp = done.get("mtp") or {}
             rows[-1][pick(lang, "MTP 收下", "MTP kept")] = f'{mtp["accepted"]}/{mtp["drafted"]}' if mtp else None
             rows[-1][pick(lang, "解碼 forward", "decoding forwards")] = mtp.get("forwards")
@@ -1087,9 +1200,10 @@ def field_value(value) -> str:
     return text if len(text) <= 80 else text[:79] + "…"
 
 
-def files_html(folder: dict, notes: dict, family: families.Family, lang: str) -> str:
+def files_html(folder: dict, notes: dict, family: families.Family, lang: str, served: bool = False) -> str:
     """One folder's files, in MODEL_FILES order: size, what the kind of file is for, what the family's note says it
-    holds and the values of the fields the note names. A file the family has a note on but the folder lacks is listed too."""
+    holds and the values of the fields the note names. A file the family has a note on but the folder lacks is listed too;
+    when a server runs the model (`served`), the weights it lacks are on the server."""
     present = {file_kind(f["name"]) or f["name"] for f in folder["files"]}
     rows = [(f["name"], f) for f in folder["files"]] + [(name, None) for name in notes if name not in present]
     order = list(MODEL_FILES)
@@ -1103,7 +1217,12 @@ def files_html(folder: dict, notes: dict, family: families.Family, lang: str) ->
         if kind and kind in said:  # another shard of the weights: the notes are on the first
             what, held = pick(lang, "權重的另一個分片。", "Another shard of the weights."), ""
         said.add(kind)
-        size = fmt_bytes(file["bytes"]) if file else pick(lang, "這個 checkpoint 沒有", "not in this checkpoint")
+        if file:
+            size = fmt_bytes(file["bytes"])
+        elif served and kind == "model.safetensors":
+            size = pick(lang, "只在伺服器上", "on the server only")
+        else:
+            size = pick(lang, "這個 checkpoint 沒有", "not in this checkpoint")
         fields = "".join(f'<li><span class="tk">{esc(k)}</span> {esc(field_value(v))}</li>' for k, v in (file or {}).get("fields", {}).items())
         out.append(
             f'<div><dt><span class="tk">{esc(name)}</span><small>{size}</small></dt>'
@@ -1129,13 +1248,22 @@ def folder_html(info: dict, lang: str) -> str:
         how = which + pick(
             lang,
             "檔案放在 `snapshots/<revision>/`，每個都是連結，指向 `blobs/` 裡用 hash 命名的檔案（系統不能建連結時，例如沒開開發者模式的 Windows，就直接複製），"
-            "所以兩個 revision 共用的檔案只存一份。同一個 revision 在每台電腦、每種作業系統上都是同樣的檔案，不同的只有載入的方式（上面的裝置和精度）。",
+            "所以兩個 revision 共用的檔案只存一份。同一個 revision 在每台電腦、每種作業系統上都是同樣的檔案，不同的只有載入的方式"
+            + ("。" if "server" in info else "（上面的裝置和精度）。"),
             "The files sit in `snapshots/<revision>/`, each a link to a file in `blobs/` named by its hash (a copy where the system cannot make links, "
             "as on Windows without developer mode), so a file two revisions share is stored once. A revision is the same files on every computer and "
-            "every operating system; only how they are loaded differs (the device and precision above).",
+            "every operating system; only how they are loaded differs" + ("." if "server" in info else " (the device and precision above)."),
         )
     else:
         how = pick(lang, "一個磁碟上的 checkpoint，直接從這裡載入。", "A checkpoint on disk, loaded in place.")
+    if server := info.get("server"):  # how goes through prose_html, which escapes it
+        how += pick(
+            lang,
+            f"{server['engine']} 伺服器自己讀權重，所以這裡只下載了 tokenizer、chat template 和設定檔，用來把 prompt render 成 token id；"
+            "伺服器啟動時用 `--revision` 指定同一個 commit，兩邊讀的就是同樣的檔案。",
+            f" The {server['engine']} server reads the weights itself, so only the tokenizer, the chat template and the settings are downloaded "
+            "here, to render the prompts into token ids; a server started with `--revision` at the same commit reads the same files.",
+        )
     drafter = info.get("drafter") or {}
     extra = ""
     if drafter.get("folder"):
@@ -1149,5 +1277,5 @@ def folder_html(info: dict, lang: str) -> str:
         + prose_html(how)
         + pick(lang, "下面是每個檔案的大小和用途，以及它在這個家族的 checkpoint 裡裝了什麼；欄位的值是從檔案讀出來的。",
                " Below is each file's size and purpose, and what it holds in this family's checkpoints; the values of the fields are read from the files.")
-        + f'</p>{files_html(folder, family.file_notes, family, lang)}{extra}</div>'
+        + f'</p>{files_html(folder, family.file_notes, family, lang, served="server" in info)}{extra}</div>'
     )

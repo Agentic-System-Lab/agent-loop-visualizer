@@ -1,12 +1,13 @@
 """Model families: everything that changes when the model changes.
 
-The harness (agent.py), the decoding loop (llm.py) and the page (render.py) are written once.
+The harness (agent.py), the decoding loop (simple_backend.py) and the page (render.py) are written once.
 What differs between Gemma 4 and Qwen3.5 is how the model writes its turns, its thinking and its
 tool calls, which tokens stop it, and what its control tokens mean. A family module describes all
 of that in one Family, and everything else asks the family.
 
 To run another checkpoint of a family that is already here, add its Hugging Face id to MODELS, and the
-revision to download it at to REVISIONS (its MTP drafter's too, if it has one in DRAFTERS).
+revision to download it at to REVISIONS (its MTP drafter's too, if it has one in DRAFTERS), and how vLLM drafts for it
+to VLLM_SPECULATIVE.
 To support a new family, write a module like qwen3_5.py (a parser for the model's output and
 notes on its control tokens and on the files of its checkpoints) and add its Family to FAMILIES; the
 `model_type` in the checkpoint's config.json decides which family a model belongs to.
@@ -25,10 +26,19 @@ MODELS = {
 }
 
 # MTP drafters: model id -> a small model that guesses the next few tokens from the model's own last hidden
-# state and keys and values, so one forward pass of the model can check several tokens (llm.LocalLLM.load_drafter).
+# state and keys and values, so one forward pass of the model can check several tokens (simple_backend.LocalLLM.load_drafter).
 # transformers runs this for Gemma 4's assistant checkpoints only.
 DRAFTERS = {
     "google/gemma-4-E2B-it": "google/gemma-4-E2B-it-assistant",
+}
+
+# How vLLM decodes a model speculatively, the --speculative-config the sidebar's vLLM (Docker) gives it on a GPU (MTP):
+# Gemma 4 with the drafter in DRAFTERS, Qwen3.5 with the MTP layer its own checkpoint carries, which transformers cannot
+# use (vLLM warns that more than one guess runs that one layer again). vLLM 0.32's CPU image runs neither: Qwen3.5's
+# first request fails in a Triton kernel without a CPU version, and Gemma 4's drafter sets up CUDA graphs as it loads.
+VLLM_SPECULATIVE = {
+    "google/gemma-4-E2B-it": {"model": "google/gemma-4-E2B-it-assistant", "num_speculative_tokens": 4},
+    "Qwen/Qwen3.5-0.8B": {"method": "mtp", "num_speculative_tokens": 2},
 }
 
 # The Hub revision (a commit) each model and drafter downloads at, so that whenever someone downloads one they get
@@ -113,8 +123,8 @@ class Family:
         return re.compile("|".join(re.escape(p) for p in pieces))
 
 
-from families.gemma4 import GEMMA4  # noqa: E402  (the family modules import Family from here)
-from families.qwen3_5 import QWEN3_5  # noqa: E402
+from harness.families.gemma4 import GEMMA4  # noqa: E402  (the family modules import Family from here)
+from harness.families.qwen3_5 import QWEN3_5  # noqa: E402
 
 FAMILIES = {f.key: f for f in (GEMMA4, QWEN3_5)}
 

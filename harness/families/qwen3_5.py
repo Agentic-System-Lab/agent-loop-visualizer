@@ -17,8 +17,8 @@ qwen3_coder parser does). Thinking sits between <think> and </think>.
 import json
 import re
 
-from families import Family, FileNote
-from i18n import pick
+from harness.families import Family, FileNote
+from harness.i18n import pick
 
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
 CALL_OPEN = "<tool_call>"
@@ -292,9 +292,9 @@ QWEN3_5 = Family(
     },
     model_note={
         "zh": "混合架構：24 層裡每 4 層有 3 層是 Gated DeltaNet（線性 attention，狀態大小固定，不隨脈絡變長），1 層是 gated attention。"
-        "沒裝 flash-linear-attention 時用 PyTorch 參考實作，prefill 比較慢。",
+        "在 transformers 裡沒裝 flash-linear-attention 時，它們用 PyTorch 參考實作，prefill 比較慢。",
         "en": "A hybrid: of every 4 of its 24 layers, 3 are Gated DeltaNet (linear attention, whose state has a fixed size and does not grow with the context) and 1 is gated attention. "
-        "Without flash-linear-attention installed they run the PyTorch reference implementation, so prefill is slower.",
+        "In transformers, without flash-linear-attention installed, they run the PyTorch reference implementation, so prefill is slower.",
     },
     # The checkpoint ships no generation_config.json; these are the model card's non-thinking text settings.
     sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},

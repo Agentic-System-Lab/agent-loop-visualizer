@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-import guide
-from guide import Code, span, statement_end
+from app import guide
+from app.guide import Code, span, statement_end
+from harness.i18n import LANGS
 from html_check import assert_balanced
-from i18n import LANGS
 
 CODES = [item for sec in guide.SECTIONS for item in sec.body if isinstance(item, Code)]
 PROSE = [guide.INTRO] + [text for sec in guide.SECTIONS for text in (sec.title, sec.lead, *sec.body) if not isinstance(text, Code)]
@@ -138,10 +138,10 @@ def test_the_snapshot_follows_the_quoted_code_not_its_line_numbers(tmp_path, mon
         shutil.copy(guide.ROOT / file, tmp_path / file)
     monkeypatch.setattr(guide, "ROOT", tmp_path)
     before = quoted_sections()
-    agent_py = tmp_path / "agent.py"
+    agent_py = tmp_path / "harness/agent.py"
     agent_py.write_text("# a line that moves every other one down\n" + agent_py.read_text(encoding="utf-8"), encoding="utf-8")
     assert quoted_sections() == before
-    code = next(code for code in CODES if code.file == "agent.py")
+    code = next(code for code in CODES if code.file == "harness/agent.py")
     lines = agent_py.read_text(encoding="utf-8").splitlines()
     lines[span(code)[0] - 1] += "  # edited"
     agent_py.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -165,11 +165,11 @@ def test_event_table_points_at_the_line_that_sends_it(kind, file, text, _carries
 
 def test_event_table_covers_every_event_the_harness_sends():
     events = set()
-    for file in ("agent.py", "llm.py"):
+    for file in ("harness/agent.py", "harness/backends/simple_backend.py"):
         for node in ast.walk(guide.source(file)[1]):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "emit" and isinstance(node.args[0], ast.Constant):
                 events.add(node.args[0].value)
-    events |= {"prefill", "token"}  # yielded by llm.generate and forwarded as they are
+    events |= {"prefill", "token"}  # yielded by LocalLLM.generate and forwarded as they are
     assert events == {e[0] for e in guide.EVENTS}
 
 
@@ -251,19 +251,19 @@ def test_the_root_page_sends_a_reader_to_their_language(tmp_path):
 
 
 def test_prose_markup_is_escaped():
-    html = guide.prose_html("a <b> `x<y>` **粗** [[agent.py|def run(self):]] {{stop}}", "zh")
+    html = guide.prose_html("a <b> `x<y>` **粗** [[harness/agent.py|def run(self):]] {{stop}}", "zh")
     assert html.startswith("a &lt;b&gt; <code>x&lt;y&gt;</code> <b>粗</b> ")
-    assert f'>agent.py:{guide.find_line("agent.py", "def run(self):")}</code>' in html
+    assert f'>harness/agent.py:{guide.find_line("harness/agent.py", "def run(self):")}</code>' in html
     assert 'title="def run(self):"' in html and 'href="#g-stop"' in html
 
 
 def test_find_line_wants_exactly_one_match():
     with pytest.raises(LookupError, match="0 lines"):
-        guide.find_line("agent.py", "no such text anywhere")
+        guide.find_line("harness/agent.py", "no such text anywhere")
     with pytest.raises(LookupError, match="lines, expected exactly 1"):
-        guide.find_line("agent.py", "self.emit(")
+        guide.find_line("harness/agent.py", "self.emit(")
     with pytest.raises(LookupError):
-        span(Code("agent.py", "def run(self):", end="no such text anywhere"))
+        span(Code("harness/agent.py", "def run(self):", end="no such text anywhere"))
 
 
 def test_statement_end():

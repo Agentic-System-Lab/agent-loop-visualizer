@@ -1,7 +1,7 @@
-"""A stand-in for llm.LocalLLM that replays scripted model outputs.
+"""A stand-in for simple_backend.LocalLLM that replays scripted model outputs.
 
-It speaks the same interface as the real thing (render, encode, tokenizer, generate, family,
-modalities, info, load_drafter), renders prompts in a simplified form of its family's chat format
+It is a Backend (backend.py) like the real thing (render, encode, generate, family, modalities,
+info, load_drafter), and it has a tokenizer too; it renders prompts in a simplified form of its family's chat format
 (Gemma 4 or Qwen3.5) and streams each scripted reply token by token, so the harness and
 the UI run end to end without loading any weights. With MTP on, it marks the tokens in a
 fixed pattern as the drafter's: two kept guesses, then one turned down. Like a processor, encode()
@@ -13,15 +13,15 @@ import re
 import time
 from types import SimpleNamespace
 
-import families
-from families import GEMMA4, QWEN3_5
-from llm import Encoded
+from harness import families
+from harness.backends.backend import Encoded
+from harness.families import GEMMA4, QWEN3_5
 
 STR = '<|"|>'
 
 
 def fake_folder(repo: str, sizes: dict[str, int], fields: dict[str, dict]) -> dict:
-    """A checkpoint's folder as llm.describe_folder describes it, with the files and sizes of the real one."""
+    """A checkpoint's folder as simple_backend.describe_folder describes it, with the files and sizes of the real one."""
     return {
         "path": f"models/models--{repo}/snapshots/0123456789abcdef", "revision": "0123456789abcdef",
         "files": [{"name": name, "bytes": n, "fields": fields.get(name, {})} for name, n in sizes.items()],
@@ -331,8 +331,8 @@ def qwen_tool_call(name: str, **args) -> str:
 def record_run(outputs: list, user: str = "台北現在幾點？", history: list | None = None, sampling=None, family=None,
                attachments=(), files=None, **settings):
     """Run the harness to the end on the calling thread; return the run, its events and the fake model."""
-    from agent import Run, RunSettings
-    from llm import Sampling
+    from harness.agent import Run, RunSettings
+    from harness.backends.backend import Sampling
 
     fake = FakeLLM(list(outputs), family=family)
     if sampling and sampling.mtp:  # a model with a drafter, already loaded

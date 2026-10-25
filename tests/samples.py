@@ -1,4 +1,4 @@
-"""A small file of every format the page accepts, made from the examples' files in assets/examples, so a
+"""A small file of every format the page accepts, made from the examples' files in app/assets/examples, so a
 test can ask the same question of each format: the receipt in every image format, the recording in every
 audio format, the rolling ball in every video container, and the sales data in every data format.
 
@@ -14,7 +14,7 @@ import av
 import numpy as np
 from PIL import Image, ImageDraw
 
-EXAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
+EXAMPLES = Path(__file__).resolve().parent.parent / "app" / "assets" / "examples"
 IMAGES = {"png": "PNG", "jpg": "JPEG", "jpeg": "JPEG", "webp": "WEBP", "gif": "GIF", "bmp": "BMP"}
 AUDIO = {"wav": ("wav", "pcm_s16le"), "mp3": ("mp3", "libmp3lame"), "m4a": ("ipod", "aac"), "flac": ("flac", "flac"), "ogg": ("ogg", "libopus")}
 VIDEO = {"mp4": ("mp4", "libx264"), "mov": ("mov", "libx264"), "mkv": ("matroska", "libx264"), "webm": ("webm", "libvpx-vp9")}

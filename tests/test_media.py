@@ -9,13 +9,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import media
 import samples
-from media import Attachment
+from harness import media
+from harness.media import Attachment
 
 GEMMA = ("image", "audio", "video")
 QWEN = ("image", "video")
-EXAMPLES = Path(__file__).resolve().parent.parent / "assets" / "examples"
+EXAMPLES = Path(__file__).resolve().parent.parent / "app" / "assets" / "examples"
 
 
 def test_a_file_is_media_only_if_the_model_reads_its_kind():

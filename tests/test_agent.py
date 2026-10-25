@@ -8,12 +8,13 @@ from pathlib import Path
 
 import pytest
 
-import agent
-from agent import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, Run, RunSettings, common_prefix
 from fakes import MEDIA_TOKENS, FakeLLM, record_run, tool_call
-from llm import Sampling
-from media import Attachment
-from tools import TOOLS, ToolError, ToolResult
+from harness import agent
+from harness.agent import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, Run, RunSettings, common_prefix
+from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
+from harness.families import GEMMA4, QWEN3_5
+from harness.media import Attachment
+from harness.tools import TOOLS, ToolError, ToolResult
 
 ANSWER = "現在是下午三點。<turn|>"
 
@@ -47,6 +48,14 @@ def wait_for(predicate, timeout=5.0):
 
 
 # ---------- a run that ends with a reply ----------
+
+@pytest.mark.parametrize(("family", "answer"), [(GEMMA4, ANSWER), (QWEN3_5, "現在是下午三點。<|im_end|>")])
+def test_the_fake_model_is_a_backend_whose_tokens_carry_what_local_inference_sends(family, answer):
+    assert isinstance(FakeLLM(family=family), Backend)
+    _, events, _ = record_run([answer], family=family)
+    tokens = [e for e in events if e["type"] == "token"]
+    assert tokens and all(set(t) == {"type", "step", "t", *TOKEN_FIELDS, *TOKEN_DETAILS} - {"draft"} for t in tokens)
+
 
 def test_plain_reply_stops_without_a_tool_call():
     run, events, _ = record_run([ANSWER])
@@ -208,7 +217,7 @@ def test_a_turn_can_leave_tools_out():
 
 PHOTO = Attachment("photo.png", "image", "/chat/photo.png", 2048)
 CLIP = Attachment("clip.mp4", "video", "/chat/clip.mp4", 90_000)
-SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "assets/examples/sales.csv"), 942)
+SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "app/assets/examples/sales.csv"), 942)
 
 
 def test_media_become_parts_of_the_question_and_files_a_line_for_run_python():
