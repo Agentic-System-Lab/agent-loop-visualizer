@@ -32,7 +32,7 @@
     class VLLMBackend:
 
 [[harness/backends/vllm_docker.py|def start(model_id]]
-    def start(model_id: str, say: Callable[[str, str], None]) -> dict:
+    def start(model_id: str, say: Callable[[str, str], None], mtp: bool = False) -> dict:
 
 [[harness/tools.py|TOOLS = {]]
     TOOLS = {
@@ -274,7 +274,8 @@ app/page.py: def current_llm() -> Backend:
         with st.spinner(loading):
             llm = load_llm(model_id, url)
         if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
-            for key, value in {**llm.info["defaults"], "mtp": False}.items():
+            # but on vLLM in Docker, where MTP is how the server was just started
+            for key, value in {**llm.info["defaults"], **({} if docker_vllm() else {"mtp": False})}.items():
                 st.session_state[key] = value
             st.session_state.sampling_for = model_id
         if st.session_state.mtp and llm.drafter_id and llm.drafter is None:
@@ -309,7 +310,7 @@ app/page.py: def current_settings(
     def current_settings(llm: Backend) -> RunSettings:
         s = st.session_state
         return RunSettings(
-            sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens, mtp=s.mtp and llm.drafter is not None),
+            sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens, mtp=s.mtp and (llm.drafter is not None or docker_vllm())),
             max_steps=s.max_steps,
             thinking=s.thinking,
             use_tools=s.use_tools,
@@ -842,7 +843,7 @@ harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
     class FakeLLM:
 
 [[harness/backends/vllm_docker.py|def start(model_id]]
-    def start(model_id: str, say: Callable[[str, str], None]) -> dict:
+    def start(model_id: str, say: Callable[[str, str], None], mtp: bool = False) -> dict:
 
 [[harness/backends/vllm_docker.py|def device()]]
     def device() -> str:
@@ -946,6 +947,12 @@ harness/backends/vllm_backend.py: def encode(self, prompt
         counts = Counter(kind for token in expanded for kind, media_id in self.media_token_ids.items() if media_id is not None and token == media_id)
         return Encoded(self.tokenizer.decode(expanded, skip_special_tokens=False), ids, len(expanded),
                        {"content_parts": files, "prompt_token_ids": expanded}, dict(counts))
+
+[[harness/families/__init__.py|VLLM_SPECULATIVE = {]]
+    VLLM_SPECULATIVE = {
+
+[[harness/backends/vllm_docker.py|def speculative(model_id]]
+    def speculative(model_id: str, where: str) -> dict | None:
 
 [[app/render.py|def with_drafts(]]
     def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:

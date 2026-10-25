@@ -6,7 +6,7 @@ killed for memory or exiting with an exception, a server that never answers) is 
 files are read as YAML, and, where Docker Compose is installed, by Compose itself.
 
 With RUN_VLLM_DOCKER_TESTS=1 the last test starts the real server with Qwen3.5 0.8B (on the CPU, or the GPU where
-Docker has one), asks it a question through VLLMBackend and stops it:
+Docker has one, with MTP), asks it a question through VLLMBackend and stops it:
     RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real
 """
 
@@ -136,9 +136,9 @@ def docker(monkeypatch):
     vllm_docker._chosen.clear()
 
 
-def start(model_id=QWEN):
+def start(model_id=QWEN, mtp=False):
     said = []
-    server = vllm_docker.start(model_id, lambda stage, line: said.append((stage, line)))
+    server = vllm_docker.start(model_id, lambda stage, line: said.append((stage, line)), mtp)
     return server, said
 
 
@@ -152,7 +152,7 @@ def failure(model_id=QWEN) -> vllm_docker.DockerError:
 
 def test_the_server_starts_from_compose_yaml_with_the_model_at_its_pinned_revision(docker):
     server, said = start()
-    assert server == {"model": QWEN, "url": "http://127.0.0.1:8000", "device": "cpu"}
+    assert server == {"model": QWEN, "url": "http://127.0.0.1:8000", "device": "cpu", "mtp": False}
     assert docker.downloads == [(QWEN, {"revision": families.REVISIONS[QWEN], "cache_dir": MODELS_DIR})]  # the weights, before the server
     (up,) = docker.compose_calls("up")
     assert up == ["docker", "compose", "--progress", "plain", "-p", "agent-loop-vllm", "-f", str(COMPOSE_DIR / "compose.yaml"), "up", "--detach"]
@@ -284,12 +284,52 @@ def test_the_model_the_app_asked_vllm_for_is_kept_through_a_failed_start_until_i
     assert vllm_docker.chosen() is None
     docker.up = (1, ["Error response from daemon: pull access denied"])
     failure()
-    assert vllm_docker.chosen() == QWEN  # every tab still says vLLM, and why it did not start
+    assert vllm_docker.chosen() == {"model": QWEN, "mtp": False}  # every tab still says vLLM, and why it did not start
     docker.up = (0, [])
     start(GEMMA)
-    assert vllm_docker.chosen() == GEMMA
+    assert vllm_docker.chosen() == {"model": GEMMA, "mtp": False}
     vllm_docker.stop()
     assert vllm_docker.chosen() is None
+
+
+def speculative_env(docker) -> list[str]:
+    """VLLM_SPECULATIVE_CONFIG of each `docker compose up`, in order."""
+    return [env["VLLM_SPECULATIVE_CONFIG"] for c, env in zip(docker.commands, docker.envs) if c[1] == "compose" and "up" in c]
+
+
+def test_on_the_gpu_mtp_runs_gemma_with_its_drafter_at_its_pinned_commit(docker):
+    docker.runtimes["nvidia"] = {}
+    server, _ = start(GEMMA, mtp=True)
+    drafter = families.DRAFTERS[GEMMA]
+    assert server["mtp"] and json.loads(speculative_env(docker)[0]) == {**families.VLLM_SPECULATIVE[GEMMA], "revision": families.REVISIONS[drafter]}
+    assert (drafter, {"revision": families.REVISIONS[drafter], "cache_dir": MODELS_DIR}) in docker.downloads  # into models/, which the server reads offline
+    assert vllm_docker.chosen() == {"model": GEMMA, "mtp": True}
+
+
+def test_on_the_gpu_mtp_runs_qwen_with_the_mtp_layer_in_its_own_checkpoint(docker):
+    docker.runtimes["nvidia"] = {}
+    server, _ = start(QWEN, mtp=True)
+    assert server["mtp"] and json.loads(speculative_env(docker)[0]) == families.VLLM_SPECULATIVE[QWEN]
+    assert [repo for repo, _ in docker.downloads] == [QWEN]
+
+
+def test_on_the_cpu_and_unasked_the_server_does_not_decode_speculatively(docker):
+    server, _ = start(QWEN, mtp=True)  # vLLM 0.32's CPU image runs neither model's MTP
+    assert server == {"model": QWEN, "url": "http://127.0.0.1:8000", "device": "cpu", "mtp": False}
+    assert vllm_docker.chosen() == {"model": QWEN, "mtp": False}
+    docker.runtimes["nvidia"] = {}
+    start(GEMMA)
+    assert speculative_env(docker) == ["None", "None"]  # what vLLM reads as no --speculative-config
+
+
+def test_switching_mtp_on_the_gpu_starts_the_server_again_and_the_same_setting_does_not(docker):
+    docker.runtimes["nvidia"] = {}
+    start(QWEN, mtp=True)
+    assert vllm_docker.serving(QWEN, mtp=True) and vllm_docker.serving(QWEN) is None
+    start(QWEN, mtp=False)
+    start(QWEN, mtp=False)
+    assert [json.loads(c) if c != "None" else None for c in speculative_env(docker)] == [families.VLLM_SPECULATIVE[QWEN], None]
+    assert vllm_docker.speculative(QWEN, "cpu") is None and vllm_docker.speculative("someone/else", "gpu") is None
 
 
 def test_quitting_the_app_stops_the_server_it_started_and_without_one_leaves_docker_alone(docker, monkeypatch):
@@ -345,12 +385,13 @@ def test_by_default_the_server_serves_qwen_at_its_pinned_revision_under_its_own_
     assert model == QWEN and revision == f"--revision={families.REVISIONS[QWEN]}" and served == f"--served-model-name={QWEN}"
 
 
-GPU_MEMORY = ("--kv-cache-memory-bytes=", "--gpu-memory-utilization=")  # the flags only the GPU file has
+# The flags only the GPU file has: on its memory, and on speculative decoding, which vLLM's CPU image cannot do here.
+GPU_ONLY = ("--kv-cache-memory-bytes=", "--gpu-memory-utilization=", "--speculative-config=", "--per-request-spec-decode-metrics=")
 
 
 def test_the_gpu_file_runs_the_same_vllm_with_the_same_flags_but_the_cpu_only_one_and_its_memory():
     cpu, gpu = service("compose.yaml"), service("compose.gpu.yaml")
-    assert [arg for arg in cpu["command"] if arg != "--skip-mm-profiling"] == [arg for arg in gpu["command"] if not arg.startswith(GPU_MEMORY)]
+    assert [arg for arg in cpu["command"] if arg != "--skip-mm-profiling"] == [arg for arg in gpu["command"] if not arg.startswith(GPU_ONLY)]
     assert "--enable-scale-out" in gpu["command"] and gpu["build"] is None
     assert gpu["deploy"]["resources"]["reservations"]["devices"][0]["driver"] == "nvidia"
     version = re.search(r"FROM vllm/vllm-openai-cpu:v([\d.]+)", (COMPOSE_DIR / "vllm-cpu" / "Dockerfile").read_text()).group(1)
@@ -360,10 +401,19 @@ def test_the_gpu_file_runs_the_same_vllm_with_the_same_flags_but_the_cpu_only_on
 def test_on_the_gpu_the_kv_cache_is_the_cpus_size_and_vllm_starts_without_most_of_the_memory_free():
     # vLLM 0.32 refuses to start unless gpu_memory_utilization (0.92 by default) of the GPU's memory is free, which a
     # small card beside the page's own CUDA context, or a GPU that shares the machine's memory, does not have.
-    flags = dict(default(arg).split("=", 1) for arg in service("compose.gpu.yaml")["command"] if arg.startswith(GPU_MEMORY))
+    flags = dict(default(arg).split("=", 1) for arg in service("compose.gpu.yaml")["command"] if arg.startswith(GPU_ONLY[:2]))
     gib = int(default(service("compose.yaml")["environment"]["VLLM_CPU_KVCACHE_SPACE"]))
     assert flags["--kv-cache-memory-bytes"] == f"{gib}G"  # vLLM reads an upper-case G as GiB
     assert 0 < float(flags["--gpu-memory-utilization"]) <= 0.5
+
+
+def test_on_the_gpu_speculative_decoding_is_off_by_hand_and_counted_in_detail_when_the_page_turns_it_on():
+    flags = {flag: default(value) for flag, value in (arg.split("=", 1) for arg in service("compose.gpu.yaml")["command"] if arg.startswith(GPU_ONLY[2:]))}
+    # vLLM's word for no config, and the only counts it takes without one (anything else stops it at startup)
+    assert flags == {"--speculative-config": "None", "--per-request-spec-decode-metrics": "none"}
+    assert {k: vllm_docker._env(QWEN)[k] for k in ("VLLM_SPECULATIVE_CONFIG", "VLLM_SPEC_DECODE_METRICS")} == {"VLLM_SPECULATIVE_CONFIG": "None", "VLLM_SPEC_DECODE_METRICS": "none"}
+    on = vllm_docker._env(QWEN, vllm_docker.speculative(QWEN, "gpu"))
+    assert on["VLLM_SPEC_DECODE_METRICS"] == "detailed"  # which tokens were guesses
 
 
 def test_the_cpu_image_keeps_a_step_that_takes_minutes_from_killing_the_engine():
@@ -383,6 +433,16 @@ def test_docker_compose_reads_the_files_as_the_page_runs_them(files):
     assert found.returncode == 0, found.stderr
     vllm = json.loads(found.stdout)["services"]["vllm"]
     assert vllm["ports"][0]["host_ip"] == "127.0.0.1" and ("build" in vllm) == (files == ["compose.yaml"])
+
+
+@compose
+def test_docker_compose_hands_vllm_the_speculative_config_the_page_sets_as_it_is(monkeypatch):
+    monkeypatch.setattr(vllm_docker, "device", lambda: "gpu")
+    env = vllm_docker._env(GEMMA, vllm_docker.speculative(GEMMA, "gpu"))
+    found = subprocess.run(["docker", *vllm_docker._compose("gpu", "config", "--format", "json")], capture_output=True, text=True, env=env)
+    assert found.returncode == 0, found.stderr
+    command = json.loads(found.stdout)["services"]["vllm"]["command"]
+    assert f"--speculative-config={env['VLLM_SPECULATIVE_CONFIG']}" in command and json.loads(env["VLLM_SPECULATIVE_CONFIG"])["model"] == families.DRAFTERS[GEMMA]
 
 
 @compose
@@ -406,13 +466,16 @@ def test_real_server_in_docker_answers_through_vllm_backend():
     from harness.backends.vllm_backend import VLLMBackend
 
     vllm_docker._server.clear()
-    server = vllm_docker.start(QWEN, lambda stage, line: None)
     try:
-        llm = VLLMBackend(server["model"], server["url"])
-        assert llm.info["server"]["generate_api"] and llm.info["server"]["logprobs_mode"] == "raw_logprobs"
-        prompt = llm.encode(llm.render([{"role": "user", "content": "What is 2 + 2? Answer with the number only."}], None, False), [])
-        events = list(llm.generate(prompt, Sampling(temperature=0.0, max_new_tokens=20), lambda: False))
-        tokens = [e for e in events if e["type"] == "token"]
-        assert "4" in events[-1]["raw"] and all(t["rank"] for t in tokens) and events[-1]["finish"] == "stop_token"
+        for mtp in (True, False):  # with and without speculative decoding, which vLLM starts with different flags
+            server = vllm_docker.start(QWEN, lambda stage, line: None, mtp=mtp)
+            assert server["mtp"] == (mtp and server["device"] == "gpu")  # Qwen3.5's own MTP layer, on a GPU only
+            llm = VLLMBackend(server["model"], server["url"])
+            assert llm.info["server"]["generate_api"] and llm.info["server"]["logprobs_mode"] == "raw_logprobs"
+            prompt = llm.encode(llm.render([{"role": "user", "content": "What is 2 + 2? Answer with the number only."}], None, False), [])
+            events = list(llm.generate(prompt, Sampling(temperature=0.0, max_new_tokens=20), lambda: False))
+            tokens = [e for e in events if e["type"] == "token"]
+            assert "4" in events[-1]["raw"] and all(t["rank"] for t in tokens) and events[-1]["finish"] == "stop_token"
+            assert bool(events[-1]["mtp"]) == server["mtp"]  # the step's counts, from --per-request-spec-decode-metrics
     finally:
         vllm_docker.stop()

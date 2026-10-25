@@ -604,6 +604,7 @@ def test_knobs_say_whether_mtp_is_on():
     s = {"temperature": 0.7, "top_k": 0, "top_p": 0.9, "max_new_tokens": 512, "max_steps": 4}
     assert "MTP 推測解碼 <b>關</b>" in render.knobs_html(s, INFO["defaults"], lang="zh")
     assert "MTP 推測解碼 <b>開</b>" in render.knobs_html({**s, "mtp": True}, INFO["defaults"], lang="zh")
+    assert "MTP speculative decoding <b>the server&#x27;s</b>" in render.knobs_html({**s, "mtp": None}, INFO["defaults"], lang="en")
 
 
 def test_model_card_names_the_drafter():

@@ -393,10 +393,10 @@ SECTIONS = [
                    "and tokenized here, the token ids go to a vLLM server, and each token comes back with its log probability and the top 5 candidates; "
                    "which candidates the sampling cut stays on the server."},
             {"zh": "`harness/backends/vllm_docker.py`：沒設 `VLLM_URL`、側欄又選了 vLLM 時，照 `docker-compose/compose.yaml` 用 Docker Compose 啟動 vLLM 伺服器，"
-                   "等到它能回應（[[harness/backends/vllm_docker.py|def start(model_id]]）；換回 transformers 時停掉它（{{backends}}）。",
+                   "等到它能回應（[[harness/backends/vllm_docker.py|def start(model_id]]），在 GPU 上預設開 MTP 推測解碼；換回 transformers 時停掉它（{{backends}}）。",
              "en": "`harness/backends/vllm_docker.py`: without `VLLM_URL`, when the sidebar picks vLLM, it starts a vLLM server with Docker Compose from "
-                   "`docker-compose/compose.yaml` and waits until it answers ([[harness/backends/vllm_docker.py|def start(model_id]]); picking transformers "
-                   "again stops it ({{backends}})."},
+                   "`docker-compose/compose.yaml` and waits until it answers ([[harness/backends/vllm_docker.py|def start(model_id]]), on a GPU with MTP "
+                   "speculative decoding on by default; picking transformers again stops it ({{backends}})."},
             {"zh": "`harness/families/`：跟著模型走的東西。`gemma4.py`、`qwen3_5.py` 各自負責讀懂自己模型的輸出，並說明它的特殊 token（{{families}}）。",
              "en": "`harness/families/`: everything that goes with the model. `gemma4.py` and `qwen3_5.py` each read their own model's output "
                    "and explain its special tokens ({{families}})."},
@@ -650,7 +650,7 @@ SECTIONS = [
                "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，記憶體裡同時只留一個模型。換模型或換「用什麼跑模型」時，"
                "`release_model()` 先清掉快取、把記憶體還給系統，下一個模型才載入，兩個不會同時佔著記憶體。第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；"
                "Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family（[[harness/backends/simple_backend.py|def _sampling_defaults(self)]]）。"
-               "側欄的模型選單換了之後會開新對話（[[app/page.py|key=\"model_id\", on_change=switch_model]]），MTP 也回到關閉；"
+               "側欄的模型選單換了之後會開新對話（[[app/page.py|key=\"model_id\", on_change=switch_model]]），MTP 也回到關閉，只有 vLLM (Docker) 例外，那裡的 MTP 是伺服器啟動的方式；"
                "打開「MTP 推測解碼」時，`current_llm()` 第一次會順便載入草稿模型（[[harness/backends/simple_backend.py|def load_drafter(self):]]）。",
          "en": "On every rerun, `current_llm()` first gets the `LocalLLM` for the model picked in the sidebar (a `VLLMBackend` when the model runs on a vLLM server); "
                "the rest of the page takes it for just a `Backend` ({{backends}}). `load_llm()` is cached with "
@@ -659,18 +659,20 @@ SECTIONS = [
                "a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "
                "generation_config.json, so its recommendations come from the family ([[harness/backends/simple_backend.py|def _sampling_defaults(self)]]). "
                "Switching models in the sidebar's menu starts a new conversation ([[app/page.py|key=\"model_id\", on_change=switch_model]]) "
-               "and turns MTP back off; the first time MTP speculative decoding is switched on, `current_llm()` also loads the drafter "
+               "and turns MTP back off, except on vLLM (Docker), where MTP is how the server was started; the first time MTP speculative decoding is switched on, `current_llm()` also loads the drafter "
                "([[harness/backends/simple_backend.py|def load_drafter(self):]])."},
         Code("app/page.py", "@st.cache_resource(max_entries=1", end="def release_model():"),
         {"zh": "`current_llm()` 在載入之前還做兩件事：剛換回 transformers 時先停掉 vLLM 的容器；側欄選了 vLLM（又沒設 `VLLM_URL`）時，"
                "先確定 Docker 裡的 vLLM 伺服器已經啟動，拿到它的網址（{{backends}}）。"
                "「用什麼跑模型」也和記憶體裡的模型一樣，是所有分頁共用的一個選擇：另一個分頁啟動或停掉了 vLLM 的容器，這個分頁就跟著換，不會在旁邊再載入一份模型；"
-               "新開的分頁或重新整理，也會選容器裡跑的那個模型（[[app/page.py|if not st.session_state.get(\"engine_picked\"):]]）。只有剛選過的分頁例外，直到 `current_llm()` 啟動或停掉 vLLM 為止。",
+               "新開的分頁或重新整理，也會選容器裡跑的那個模型（[[app/page.py|if not st.session_state.get(\"engine_picked\"):]]）。MTP 開或關也跟著伺服器，"
+               "不會用另一種方式把它重新啟動。只有剛選過的分頁例外，直到 `current_llm()` 啟動或停掉 vLLM 為止。",
          "en": "Before it loads anything, `current_llm()` does two more things: right after transformers is picked again, it stops vLLM's container; "
                "when the sidebar picked vLLM (and `VLLM_URL` is not set), it first makes sure the vLLM server in Docker is up, and takes its URL ({{backends}}). "
                "What runs the model is, like the model in memory, one choice for every tab: when another tab has started or stopped vLLM's container, this one "
                "follows rather than load the model beside it, and a new tab or a reload also takes the model the container runs "
-               "([[app/page.py|if not st.session_state.get(\"engine_picked\"):]]). Only the tab that just picked leads, until `current_llm()` has started or stopped vLLM."},
+               "([[app/page.py|if not st.session_state.get(\"engine_picked\"):]]). MTP follows the server too, on or off, rather than start it again the other way. "
+               "Only the tab that just picked leads, until `current_llm()` has started or stopped vLLM."},
         Code("app/page.py", "def current_llm() -> Backend:"),
         {"zh": "輸入框（[[app/page.py|sent = st.chat_input(]]）和範例按鈕都會呼叫 `start_run()`。輸入框可以附上檔案，模型讀得懂聲音時還能錄音；"
                "有些範例也會附上 `app/assets/examples/` 裡的範例檔，輸入框上方也列出這些檔案，選了的會附在你自己打的問題裡。`start_run()` 先用不等待的方式拿一把全域的鎖"
@@ -1119,12 +1121,18 @@ SECTIONS = [
                    "expansion at generation time is an error."},
         ),
         Code("harness/backends/vllm_backend.py", "def encode(self, prompt"),
-        {"zh": "推測解碼是伺服器啟動時決定的（`--speculative-config`），側欄的 MTP 開關不能按。伺服器加上 `--per-request-spec-decode-metrics summary`（要和 `--speculative-config` 一起用）時，"
+        {"zh": "推測解碼是伺服器啟動時決定的（`--speculative-config`）。`VLLM_URL` 的伺服器由它自己決定，側欄的 MTP 開關不能按。vLLM (Docker) 在 GPU 上用 `families.VLLM_SPECULATIVE` 裡這個模型的設定（[[harness/families/__init__.py|VLLM_SPECULATIVE = {]]）："
+               "Gemma 4 用它的草稿模型，Qwen3.5 用它自己 checkpoint 裡的 MTP 層（transformers 用不了）；預設開，切換開關就用另一種方式重新啟動伺服器"
+               "（[[harness/backends/vllm_docker.py|def speculative(model_id]]）。vLLM 0.32 的 CPU 版 image 兩個模型都不能推測解碼，所以在 CPU 上開關不能按。伺服器加上 `--per-request-spec-decode-metrics summary`（要和 `--speculative-config` 一起用）時，"
                "最後一段回應帶著這一步的統計，變成 step 卡片上的「草稿收下幾個、forward 幾次」。設成 `detailed` 還有每一次驗證收下幾個猜測："
                "第一個 token 來自 prefill，之後每次驗證是收下的猜測，再加一個主模型自己的 token；收下的比猜的少，那個 token 就取代了被退回的猜測。"
                "伺服器不記沒有猜測的那幾步，所以只有這些數字剛好對得上每個 token 時，才標得出哪些是猜中的；對不上就只顯示統計。對得上時，收下的猜測只算到停止 token 為止：vLLM 是在停止 token 截斷那次驗證之前算的，停止 token 後面的猜測也會算進去。"
                "這要等這一步結束才知道，所以底線在 step 結束時才出現（[[app/render.py|def with_drafts(]]），而被退回的猜測原本是什麼，伺服器不說。",
-         "en": "Speculative decoding is decided when the server starts (`--speculative-config`), so the sidebar's MTP switch is disabled. With "
+         "en": "Speculative decoding is decided when the server starts (`--speculative-config`). A server at `VLLM_URL` decides for itself, and the sidebar's "
+               "MTP switch is disabled. vLLM (Docker) on a GPU takes the model's setting in `families.VLLM_SPECULATIVE` ([[harness/families/__init__.py|VLLM_SPECULATIVE = {]]): "
+               "Gemma 4 with its drafter, Qwen3.5 with the MTP layer in its own checkpoint, which transformers cannot use. It is on by default, and the switch "
+               "starts the server again the other way ([[harness/backends/vllm_docker.py|def speculative(model_id]]). vLLM 0.32's CPU image cannot decode "
+               "either model speculatively, so on a CPU the switch is disabled. With "
                "`--per-request-spec-decode-metrics summary` (which needs `--speculative-config`), the last part of the response carries the step's counts, which become the step card's guesses kept and "
                "forward passes. Set to `detailed`, it also says how many guesses each verify step kept: the first token comes from the prefill, and each verify "
                "step after it gives the guesses it kept and then one token of the model's own, which replaced a guess turned down when fewer were kept than "

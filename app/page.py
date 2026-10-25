@@ -150,11 +150,12 @@ def docker_vllm() -> bool:
 
 def vllm_server(model_id: str) -> dict:
     """The vLLM server in Docker for the model (vllm_docker.py), started first if it is not up, with what it is doing
-    shown meanwhile. A start that failed is not tried again on every rerun, only when the user asks to (Try again)."""
+    shown meanwhile, decoding speculatively if MTP is on and its GPU can. A start that failed is not tried again on every
+    rerun, only when the user asks to (Try again)."""
     if failed := st.session_state.get("vllm_failed"):
         raise failed
-    if server := vllm_docker.serving(model_id):
-        st.session_state.vllm_device = server["device"]
+    if server := vllm_docker.serving(model_id, st.session_state.mtp):
+        st.session_state.vllm_device, st.session_state.mtp = server["device"], server["mtp"]
         return server
     stages = {
         "download": tr(f"下載 {model_id} 的權重到 models/（只有第一次）…", f"Downloading {model_id}'s weights into models/ (the first time only)…"),
@@ -173,13 +174,13 @@ def vllm_server(model_id: str) -> dict:
                 line.empty()
 
         try:
-            server = vllm_docker.start(model_id, say)
+            server = vllm_docker.start(model_id, say, st.session_state.mtp)
         except vllm_docker.DockerError as e:
             st.session_state.vllm_failed = e
             status.update(label=tr("vLLM 伺服器沒有啟動", "The vLLM server did not start"), state="error")
             raise
         status.update(label=tr("vLLM 伺服器啟動了", "The vLLM server is up"), state="complete", expanded=False)
-    st.session_state.vllm_device = server["device"]
+    st.session_state.vllm_device, st.session_state.mtp = server["device"], server["mtp"]  # off on a CPU, which cannot
     return server
 
 
@@ -197,7 +198,8 @@ def current_llm() -> Backend:
     with st.spinner(loading):
         llm = load_llm(model_id, url)
     if st.session_state.sampling_for != model_id:  # a model just chosen starts from its own recommended decoding, MTP off
-        for key, value in {**llm.info["defaults"], "mtp": False}.items():
+        # but on vLLM in Docker, where MTP is how the server was just started
+        for key, value in {**llm.info["defaults"], **({} if docker_vllm() else {"mtp": False})}.items():
             st.session_state[key] = value
         st.session_state.sampling_for = model_id
     if st.session_state.mtp and llm.drafter_id and llm.drafter is None:
@@ -260,19 +262,23 @@ def init_state():
     st.session_state.setdefault("history", [])
     st.session_state.setdefault("view", None)
     st.session_state.setdefault("viz_tab", "loop")
-    on_vllm = None if VLLM_URL else vllm_docker.chosen()  # the model vLLM's container runs for this app, if it does
+    on_vllm = None if VLLM_URL else vllm_docker.chosen()  # what vLLM's container runs for this app, and how, if it does
     if "model_id" not in st.session_state:  # asking the vLLM server what it serves only when there is no choice yet
-        st.session_state.model_id = on_vllm or default_model()  # a new tab or a reload joins the container, not replaces it
+        # A new tab or a reload joins the container rather than replacing it.
+        st.session_state.model_id = on_vllm["model"] if on_vllm else default_model()
     st.session_state.setdefault("sampling_for", None)
     st.session_state.setdefault("chat_id", uuid.uuid4().hex[:12])
     # What runs the model without VLLM_URL: transformers here, or vLLM in Docker. It is one choice for every tab, as the
     # model in memory is one for every tab: a tab follows a container another started or stopped, rather than loading
-    # the model here beside it. Only once this tab picked, until it has started or stopped vLLM, does it lead.
+    # the model here beside it, and decodes the way the server does, rather than starting it again the other way. Only
+    # once this tab picked one or the other, until it has started or stopped vLLM, does it lead.
     if not st.session_state.get("engine_picked"):
         engine = "vllm" if on_vllm else "local"
         if engine != st.session_state.get("engine", "local"):
-            st.session_state.mtp = False  # on vLLM it is the server's, and the drafter is not loaded here
+            st.session_state.mtp = False  # the drafter here is not loaded
             st.session_state.pop("vllm_failed", None)
+        if on_vllm:
+            st.session_state.mtp = on_vllm["mtp"]
         st.session_state.engine = engine
 
 
@@ -284,7 +290,7 @@ def chat_folder() -> Path:
 def current_settings(llm: Backend) -> RunSettings:
     s = st.session_state
     return RunSettings(
-        sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens, mtp=s.mtp and llm.drafter is not None),
+        sampling=Sampling(s.temperature, s.top_p, s.top_k, s.max_new_tokens, mtp=s.mtp and (llm.drafter is not None or docker_vllm())),
         max_steps=s.max_steps,
         thinking=s.thinking,
         use_tools=s.use_tools,
@@ -350,6 +356,9 @@ def absorb_finished():
 def reset_settings(defaults: dict):
     for key, value in {**DEFAULTS, **defaults}.items():
         st.session_state[key] = value
+    if docker_vllm():  # where MTP is on unless switched off, and switching starts the server again
+        st.session_state.mtp = True
+        switch_mtp()
 
 
 def new_chat():
@@ -370,11 +379,19 @@ def switch_model():
 
 def switch_engine():
     """transformers or vLLM picked: the one that held the model lets it go before the other loads it, the weights
-    here now and vLLM's container at the next run, under a spinner. MTP goes off, since on vLLM it is the server's."""
+    here now and vLLM's container at the next run, under a spinner. MTP goes off with transformers, whose drafter
+    loads only when it is switched on, and on with vLLM, whose server decodes speculatively where its GPU can."""
     switch_model()
-    st.session_state.mtp = False
+    st.session_state.mtp = st.session_state.engine == "vllm"
     st.session_state.stop_vllm = st.session_state.engine == "local"
     st.session_state.engine_picked = True  # this run starts or stops vLLM, which every other tab then follows
+
+
+def switch_mtp():
+    """MTP switched: on vLLM in Docker that starts the server again, decoding the other way, which every other tab then
+    follows."""
+    if docker_vllm():
+        st.session_state.engine_picked = True
 
 
 def retry_vllm():
@@ -411,10 +428,10 @@ def model_picker(menu: dict[str, str], busy: bool):
                 on_change=switch_engine, disabled=busy,
                 help=tr("transformers：模型載入這個程式，在這台電腦上跑，每個 token 的細節都看得到。"
                         "vLLM：用專案的 docker-compose/compose.yaml 在 Docker 裡啟動 vLLM 伺服器，有 NVIDIA GPU 就用 GPU，否則用 CPU；"
-                        "第一次要建好 image、載入並編譯模型，要幾分鐘。換過去時，原本那一邊的模型會先釋放，也會開始新的對話。",
+                        "第一次要建好 image、載入並編譯模型，要幾分鐘。在 GPU 上預設開 MTP 推測解碼。換過去時，原本那一邊的模型會先釋放，也會開始新的對話。",
                         "transformers: the model loads into this app and runs on this computer, and every detail of each token shows. "
                         "vLLM: a vLLM server in Docker, started from the project's docker-compose/compose.yaml, on an NVIDIA GPU if there is one, "
-                        "else on the CPU; the first start builds its image and loads and compiles the model, which takes minutes. "
+                        "else on the CPU; the first start builds its image and loads and compiles the model, which takes minutes. On a GPU, MTP speculative decoding is on by default. "
                         "Switching lets the other one's model go first, and starts a new conversation."),
             )
 
@@ -424,6 +441,7 @@ def sidebar(llm: Backend, live: bool, busy: bool):
     with st.sidebar:
         if server := info.get("server"):
             where = tr(f" · Docker（{st.session_state.vllm_device.upper()}）", f" · Docker ({st.session_state.vllm_device.upper()})") if docker_vllm() else ""
+            where += " · MTP" if docker_vllm() and st.session_state.mtp else ""
             st.caption(f"`{llm.model_id}` · {llm.family.name} · {server['engine']} {server.get('version') or ''} · {server['url']}{where}")
         else:
             st.caption(f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · "
@@ -460,7 +478,7 @@ def sidebar(llm: Backend, live: bool, busy: bool):
             st.slider("temperature", 0.0, 2.0, step=0.05, key="temperature", help=tr("0 = greedy，永遠選機率最高的 token。", "0 = greedy: always the most likely token."))
             st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
             st.slider("top-k", 0, 128, key="top_k", help=tr("0 = 不限。", "0 = no limit."))
-        st.toggle(tr("MTP 推測解碼", "MTP speculative decoding"), key="mtp", disabled=busy or not llm.drafter_id, help=mtp_help(llm))
+        st.toggle(tr("MTP 推測解碼", "MTP speculative decoding"), key="mtp", on_change=switch_mtp, disabled=busy or not can_mtp(llm), help=mtp_help(llm))
         st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps",
                   help=tr("harness 的迴圈最多跑幾圈（step），跑滿就停。", "How many times (steps) the harness may go around the loop before it stops."))
         st.slider(tr("每步 token 上限", "Max tokens per step"), 64, 8192, step=64, key="max_new_tokens",
@@ -470,16 +488,44 @@ def sidebar(llm: Backend, live: bool, busy: bool):
         st.caption(tr("設定會套用到下一個問題。", "Settings apply to the next question."))
 
 
+def can_mtp(llm: Backend) -> bool:
+    """Whether the MTP switch does anything: with transformers, for a model with a drafter; on vLLM in Docker, on a GPU
+    and for a model vLLM drafts for. A server at VLLM_URL decides for itself."""
+    if docker_vllm():
+        return vllm_docker.speculative(llm.model_id, st.session_state.vllm_device) is not None
+    return bool(llm.drafter_id)
+
+
 def mtp_help(llm: Backend) -> str:
+    if docker_vllm():
+        if st.session_state.vllm_device != "gpu":
+            return tr("vLLM 0.32 的 CPU 版 image 兩個模型都不能推測解碼：Qwen3.5 要用的 Triton kernel 沒有 CPU 版，Gemma 4 的草稿模型要建 CUDA graph。"
+                      "所以在 CPU 上的 vLLM (Docker) 不開 MTP；在 NVIDIA GPU 上可以。",
+                      "vLLM 0.32's CPU image cannot decode either model speculatively: Qwen3.5 needs a Triton kernel without a CPU version, and Gemma 4's "
+                      "drafter sets up CUDA graphs. So vLLM (Docker) runs without MTP on a CPU; on an NVIDIA GPU it can.")
+        if not (config := vllm_docker.speculative(llm.model_id, "gpu")):
+            return tr("vLLM 推測解碼這個模型的方式還沒有設定（`families.VLLM_SPECULATIVE`）。",
+                      "How vLLM decodes this model speculatively is not set up (`families.VLLM_SPECULATIVE`).")
+        n, drafter = config["num_speculative_tokens"], config.get("model")
+        how = (tr(f"用草稿模型 {drafter}", f"with the drafter {drafter}") if drafter
+               else tr("用它自己 checkpoint 裡的 MTP 層（transformers 用不了）", "with the MTP layer in its own checkpoint, which transformers cannot use"))
+        return tr(f"Docker 裡的 vLLM 伺服器在 GPU 上推測解碼，{how}：每次猜 {n} 個 token，主模型一次 forward 全部驗證。"
+                  "step 結束時，收下的猜測會加上底線。切換會用另一種方式重新啟動伺服器，要幾分鐘。",
+                  f"The vLLM server in Docker decodes speculatively on the GPU, {how}: it guesses {n} tokens at a time, and the model checks "
+                  "them all in one forward pass. Once a step ends, the guesses it kept are underlined. Switching starts the server again the other way, which takes a few minutes.")
     if server := llm.info.get("server"):
         return tr(
             f"{server['engine']} 伺服器啟動時就決定要不要推測解碼（`--speculative-config`），這裡不能切換。伺服器加上 "
-            "`--per-request-spec-decode-metrics summary` 的話，每一步會顯示它收下幾個猜測，但不會說是哪幾個 token。",
+            "`--per-request-spec-decode-metrics summary` 的話，每一步會顯示它收下幾個猜測；設成 `detailed`，step 結束時猜中的 token 還會加上底線。",
             f"Whether the {server['engine']} server decodes speculatively is set when it starts (`--speculative-config`), not here. "
-            "Started with `--per-request-spec-decode-metrics summary`, it says how many guesses it kept in each step, though not which tokens they were.",
+            "Started with `--per-request-spec-decode-metrics summary`, it says how many guesses it kept in each step; with `detailed`, "
+            "the guesses are also underlined once the step ends.",
         )
     if not llm.drafter_id:
-        return tr("這個模型沒有搭配的 MTP 草稿模型，目前只有 Gemma 4 E2B 有。", "This model has no MTP drafter to go with it; for now only Gemma 4 E2B has one.")
+        on_vllm = (tr("在有 NVIDIA GPU 的 vLLM (Docker) 上，它可以推測解碼。", " On vLLM (Docker) with an NVIDIA GPU it can decode speculatively.")
+                   if llm.model_id in families.VLLM_SPECULATIVE and not VLLM_URL else "")
+        return tr("transformers 沒有這個模型搭配的 MTP 草稿模型，目前只有 Gemma 4 E2B 有。" + on_vllm,
+                  "transformers has no MTP drafter for this model; for now only Gemma 4 E2B has one." + on_vllm)
     return tr(
         f"用 {llm.drafter_id} 當草稿模型：每生成一個 token，它就從主模型的狀態一口氣猜接下來幾個 token，"
         "主模型再用一次 forward 全部驗證。輸出的分布和不開一樣，只是比較快。第一次打開會載入草稿模型（約 160 MB）。",
@@ -717,6 +763,8 @@ def model_panel(llm: Backend, data: dict | None):
     lang = st.session_state.lang
     st.html(render.model_html(llm.info, lang))
     settings = data["settings"] if data else {**DEFAULTS, **{k: st.session_state[k] for k in DEFAULTS}}
+    if VLLM_URL:  # whether it drafts is the server's, which says so only in a step's counts
+        settings = {**settings, "mtp": None}
     st.html(render.knobs_html(settings, llm.info["defaults"], lang))
     if data and data["steps"]:
         st.markdown(tr("##### 每一步的推論", "##### Inference in each step"))

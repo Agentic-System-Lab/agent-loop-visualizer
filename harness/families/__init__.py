@@ -6,7 +6,8 @@ tool calls, which tokens stop it, and what its control tokens mean. A family mod
 of that in one Family, and everything else asks the family.
 
 To run another checkpoint of a family that is already here, add its Hugging Face id to MODELS, and the
-revision to download it at to REVISIONS (its MTP drafter's too, if it has one in DRAFTERS).
+revision to download it at to REVISIONS (its MTP drafter's too, if it has one in DRAFTERS), and how vLLM drafts for it
+to VLLM_SPECULATIVE.
 To support a new family, write a module like qwen3_5.py (a parser for the model's output and
 notes on its control tokens and on the files of its checkpoints) and add its Family to FAMILIES; the
 `model_type` in the checkpoint's config.json decides which family a model belongs to.
@@ -29,6 +30,15 @@ MODELS = {
 # transformers runs this for Gemma 4's assistant checkpoints only.
 DRAFTERS = {
     "google/gemma-4-E2B-it": "google/gemma-4-E2B-it-assistant",
+}
+
+# How vLLM decodes a model speculatively, the --speculative-config the sidebar's vLLM (Docker) gives it on a GPU (MTP):
+# Gemma 4 with the drafter in DRAFTERS, Qwen3.5 with the MTP layer its own checkpoint carries, which transformers cannot
+# use (vLLM warns that more than one guess runs that one layer again). vLLM 0.32's CPU image runs neither: Qwen3.5's
+# first request fails in a Triton kernel without a CPU version, and Gemma 4's drafter sets up CUDA graphs as it loads.
+VLLM_SPECULATIVE = {
+    "google/gemma-4-E2B-it": {"model": "google/gemma-4-E2B-it-assistant", "num_speculative_tokens": 4},
+    "Qwen/Qwen3.5-0.8B": {"method": "mtp", "num_speculative_tokens": 2},
 }
 
 # The Hub revision (a commit) each model and drafter downloads at, so that whenever someone downloads one they get

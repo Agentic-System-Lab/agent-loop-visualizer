@@ -81,7 +81,8 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   Parsing output, the tokens that switch to thinking / tool call / reply, stop tokens, special-token
   explanations, notes on the files of its checkpoints and recommended sampling all live on the
   `Family`. Another checkpoint of a supported family is one line in `MODELS` and one in `REVISIONS`,
-  the commit it downloads at (and `DRAFTERS` and its drafter's commit if it has an MTP drafter); a new family is a module like
+  the commit it downloads at (and `DRAFTERS` and its drafter's commit if it has an MTP drafter, and `VLLM_SPECULATIVE` for how
+  vLLM drafts for it on a GPU); a new family is a module like
   `harness/families/qwen3_5.py` added to `FAMILIES`. Moving a model to a newer commit means rerunning
   tests/test_chat_template.py and tests/test_real_model.py and rereading the guide's model folder
   section, whose numbers come from those files.
@@ -143,7 +144,7 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   (no network, read-only, limits, unprivileged) in `tools.sandbox_command()`. docker-compose/compose.yaml tags the
   CPU image `agent-loop-vllm-cpu:<vLLM version>-<n>`: bump `n` when vllm-cpu/ changes, so machines with the old
   image build the new one, and keep compose.gpu.yaml's command the same as compose.yaml's but `--skip-mm-profiling`, plus its two flags on GPU
-  memory (tests/test_vllm_docker.py checks it). The app stops the container it started when it quits (`_stop_at_exit`), so a test
+  memory and two on speculative decoding (tests/test_vllm_docker.py checks it). The app stops the container it started when it quits (`_stop_at_exit`), so a test
   that fakes a start leaves `vllm_docker._chosen` empty.
 
 ## Tests

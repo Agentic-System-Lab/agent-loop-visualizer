@@ -483,6 +483,9 @@ def test_a_vllm_error_mid_run_is_shown_in_the_pages_language(vllm, browser, new_
 def test_with_vllm_the_sidebar_says_the_server_decides_speculative_decoding(vllm, at):
     assert mtp_toggle(at).disabled and mtp_toggle(at).value is False
     assert "--speculative-config" in mtp_toggle(at).help and "--per-request-spec-decode-metrics" in mtp_toggle(at).help
+    assert "detailed" in mtp_toggle(at).help  # which tokens were guesses, underlined
+    tab(at).set_value("model").run()
+    assert "MTP 推測解碼 <b>由伺服器決定</b>" in page_html(at)
 
 
 def test_with_vllm_the_model_reads_what_the_server_takes_and_the_page_says_what_it_refused(vllm, at):
@@ -545,11 +548,12 @@ def test_a_vllm_server_that_cannot_be_reached_is_said_in_the_page_language(vllm,
 
 @pytest.fixture
 def docker_vllm(monkeypatch, models, outputs):
-    """The page without VLLM_URL, with vllm_docker faked: start() records the models it was asked for and returns a
-    server on the CPU (or raises `fail`, a DockerError), serving() knows what was started, chosen() what was asked for
-    until stop(), and stop() counts. A fake model stands in for the VLLMBackend the page makes for the server; `made`
-    holds each, with the URL it was given."""
-    state = {"started": [], "stopped": 0, "fail": None, "made": [], "up": None, "chosen": None}
+    """The page without VLLM_URL, with vllm_docker faked: start() records the models it was asked for and whether with
+    MTP (`asked`), and returns a server on `device` (the CPU unless a test says otherwise; or raises `fail`, a
+    DockerError), drafting as vllm_docker.speculative() says it can there. serving() knows what was started, chosen()
+    what was asked for until stop(), and stop() counts. A fake model stands in for the VLLMBackend the page makes for the
+    server; `made` holds each, with the URL it was given."""
+    state = {"started": [], "asked": [], "stopped": 0, "fail": None, "made": [], "up": None, "chosen": None, "device": "cpu"}
 
     class DockerLLM(FakeLLM):
         def __init__(self, model_id, url):
@@ -561,19 +565,24 @@ def docker_vllm(monkeypatch, models, outputs):
                 "generate_api": True, "sampling_mask": False, "refused": {}}}
             state["made"].append(self)
 
-    def start(model_id, say):
+    def drafts(model_id, mtp, device):
+        return mtp and vllm_docker.speculative(model_id, device) is not None
+
+    def start(model_id, say, mtp=False):
         state["started"].append(model_id)
-        state["chosen"] = model_id
+        state["asked"].append(mtp)
+        state["chosen"] = {"model": model_id, "mtp": drafts(model_id, mtp, state["device"])}
         say("download", "")
         say("up", "Container agent-loop-vllm-vllm-1  Started")
         say("load", "(APIServer pid=1) INFO Application startup complete.")
         if state["fail"]:
             raise state["fail"]
-        state["up"] = {"model": model_id, "url": "http://127.0.0.1:8000", "device": "cpu"}
+        state["up"] = {"model": model_id, "url": "http://127.0.0.1:8000", "device": state["device"], "mtp": state["chosen"]["mtp"]}
         return dict(state["up"])
 
-    def serving(model_id):
-        return dict(state["up"]) if state["up"] and state["up"]["model"] == model_id else None
+    def serving(model_id, mtp=False):
+        up = state["up"]
+        return dict(up) if up and up["model"] == model_id and up["mtp"] == drafts(model_id, mtp, up["device"]) else None
 
     def stop():
         state["stopped"] += 1
@@ -583,7 +592,7 @@ def docker_vllm(monkeypatch, models, outputs):
     monkeypatch.setattr(vllm_backend, "VLLMBackend", DockerLLM)
     monkeypatch.setattr(vllm_docker, "start", start)
     monkeypatch.setattr(vllm_docker, "serving", serving)
-    monkeypatch.setattr(vllm_docker, "chosen", lambda: state["chosen"])
+    monkeypatch.setattr(vllm_docker, "chosen", lambda: dict(state["chosen"]) if state["chosen"] else None)
     monkeypatch.setattr(vllm_docker, "stop", stop)
     return state
 
@@ -644,6 +653,44 @@ def test_a_tab_open_on_transformers_follows_another_that_picks_vllm_and_back(doc
     second.run()
     assert not second.exception and engine(second).value == "local" and docker_vllm["started"] == ["google/gemma-4-E2B-it"]
     assert docker_vllm["stopped"] == 1 and [m.model_id for m in models] == ["google/gemma-4-E2B-it"]  # loaded here once, for both
+
+
+def test_on_a_gpu_vllm_starts_with_mtp_and_the_switch_starts_it_again_without(docker_vllm, at):
+    docker_vllm["device"] = "gpu"
+    pick_engine(at, "vllm")
+    assert docker_vllm["asked"] == [True] and mtp_toggle(at).value is True and not mtp_toggle(at).disabled  # on by default
+    assert any(c.endswith("Docker（GPU） · MTP") for c in captions(at)) and "--speculative-config" not in mtp_toggle(at).help
+    tab(at).set_value("model").run()
+    assert "MTP 推測解碼 <b>開</b>" in page_html(at)
+    mtp_toggle(at).set_value(False).run()
+    assert not at.exception and docker_vllm["started"] == ["google/gemma-4-E2B-it"] * 2 and docker_vllm["asked"] == [True, False]
+    at.run()
+    assert len(docker_vllm["started"]) == 2 and mtp_toggle(at).value is False  # a rerun the same way starts nothing
+    click(at, "還原成模型建議值")
+    assert docker_vllm["asked"] == [True, False, True]  # MTP's default on vLLM is on
+
+
+def test_on_a_cpu_vllm_runs_without_mtp_and_the_switch_says_why(docker_vllm, browser, new_tab):
+    browser["locale"] = "en-US"
+    at = pick_engine(new_tab(), "vllm")
+    toggle = next(t for t in at.toggle if t.label == "MTP speculative decoding")
+    assert docker_vllm["asked"] == [True] and toggle.disabled and toggle.value is False and "CPU image" in toggle.help
+    assert not any("MTP" in c for c in captions(at))
+
+
+def test_a_tab_on_vllm_follows_the_mtp_another_tab_picked_without_starting_it_again(docker_vllm, new_tab):
+    docker_vllm["device"] = "gpu"
+    first = pick_engine(new_tab(), "vllm")
+    second = new_tab()
+    assert engine(second).value == "vllm" and mtp_toggle(second).value is True
+    mtp_toggle(first).set_value(False).run()
+    second.run()
+    assert not second.exception and mtp_toggle(second).value is False and docker_vllm["asked"] == [True, False]
+
+
+def test_with_transformers_a_model_without_a_drafter_says_vllm_on_a_gpu_can(at):
+    next(s for s in at.selectbox if s.label == "模型").set_value("Qwen/Qwen3.5-0.8B").run()
+    assert mtp_toggle(at).disabled and "vLLM（Docker）" not in mtp_toggle(at).help and "vLLM (Docker)" in mtp_toggle(at).help
 
 
 def test_another_model_on_vllm_starts_the_server_with_it(docker_vllm, at):

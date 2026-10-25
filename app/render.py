@@ -1082,7 +1082,9 @@ def knobs_html(s: dict, defaults: dict, lang: str) -> str:
         ("top-k", s["top_k"] or pick(lang, "不限", "no limit"), pick(lang, "只保留機率最高的 k 個候選。", "Keeps only the k most likely candidates.")),
         ("top-p", s["top_p"], pick(lang, "從機率最高的開始累加，總和達到 p 就停（nucleus sampling）。",
                                    "Adds up probabilities from the most likely down and stops once the sum reaches p (nucleus sampling).")),
-        (pick(lang, "MTP 推測解碼", "MTP speculative decoding"), pick(lang, "開", "on") if s.get("mtp") else pick(lang, "關", "off"),
+        (pick(lang, "MTP 推測解碼", "MTP speculative decoding"),
+         # None: a vLLM server's own --speculative-config decides
+         pick(lang, "由伺服器決定", "the server's") if "mtp" in s and s["mtp"] is None else pick(lang, "開", "on") if s.get("mtp") else pick(lang, "關", "off"),
          pick(lang, "草稿模型先猜接下來幾個 token，主模型一次 forward 全部驗證。收下的 token 跟不開時的分布一樣，只是少跑幾次 forward。",
               "The drafter guesses the next few tokens, and the model checks them all in one forward pass. "
               "The tokens kept follow the same distribution as without it; it just takes fewer forward passes.")),

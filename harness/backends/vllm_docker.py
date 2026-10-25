@@ -7,7 +7,8 @@ the app, so that only one of the two holds the model at a time; every tab follow
 
 Docker Compose keeps track of the container: `docker compose up -d` with the model already running leaves it be,
 with another model replaces it, and the first time pulls or builds the image. Where Docker has the nvidia runtime
-(Linux with the NVIDIA Container Toolkit), compose.gpu.yaml goes on top and runs vLLM's CUDA image on the GPU;
+(Linux with the NVIDIA Container Toolkit), compose.gpu.yaml goes on top and runs vLLM's CUDA image on the GPU, where
+it can also decode speculatively (MTP, families.VLLM_SPECULATIVE), which the page asks for by default;
 elsewhere, a Mac say, compose.yaml runs vLLM's CPU image (vllm-cpu/). AGENT_LOOP_VLLM_DEVICE=cpu or gpu decides instead.
 
 The server never downloads anything. The weights come into models/ here first, at the commit families.REVISIONS pins,
@@ -103,10 +104,24 @@ def _compose(device: str, *args: str) -> list[str]:
     return ["compose", "--progress", "plain", "-p", PROJECT, *files, *args]
 
 
-def _env(model_id: str) -> dict:
-    """What compose.yaml reads: the model, the commit to load it at, and the folder it was downloaded into."""
+def _env(model_id: str, config: dict | None = None) -> dict:
+    """What the compose files read: the model, the commit to load it at, the folder it was downloaded into, and on the
+    GPU how it is decoded speculatively ("None" is vLLM's word for not at all), with each step's counts in detail, which
+    vLLM refuses without a config."""
     return {**os.environ, "VLLM_MODEL": model_id, "VLLM_REVISION": families.REVISIONS.get(model_id, "main"),
-            "AGENT_LOOP_MODELS": str(MODELS_DIR)}
+            "AGENT_LOOP_MODELS": str(MODELS_DIR), "VLLM_SPECULATIVE_CONFIG": json.dumps(config) if config else "None",
+            "VLLM_SPEC_DECODE_METRICS": "detailed" if config else "none"}
+
+
+def speculative(model_id: str, where: str) -> dict | None:
+    """The --speculative-config of model_id on `where` (families.VLLM_SPECULATIVE, a drafter at its pinned commit), or
+    None: on the CPU, where vLLM 0.32's image runs neither model's MTP, and for a model without one."""
+    config = families.VLLM_SPECULATIVE.get(model_id)
+    if where != "gpu" or not config:
+        return None
+    if drafter := config.get("model"):
+        return {**config, "revision": families.REVISIONS.get(drafter, "main")}
+    return dict(config)
 
 
 def url() -> str:
@@ -135,39 +150,48 @@ def _serves(address: str, model_id: str) -> bool:
     return any(card.get("id") == model_id for card in cards)
 
 
-def chosen() -> str | None:
-    """The model this process asked the server to run and has not stopped, even while it starts or after it failed to:
-    a tab that finds one runs the model there rather than loading it beside it. Runs no `docker`."""
-    return _chosen.get("model")
+def chosen() -> dict | None:
+    """What this process asked the server to run and has not stopped, {"model", "mtp"}, even while it starts or after
+    it failed to: a tab that finds it runs the model there, the same way, rather than loading it beside it or starting
+    the server again. "mtp" is what was asked for until the server's device is known, then whether it drafts there.
+    Runs no `docker`."""
+    return dict(_chosen) if _chosen else None
 
 
-def serving(model_id: str) -> dict | None:
-    """The server this process started, {"model", "url", "device"}, if it still answers and serves model_id."""
-    if _server.get("model") == model_id and _serves(_server["url"], model_id):
+def serving(model_id: str, mtp: bool = False) -> dict | None:
+    """The server this process started, {"model", "url", "device", "mtp"}, if it still answers and serves model_id
+    decoded as asked: speculatively if `mtp` and its device can, else not."""
+    if (_server.get("model") == model_id and _server["mtp"] == (mtp and speculative(model_id, _server["device"]) is not None)
+            and _serves(_server["url"], model_id)):
         return dict(_server)
     return None
 
 
-def start(model_id: str, say: Callable[[str, str], None]) -> dict:
-    """Start the server for model_id, or replace the one that serves another model, and wait until it answers; then
-    {"model", "url", "device"}. say(stage, line) tells what is going on, with the last line of output: "download"
-    (the weights into models/), "up" (Docker Compose pulling or building the image and starting the container) and
+def start(model_id: str, say: Callable[[str, str], None], mtp: bool = False) -> dict:
+    """Start the server for model_id, or replace the one that serves another model or decodes it another way, and wait
+    until it answers; then {"model", "url", "device", "mtp"}. With `mtp`, on a GPU, it decodes speculatively
+    (speculative()). say(stage, line) tells what is going on, with the last line of output: "download" (the weights,
+    and a drafter's, into models/), "up" (Docker Compose pulling or building the image and starting the container) and
     "load" (vLLM loading the model)."""
-    _chosen["model"] = model_id
+    _chosen.update(model=model_id, mtp=mtp)
     if os.path.isdir(model_id):
         raise DockerError(f"vLLM 的容器只讀得到 models/ 裡的模型，讀不到 {model_id} 這個資料夾；請用 Hugging Face 的 id。",
                           f"vLLM's container reads models from models/ only, not the folder {model_id}; use a Hugging Face id.")
     with _lock:
-        if server := serving(model_id):  # started from another tab meanwhile
+        if server := serving(model_id, mtp):  # started from another tab meanwhile
             return server
         _server.clear()
         where = device()
+        config = speculative(model_id, where) if mtp else None
+        _chosen["mtp"] = config is not None
         if _run(["compose", "version"]).returncode != 0:
             raise DockerError("這台電腦的 Docker 沒有 Compose（`docker compose`）。請更新 Docker，或另外安裝 Docker Compose。",
                               "This computer's Docker has no Compose (`docker compose`). Update Docker, or install Docker Compose.")
         say("download", "")
         snapshot_download(model_id, revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
-        env = _env(model_id)
+        if config and (drafter := config.get("model")):  # the server reads models/ offline, its drafter's weights too
+            snapshot_download(drafter, revision=config["revision"], cache_dir=MODELS_DIR)
+        env = _env(model_id, config)
         code, tail = _stream(_compose(where, "up", "--detach"), env, lambda line: say("up", line))
         if code != 0:
             printed = "\n".join(tail)
@@ -186,7 +210,7 @@ def start(model_id: str, say: Callable[[str, str], None]) -> dict:
             log = _run(["logs", "--tail", "1", container], merge=True).stdout.strip()
             say("load", log.splitlines()[-1] if log else "")
             time.sleep(POLL)
-        _server.update(model=model_id, url=address, device=where)
+        _server.update(model=model_id, url=address, device=where, mtp=config is not None)
         return dict(_server)
 
 
