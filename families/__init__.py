@@ -30,6 +30,12 @@ DRAFTERS = {
     "google/gemma-4-E2B-it": "google/gemma-4-E2B-it-assistant",
 }
 
+# GPT-2's byte-level BPE, which Qwen's vocabulary uses, spells every byte as one printable character: printable
+# Latin-1 bytes stand for themselves and the rest move up to U+0100 and beyond, so a space is Ġ, a newline Ċ and
+# 如果 (six bytes of UTF-8) is å¦Ĥæŀľ. This maps each of those characters back to its byte.
+_PRINTABLE = [*range(0x21, 0x7F), *range(0xA1, 0xAD), *range(0xAE, 0x100)]
+BYTE_OF = {chr(b): b for b in _PRINTABLE} | {chr(0x100 + n): b for n, b in enumerate(b for b in range(256) if b not in _PRINTABLE)}
+
 
 @dataclass(frozen=True)
 class Family:
@@ -54,6 +60,18 @@ class Family:
     tools_note: dict[str, str]  # how the tool schemas appear in the prompt
     model_note: dict[str, str] = field(default_factory=dict)
     sampling: dict | None = None  # recommended temperature / top_p / top_k when a checkpoint ships none
+    byte_level: bool = False  # the vocabulary spells bytes as characters, GPT-2 style (BYTE_OF); otherwise it is SentencePiece's
+
+    def show_piece(self, piece: str) -> str:
+        """A vocabulary entry as the text it stands for, which is what a token's popover shows: ␣ for a space,
+        ↵ for a newline, and a byte that is only part of a character as <0xE5>, the way SentencePiece writes one."""
+        if self.byte_level and all(c in BYTE_OF for c in piece):
+            # surrogateescape keeps each byte that is not whole UTF-8 as U+DC80–U+DCFF, so it can be written in hex.
+            text = bytes(BYTE_OF[c] for c in piece).decode("utf-8", errors="surrogateescape")
+            text = "".join(f"<0x{ord(c) - 0xDC00:02X}>" if "\udc80" <= c <= "\udcff" else c for c in text)
+        else:
+            text = piece.replace("▁", " ")  # SentencePiece marks a leading space with ▁
+        return text.replace(" ", "␣").replace("\n", "↵")
 
     @cached_property
     def special_tokens(self) -> dict[str, dict[str, tuple[str, str]]]:

@@ -235,4 +235,5 @@ QWEN3_5 = Family(
     },
     # The checkpoint ships no generation_config.json; these are the model card's non-thinking text settings.
     sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},
+    byte_level=True,
 )

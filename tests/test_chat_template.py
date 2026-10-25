@@ -145,6 +145,16 @@ def test_thinking_mode(model):
     assert after.endswith(model.family.thought_prefix)
 
 
+def test_a_token_popover_shows_the_text_the_token_stands_for(model):
+    """However the vocabulary spells a token (Qwen's 如果 is å¦Ĥæŀľ), the popover shows its text; a rare
+    character split into bytes shows each byte in hex."""
+    text = "例如，如果現在是台北市 9 點 52 分\n😀 é"
+    ids = model.tokenizer(text, add_special_tokens=False).input_ids
+    assert "".join(model.family.show_piece(model.piece(i)) for i in ids) == text.replace(" ", "␣").replace("\n", "↵")
+    ids = model.tokenizer("𠀀", add_special_tokens=False).input_ids
+    assert len(ids) > 1 and "".join(model.family.show_piece(model.piece(i)) for i in ids) == "<0xF0><0xA0><0x80><0x80>"
+
+
 def test_every_special_token_in_a_prompt_gets_a_chip(model):
     prompt = model.render(after_call("calculator", {"expression": "1"}), schemas(), thinking=True)
     ids = model.tokenizer(prompt, add_special_tokens=False).input_ids

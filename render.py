@@ -118,11 +118,6 @@ def n_steps(n: int, lang: str) -> str:
     return pick(lang, f"{n} 步", f"{n} step" + ("" if n == 1 else "s"))
 
 
-def show_piece(piece: str) -> str:
-    """SentencePiece marks a leading space with ▁; show it as ␣ so it reads as a space."""
-    return piece.replace("▁", "␣").replace("\n", "↵")
-
-
 def prose_html(text: str) -> str:
     """Escape a description and set its `backticked` parts in monospace."""
     parts = esc(text).split("`")
@@ -468,7 +463,7 @@ def special_note(tok: dict, family: families.Family, lang: str) -> str:
     return f'<span class="tip-what">{meaning}</span>' if meaning else ""
 
 
-def draft_note(tok: dict, lang: str) -> str:
+def draft_note(tok: dict, family: families.Family, lang: str) -> str:
     """What MTP did at this position: the drafter's guess was kept, or turned down and replaced."""
     draft = tok.get("draft")
     if not draft:
@@ -481,7 +476,7 @@ def draft_note(tok: dict, lang: str) -> str:
             "<b>MTP: the drafter guessed it</b>The drafter guessed this token first, and the model kept it after checking it "
             "in the same forward pass (in greedy decoding it had to be the top token; when sampling, it is kept with its sampling probability).",
         ) + "</span>"
-    guess = f'<span class="tk">{esc(show_piece(draft["piece"]))}</span>'
+    guess = f'<span class="tk">{esc(family.show_piece(draft["piece"]))}</span>'
     return '<span class="tip-draft">' + pick(
         lang,
         f"<b>MTP：草稿被退回</b>草稿模型猜的是 {guess}，"
@@ -496,7 +491,7 @@ def tip_html(tok: dict, family: families.Family, lang: str) -> str:
     for c in tok["top"]:
         cls = "c" + (" on" if c["id"] == tok["id"] else "") + ("" if c["kept"] else " cut")
         rows.append(
-            f'<span class="{cls}"><span class="cp">{esc(show_piece(c["piece"]))}</span>'
+            f'<span class="{cls}"><span class="cp">{esc(family.show_piece(c["piece"]))}</span>'
             f'<span class="b"><span style="width:{max(c["p"] * 100, 1):.1f}%"></span></span><span>{pct(c["p"])}</span></span>'
         )
     outside = "" if any(c["id"] == tok["id"] for c in tok["top"]) else (
@@ -505,9 +500,9 @@ def tip_html(tok: dict, family: families.Family, lang: str) -> str:
     n = tok["index"] + 1
     top = pick(lang, "前 5 名候選（模型原始分布，灰色 = 被剃掉）", "top 5 by model probability; gray = cut")
     return (
-        f'<span class="tip"><span class="tip-piece">{esc(show_piece(tok["piece"]))}</span>'
+        f'<span class="tip"><span class="tip-piece">{esc(family.show_piece(tok["piece"]))}</span>'
         f'<span class="tip-sub">token id {tok["id"]} · {pick(lang, f"第 {n} 個生成的 token", f"generated token #{n}")}</span>'
-        f'{special_note(tok, family, lang)}{draft_note(tok, lang)}'
+        f'{special_note(tok, family, lang)}{draft_note(tok, family, lang)}'
         f'<span class="tip-grid"><span>{pick(lang, "模型給的機率", "model probability")}</span><b>{pct(tok["p"])}</b>'
         f'<span>{pick(lang, "排名", "rank")}</span><b>#{tok["rank"]}</b>'
         f'<span>{pick(lang, "取樣時的機率", "sampling probability")}</span><b>{pct(tok["p_sampled"])}</b>'
@@ -527,7 +522,7 @@ def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family, la
         if tok["special"]:
             body, style = esc(tok["piece"]), ""
         else:
-            body = esc(tok["text"] or tok["piece"]).replace("\n", '<span class="nl">↵</span>\n')
+            body = esc(tok["text"] or family.show_piece(tok["piece"])).replace("\n", '<span class="nl">↵</span>\n')
             style = f' style="--h:{heat(tok["p"])}"'
         if with_tips:
             tip = tip_html(tok, family, lang)

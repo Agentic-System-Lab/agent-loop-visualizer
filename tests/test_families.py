@@ -33,6 +33,21 @@ def test_special_re_prefers_the_longest_token(family):
         assert family.special_re.match(piece).group(0) == piece
 
 
+def test_a_token_shows_as_the_text_it_stands_for():
+    """Qwen's vocabulary spells bytes as characters (如果 is å¦Ĥæŀľ) and Gemma's marks a space with ▁; a popover shows the text."""
+    assert QWEN3_5.show_piece("å¦Ĥæŀľ") == "如果"
+    assert QWEN3_5.show_piece("ĠhelloĊ") == "␣hello↵"
+    assert QWEN3_5.show_piece("<|im_end|>") == "<|im_end|>"
+    assert GEMMA4.show_piece("▁Hi\n") == "␣Hi↵"
+
+
+def test_a_byte_that_is_only_part_of_a_character_shows_in_hex():
+    """Both vocabularies split a rare character into bytes, and both show such a byte the same way."""
+    assert QWEN3_5.show_piece("ð") == "<0xF0>" and QWEN3_5.show_piece("łĢ") == "<0xA0><0x80>"
+    assert QWEN3_5.show_piece("Ġð") == "␣<0xF0>"
+    assert GEMMA4.show_piece("<0xF0>") == "<0xF0>"
+
+
 def test_the_menu_lists_one_model_of_each_family():
     assert len(families.MODELS) == len(families.FAMILIES)
 

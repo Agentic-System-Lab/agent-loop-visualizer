@@ -448,6 +448,19 @@ def test_token_tooltip():
     assert "不在前 5 名" not in html and 'class="c on"' in html
 
 
+def test_qwen_tokens_show_as_text_not_as_their_byte_spelling():
+    """Qwen's vocabulary writes 如果 as å¦Ĥæŀľ; the popover, its candidates and a byte token's body show the text."""
+    tok = {
+        "id": 96604, "piece": "å¦Ĥæŀľ", "text": "如果", "special": False, "channel": "content", "index": 456,
+        "p": 0.378, "rank": 1, "p_sampled": 0.4, "kept": 20,
+        "top": [{"id": 96604, "piece": "å¦Ĥæŀľ", "p": 0.378, "kept": True}, {"id": 23066, "piece": "Ġhello", "p": 0.1, "kept": True}],
+    }
+    byte = {**tok, "id": 397, "piece": "ð", "text": "", "top": []}
+    html = render.tokens_html([tok, byte], True, QWEN3_5, lang="zh")
+    assert '<span class="tip-piece">如果</span>' in html and '<span class="cp">␣hello</span>' in html
+    assert '&lt;0xF0&gt;<span class="tip">' in html and "å" not in html and "Ġ" not in html
+
+
 def test_tokens_html_heat_and_newlines():
     toks = [
         {"id": 1, "piece": "a", "text": "a\nb", "special": False, "channel": "content", "p": 1.0},
