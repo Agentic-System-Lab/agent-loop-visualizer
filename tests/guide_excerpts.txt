@@ -240,7 +240,7 @@ harness/families/__init__.py: class FileNote:
     def _sampling_defaults(self) -> dict:
 
 [[app/page.py|key="model_id", on_change=switch_model]]
-    tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy,
+    st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy, help=about)
 
 [[harness/backends/simple_backend.py|def load_drafter(self):]]
     def load_drafter(self):

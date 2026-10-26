@@ -14,6 +14,7 @@ import tomllib
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import streamlit as st
@@ -425,12 +426,15 @@ def vllm(monkeypatch, models, outputs):
     """The page with VLLM_URL set. The server serves Qwen3.5 under the name "qwen", and a fake model with what a
     VLLMBackend has (the server in its info, nothing about weights loaded here) stands in for the backend; the server
     takes images but refused video, and sends sampling masks. `made` holds each one the page makes; set `down` and the
-    server cannot be reached, `defaults` for the decoding the checkpoint recommends, or `adapters` for the LoRA
-    adapters it serves too."""
-    state = {"made": [], "down": False, "adapters": []}
+    server cannot be reached, `defaults` for the decoding the checkpoint recommends, `adapters` for the LoRA
+    adapters it serves too, or `served` for other models it lists before Qwen, with their families in `families`
+    (None for a family the page does not know, which the backend refuses; a model not there cannot be told)."""
+    state = {"made": [], "down": False, "adapters": [], "served": [], "families": {}}
 
     class ServedLLM(FakeLLM):
         def __init__(self, model_id, url):
+            if model_id in state["families"] and state["families"][model_id] is None:
+                raise vllm_backend.unsupported(model_id, "model_type 'llama'", "llama")
             super().__init__(outputs, model_id)
             self.modalities = ("image",)
             self.drafter_id = None
@@ -446,11 +450,17 @@ def vllm(monkeypatch, models, outputs):
     def served_models(url, transport=None):
         if state["down"]:
             raise vllm_backend.ServerError(f"連不上 {url} 的 vLLM 伺服器。", f"Could not reach the vLLM server at {url}.")
-        return [{"id": "qwen", "root": "Qwen/Qwen3.5-0.8B", "max_model_len": 8192}, *state["adapters"]]
+        return [*state["served"], {"id": "qwen", "root": "Qwen/Qwen3.5-0.8B", "max_model_len": 8192}, *state["adapters"]]
+
+    def family_of(model_id):
+        if model_id not in state["families"]:
+            raise OSError("Cannot find the requested files in the disk cache and outgoing traffic has been disabled.")
+        return state["families"][model_id]
 
     monkeypatch.setattr(page, "VLLM_URL", "http://localhost:8000")
     monkeypatch.setattr(vllm_backend, "VLLMBackend", ServedLLM)
     monkeypatch.setattr(vllm_backend, "served_models", served_models)
+    monkeypatch.setattr(vllm_backend, "family_of", family_of)
     return state
 
 
@@ -479,6 +489,65 @@ def test_a_vllm_error_mid_run_is_shown_in_the_pages_language(vllm, browser, new_
     outputs.append(vllm_backend.ServerError("vLLM 伺服器在生成時出錯：out of memory", "The vLLM server failed while generating: out of memory"))
     ask(at, "Hi")
     assert [e.value for e in at.error] == [message] and message in page_html(at)
+
+
+@pytest.mark.parametrize(("locale", "says"), [("zh-TW", "還不支援它的家族"), ("en-US", "does not support yet")])
+def test_with_vllm_the_menu_marks_what_the_page_does_not_support_and_starts_on_what_it_does(vllm, browser, new_tab, locale, says):
+    vllm["served"] = [{"id": "llama", "root": "meta-llama/Llama-3.2-1B-Instruct"}, {"id": "mystery", "root": "/data/mystery"},
+                      {"id": "e4b", "root": "google/gemma-4-E4B-it"}]
+    vllm["families"] = {"meta-llama/Llama-3.2-1B-Instruct": None, "google/gemma-4-E4B-it": GEMMA4}  # what /data/mystery is cannot be told
+    browser["locale"] = locale
+    at = new_tab()
+    menu = at.selectbox(key="model_id")
+    # The same labels in both languages, as a selectbox's must be; a model whose family could not be told is not marked.
+    assert menu.options == ["⚠ meta-llama/Llama-3.2-1B-Instruct", "/data/mystery", "google/gemma-4-E4B-it", "Qwen3.5 0.8B (Alibaba)"]
+    assert menu.value == "google/gemma-4-E4B-it" and [m.model_id for m in vllm["made"]] == ["google/gemma-4-E4B-it"]  # the first it supports
+    assert not at.error and "⚠" in menu.help and says in menu.help
+
+
+@pytest.mark.parametrize(("locale", "message", "title", "asks"), [
+    ("zh-TW", "這個網頁還不支援 meta-llama/Llama-3.2-1B-Instruct（model_type 'llama'）；目前支援 Gemma 4、Qwen3.5。",
+     "支援 meta-llama/Llama-3.2-1B-Instruct（llama）", "## 想用它做什麼"),
+    ("en-US", "This page does not support meta-llama/Llama-3.2-1B-Instruct yet (model_type 'llama'); it supports Gemma 4, Qwen3.5.",
+     "Support meta-llama/Llama-3.2-1B-Instruct (llama)", "## What I would like to use it for"),
+])
+def test_a_model_the_page_does_not_support_says_why_and_offers_a_github_issue_filled_in(vllm, browser, new_tab, locale, message, title, asks):
+    vllm["served"] = [{"id": "llama", "root": "meta-llama/Llama-3.2-1B-Instruct"}]
+    vllm["families"] = {"meta-llama/Llama-3.2-1B-Instruct": None}
+    browser["locale"] = locale
+    at = new_tab()
+    at.selectbox(key="model_id").set_value("meta-llama/Llama-3.2-1B-Instruct").run()
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == [message] and not at.chat_input
+    assert at.selectbox(key="model_id").options[-1] == "Qwen3.5 0.8B (Alibaba)"  # the menu is still there to pick another
+
+    [button] = at.link_button
+    url = urlsplit(button.proto.url)
+    assert f"{url.scheme}://{url.netloc}{url.path}" == "https://github.com/cyyeh/agent-loop-visualizer/issues/new"
+    query = parse_qs(url.query)
+    [body] = query["body"]
+    assert query["title"] == [title] and asks in body
+    assert "`meta-llama/Llama-3.2-1B-Instruct`" in body and "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct" in body and "`llama`" in body
+    assert "localhost" not in button.proto.url  # never the server's address, which may be a private one
+    [invite] = [m.value for m in at.markdown if "github.com" in m.value]
+    assert f"{page.ISSUES_URL}?q=is%3Aissue%20llama" in invite  # a search for one someone opened already
+    if locale == "en-US":
+        assert not CJK.search(button.label + title + body + invite)
+
+
+def test_the_github_issue_for_a_folder_names_the_folder_alone(vllm, browser, new_tab, tmp_path):
+    folder = tmp_path / "jimmys-lab" / "my-model"
+    folder.mkdir(parents=True)
+    vllm["served"] = [{"id": "mine", "root": str(folder)}]
+    vllm["families"] = {str(folder): None}
+    browser["locale"] = "en-US"
+    at = new_tab()
+    at.selectbox(key="model_id").set_value(str(folder)).run()
+    [button] = at.link_button
+    query = parse_qs(urlsplit(button.proto.url).query)
+    [body] = query["body"]
+    assert query["title"] == ["Support my-model (llama)"] and "a folder on my machine" in body
+    assert "jimmys-lab" not in button.proto.url and "huggingface.co" not in body
 
 
 def test_with_vllm_the_sidebar_says_the_server_decides_speculative_decoding(vllm, at):

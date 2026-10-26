@@ -13,7 +13,8 @@ every half second. Clicking stop or approve reruns the script but not the thread
 so the loop keeps going.
 
 With VLLM_URL set, a vLLM server runs the model instead of this machine (harness/backends/vllm_backend.py), and the
-model menu lists what that server serves. Without it, the sidebar can still pick vLLM: the page then starts a
+model menu lists what that server serves, marking those the page does not support; picking one of those says why
+and offers a GitHub issue asking for it, already filled in. Without it, the sidebar can still pick vLLM: the page then starts a
 vLLM server in Docker from docker-compose/compose.yaml (harness/backends/vllm_docker.py). Either way, the model in
 memory is let go before the next one loads, so switching models or what runs them never holds two.
 
@@ -37,6 +38,7 @@ import threading
 import uuid
 import weakref
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 import streamlit as st
 
@@ -61,6 +63,7 @@ SAMPLES = ASSETS / "examples"  # the files some examples attach, and the sample 
 UPLOADS = Path(os.environ.get("AGENT_LOOP_UPLOADS", Path.home() / ".cache" / "agent-loop-visualizer" / "uploads"))
 MAX_UPLOAD_MB = 50
 GUIDE_URL = "https://cyyeh.github.io/agent-loop-visualizer/"  # built from app/guide.py; zh/ and en/ under it are the two languages
+ISSUES_URL = "https://github.com/cyyeh/agent-loop-visualizer/issues"  # where a model the page does not support yet can be asked for
 LANG_COOKIE = "agent_loop_lang"  # the language last picked on the switch
 POLL_SECONDS = 0.5
 BOX_HEIGHT = 620  # the chat and each tab scroll in a box this tall; side by side, style.css fits them to the window
@@ -117,17 +120,41 @@ def tr(zh: str, en: str) -> str:
 @st.cache_data(ttl=60, show_spinner=False)
 def model_menu() -> dict[str, str]:
     """The model menu, id -> label: MODELS, or with VLLM_URL the models the vLLM server serves, each by what it was
-    loaded from, which is the Hugging Face id its tokenizer is downloaded by."""
+    loaded from, which is the Hugging Face id its tokenizer is downloaded by, and marked ⚠ when the page does not
+    support it. The mark is the same in both languages, as every label in a selectbox must be."""
     if not VLLM_URL:
         return MODELS
     # A LoRA adapter (a card with a parent) is left out: its root is the adapter's folder on the server.
     served = (card.get("root") or card["id"] for card in vllm_backend.served_models(VLLM_URL) if not card.get("parent"))
-    return {model_id: families.MODELS.get(model_id, model_id) for model_id in served}
+    return {model_id: ("⚠ " if supported(model_id) is False else "") + families.MODELS.get(model_id, model_id) for model_id in served}
+
+
+@st.cache_data(show_spinner=False)
+def served_family(model_id: str) -> str | None:
+    """The family of a model the vLLM server serves, from its config.json alone (vllm_backend.family_of), or None for
+    one the page does not support. It is kept while the app runs, so the menu does not ask the Hub every minute; what
+    could not be told raises, which is not kept, and is asked again the next time the menu is made."""
+    family = vllm_backend.family_of(model_id)
+    return family.key if family else None
+
+
+def supported(model_id: str) -> bool | None:
+    """Whether the page runs a model the menu lists; None when that cannot be told (no way to the Hub, or a folder
+    only on the server, which then says why it does not load)."""
+    if model_id in families.MODELS:
+        return True
+    try:
+        return served_family(model_id) is not None
+    except (OSError, ValueError):
+        return None
 
 
 def default_model() -> str:
+    """The model a new tab starts on: MODEL_ID's when the menu has it, else the first the page supports, else the first."""
     menu = model_menu()
-    return DEFAULT_MODEL if DEFAULT_MODEL in menu else next(iter(menu))
+    if DEFAULT_MODEL in menu:
+        return DEFAULT_MODEL
+    return next((model_id for model_id in menu if supported(model_id)), next(iter(menu)))
 
 
 @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
@@ -416,12 +443,15 @@ def model_picker(menu: dict[str, str], busy: bool):
     that while vLLM starts, or after it failed to, another model or transformers can still be picked."""
     with st.sidebar:
         st.markdown(tr("### Agent Loop 可視化", "### Agent Loop Visualizer"))
-        st.selectbox(
-            tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy,
-            help=tr("換模型會開始新的對話，解碼設定也換成新模型的建議值。harness、工具和畫面都不變。",
-                    "Switching models starts a new conversation and resets the decoding settings to what the new model recommends. "
-                    "The harness, the tools and the page stay the same."),
-        )
+        about = tr("換模型會開始新的對話，解碼設定也換成新模型的建議值。harness、工具和畫面都不變。",
+                   "Switching models starts a new conversation and resets the decoding settings to what the new model recommends. "
+                   "The harness, the tools and the page stay the same.")
+        if VLLM_URL:
+            names = [f.name for f in families.FAMILIES.values()]
+            about += tr(f"\n\n標 ⚠ 的模型，這個網頁還不支援它的家族（目前支援 {'、'.join(names)}）；選了會說明原因，也可以直接到 GitHub 提 issue。",
+                        f"\n\nA model marked ⚠ is of a family this page does not support yet (it supports {', '.join(names)}); "
+                        "picking it says why, and offers a GitHub issue asking for it.")
+        st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy, help=about)
         if not VLLM_URL:
             # The same in both languages: with full-width parentheses the two options no longer fit side by side.
             engines = {"local": "transformers", "vllm": "vLLM (Docker)"}
@@ -779,6 +809,43 @@ def model_panel(llm: Backend, data: dict | None):
     st.html(render.folder_html(llm.info, lang))
 
 
+def issue_url(error: vllm_backend.UnsupportedModel) -> str:
+    """A new GitHub issue asking the page to support a model, its title and description filled in in the page's
+    language. It names the model and its model_type, never VLLM_URL, which may be a private address, and a checkpoint
+    in a folder by the folder's name alone."""
+    on_hub = not os.path.isdir(error.model_id)
+    name = error.model_id if on_hub else Path(error.model_id).name
+    kind = error.model_type
+    title = tr(f"支援 {name}" + (f"（{kind}）" if kind else ""), f"Support {name}" + (f" ({kind})" if kind else ""))
+    where = tr(f"（https://huggingface.co/{name}）" if on_hub else "（這台電腦上的資料夾）", f" (https://huggingface.co/{name})" if on_hub else " (a folder on my machine)")
+    body = tr(
+        "想在 Agent Loop 可視化裡跑這個模型，網頁說它還不支援。\n\n"
+        f"- 模型：`{name}`{where}\n"
+        f"- config.json 的 model_type：" + (f"`{kind}`" if kind else "（沒有 config.json，或讀不出來）") + "\n"
+        "- 跑在：vLLM 伺服器（`VLLM_URL`）\n\n"
+        "## 想用它做什麼\n\n"
+        "（例如：想拿它的 agent loop 和網頁已經支援的模型比較。）\n",
+        "I would like to run this model in the Agent Loop Visualizer, and the page says it does not support it yet.\n\n"
+        f"- Model: `{name}`{where}\n"
+        f"- model_type in its config.json: " + (f"`{kind}`" if kind else "(no config.json, or it could not be read)") + "\n"
+        "- Runs on: a vLLM server (`VLLM_URL`)\n\n"
+        "## What I would like to use it for\n\n"
+        "(Say, to compare its agent loop with those of the models the page already supports.)\n",
+    )
+    return f"{ISSUES_URL}/new?{urlencode({'title': title, 'body': body}, quote_via=quote)}"
+
+
+def ask_for_model(error: vllm_backend.UnsupportedModel):
+    """Under the error for a model the page does not support: an invitation to ask for it on GitHub, with the issue
+    filled in for the person to read and change before sending it, and a search for one someone has opened already."""
+    search = f"{ISSUES_URL}?{urlencode({'q': f'is:issue {error.model_type or Path(error.model_id).name}'}, quote_via=quote)}"
+    st.markdown(tr(f"想讓網頁支援這個模型嗎？歡迎到 GitHub 提 issue：按下面的按鈕，標題和內容都已經填好，送出前可以再改。"
+                   f"也可以先[看看有沒有人提過]({search})。",
+                   f"Would you like the page to support this model? You are welcome to open an issue on GitHub: the button below fills in "
+                   f"its title and description, which you can change before you submit it. You can also [see whether someone has asked already]({search})."))
+    st.link_button(tr("到 GitHub 提 issue", "Open an issue on GitHub"), issue_url(error), icon=":material/add_comment:")
+
+
 # ---------- pages ----------
 
 def agent_page():
@@ -789,9 +856,12 @@ def agent_page():
         model_picker(model_menu(), polling)
         llm = current_llm()
     except (vllm_backend.ServerError, vllm_docker.DockerError) as e:  # the vLLM server is down, refused or did not start
-        st.error(e.text[st.session_state.lang], icon=":material/cloud_off:")
+        unsupported = isinstance(e, vllm_backend.UnsupportedModel)
+        st.error(e.text[st.session_state.lang], icon=":material/extension_off:" if unsupported else ":material/cloud_off:")
         if isinstance(e, vllm_docker.DockerError):  # the sidebar still has the menu and the switch back to transformers
             st.button(tr("再試一次", "Try again"), icon=":material/refresh:", on_click=retry_vllm)
+        if unsupported:  # and the menu has the models the page does support
+            ask_for_model(e)
         st.stop()
     sidebar(llm, own_live, polling)
     # Streamlit keeps the fragment after the run, to run it again on its own; held weakly, the model can still be let go
