@@ -5,8 +5,9 @@ Qwen3.5 0.8B, through Hugging Face `transformers`, or on vLLM: in Docker, starte
 server at `VLLM_URL`) and draws every step of its agent loop: context,
 model, harness, environment, stop, down to each token's probability. A question can carry images, sound
 and video for the model, and, when the sidebar lets the model write code, data files for a `run_python`
-tool that runs in a Docker sandbox. The sidebar can also hand the loop to pi, a coding agent that asks a
-model it has credentials for, and draw what pi reports doing, without tokens. It is a teaching project for the
+tool that runs in a Docker sandbox. The sidebar can also hand the loop to pi, a coding agent, which asks
+either the page's own model (served to it over HTTP on 127.0.0.1, every token still drawn) or a model it has credentials
+for (drawn from what pi reports, without tokens). It is a teaching project for the
 Agent Atlas course. The page and its 運作說明 (How it works) guide are in Traditional Chinese and
 English. README.md (English) and README.zh-TW.md (Traditional Chinese) are the full account of what the
 page shows, the architecture, the tests and the known limits; read the parts you are about to change.
@@ -48,7 +49,8 @@ harness/                 the agent, the model and what runs it; no Streamlit
     harness.py           Harness: what the page asks of whatever runs the loop (run, stop, decide), and the events every harness sends
     simple_harness.py    this project's harness (SimpleHarness, RunSettings): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
     pi_harness.py        PiHarness: pi (PI_COMMAND) in RPC mode for each question, its JSON records turned into the page's events; probe() lists its models
-    pi_approve.ts        the pi extension behind Ask me before running a tool: a confirm dialog that pi_harness.py answers on stdin
+    pi_extension.ts      the extension every pi the page starts loads: reports each request (a notification), registers the page's model, asks before a tool call (a confirm dialog pi_harness.py answers on stdin)
+    model_endpoint.py    the page's model as an OpenAI-compatible chat completions endpoint on 127.0.0.1, behind a token, for pi; its events go into pi's step
   backends/
     backend.py           Backend: what SimpleHarness and the page ask of whatever runs the model (SimpleBackend, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
     simple_backend.py    SimpleBackend: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
@@ -82,8 +84,9 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   page only draws it, which is why stop and approve can rerun the script without interrupting the loop.
   A new or changed event needs render.py, the `EVENTS` table in app/guide.py (tests check that it lists
   every event either harness sends and points at the line that sends it) and the event list in both READMEs.
-  Most events are optional (`harness.SOMETIMES`): pi sends no `context`, `prefill`, `token` or family but `delta`, and
-  render.py draws a step from what it has, never filling in what the harness did not see.
+  Most events are optional (`harness.SOMETIMES`): pi sends `request` (what it sent the model), and on a provider's model
+  no `context`, `prefill`, `token` or family but `delta`; on the page's model, model_endpoint.py sends those four into
+  pi's step. render.py draws a step from what it has, never filling in what the harness did not see.
   The harness and the page reach the model only through `backend.Backend`; a token event's probabilities,
   rank, candidates and MTP draft (`backend.TOKEN_DETAILS`) are optional, and render.py leaves out what is missing.
 - **Nothing model-specific outside `harness/families/`.** simple_harness.py, simple_backend.py and render.py have no "if Gemma".
@@ -129,7 +132,7 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   when the two languages drift apart (different refs, links or tokens).
 - **The model reads harness and tool errors in the run's language.** `RunSettings.lang` is the page's
   language when the turn started; `Tool.validate`, `family.parse` and the harness's own messages word
-  errors in it, and `ToolError` / `ParseError` carry both texts (with pi, the refusal pi_approve.ts gives the model, through
+  errors in it, and `ToolError` / `ParseError` carry both texts (with pi, the refusal pi_extension.ts gives the model, through
   `AGENT_LOOP_REFUSAL`). The system prompts in simple_harness.py are the
   same for both languages, so the model's behavior does not depend on the page's language.
 - **The language switch.** The app starts in the language in the `agent_loop_lang` cookie, else the
@@ -168,16 +171,21 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   so the page draws pi's own loop; the credentials are pi's. Each command waits for pi's response before the next (pi
   handles them concurrently: a prompt sent beside `set_model` goes to the old model), auto-retry stays off (a retry is
   a turn of its own), and Max steps is kept by aborting pi at the turn past it. pi's tools run unsandboxed in the
-  conversation's folder; the page says so wherever they are offered. Read pi's docs (docs/rpc.md, json.md,
-  rpc-extension-ui.md in its package) before changing what is sent or read.
+  conversation's folder; the page says so wherever they are offered. model_endpoint.py listens on 127.0.0.1 alone, asks
+  for its token (pi gets it as `$AGENT_LOOP_TOKEN`), answers only while a turn is served, one request at a time, and
+  uses the sidebar's decoding, not the request's. A request waits for the step pi opened for it (`_serving_step`), since
+  pi's records and its HTTP request reach the page by different ways. Read pi's docs (docs/rpc.md, json.md,
+  rpc-extension-ui.md, custom-provider.md in its package) and its openai-completions provider before changing what is
+  sent or read.
 
 ## Tests
 
 - Most tests use `FakeLLM` from tests/fakes.py: same interface as `SimpleBackend`, prompts in a simplified
   form of each family's chat format, scripted replies streamed token by token. Cover new harness or UI
   behavior with it; tests/test_app.py drives the whole page through Streamlit's `AppTest`. In pi's place they start
-  tests/fake_pi.py (`FakePi`), which speaks pi 1.4's RPC protocol from a script; tests/test_pi_harness.py runs the real
-  pi only with `RUN_PI_TESTS=1`, against a scripted OpenAI-compatible server on 127.0.0.1.
+  tests/fake_pi.py (`FakePi`), which speaks pi 1.4's RPC protocol from a script and, for the page's model, asks
+  model_endpoint.py over HTTP as pi does; tests/test_model_endpoint.py asks the endpoint directly. tests/test_pi_harness.py
+  runs the real pi only with `RUN_PI_TESTS=1`, against a scripted OpenAI-compatible server on 127.0.0.1 and the endpoint.
 - tests/test_chat_template.py checks each family against the model's real tokenizer and chat template
   and skips models not yet downloaded into models/. tests/test_real_model.py loads the real
   weights and runs only with `RUN_MODEL_TESTS=1`. After changing parsing, prompts, stop tokens or the

@@ -1220,9 +1220,13 @@ def harness(at):
     return next(b for b in at.button_group if b.key == "harness")
 
 
-def pick_pi(at):
+def pick_pi(at, source="pi"):
+    """Pick pi under What runs the loop, asking pi's own models ("pi") or the page's ("page", what it starts on)."""
     harness(at).set_value("pi").run()
     assert not at.exception, at.exception
+    if source != "page":
+        next(b for b in at.button_group if b.key == "pi_source").set_value(source).run()
+        assert not at.exception, at.exception
     return at
 
 
@@ -1250,7 +1254,7 @@ def test_a_question_to_pi_draws_its_loop(at, fake_pi):
     assert "Step 1 · bash" in html and "STEP 2" in html
     assert "API 傳回的已經是 JSON" in html and "這台電腦的 shell" in html and "Mon Oct 26" in html
     assert "讀了 <b>1,200</b> tokens，其中 200 來自 cache" in html
-    assert "停止：模型沒有再呼叫工具" in html and "看這一步的完整脈絡 →" not in [b.label for b in at.button]
+    assert "停止：模型沒有再呼叫工具" in html and len(buttons(at, "看這一步的完整脈絡 →")) == 2  # each step's request
     assert Path(fake_pi.started()["cwd"]).name == at.session_state["chat_id"]
 
 
@@ -1288,12 +1292,13 @@ def test_pi_can_be_stopped(at, fake_pi):
     assert "停止：使用者中斷" in page_html(at) and "網頁請 pi 中止" in page_html(at)
 
 
-def test_with_pi_the_context_tab_says_pi_does_not_show_its_prompt_and_the_model_tab_shows_pis_model(at, fake_pi):
+def test_with_pi_on_a_provider_the_context_tab_says_what_it_cannot_show_and_the_model_tab_shows_pis_model(at, fake_pi):
     fake_pi.say({"say": [{"text": "好。"}]})
     pick_pi(at)
-    ask(at, "嗨")
     tab(at).set_value("context").run()
-    assert any("pi 不說它送給模型 API 的 prompt" in i.value for i in at.info)
+    assert any("pi 每一步送給模型的請求" in i.value for i in at.info)
+    ask(at, "嗨")
+    assert any("pi 和 provider 都不說" in c for c in captions(at))
     tab(at).set_value("model").run()
     html = page_html(at)
     assert "Fake Model" in html and "fake/fake-model" in html and "32,000 tokens" in html
@@ -1303,7 +1308,9 @@ def test_with_pi_the_context_tab_says_pi_does_not_show_its_prompt_and_the_model_
 
 def test_pi_without_a_model_says_how_to_set_one_up_and_tries_again_when_asked(at, fake_pi):
     fake_pi.say(models=[])
-    pick_pi(at)
+    pick_pi(at, "page")
+    assert not at.error  # the page's own model needs no credentials
+    next(b for b in at.button_group if b.key == "pi_source").set_value("pi").run()
     assert any("pi 還沒有可以用的模型" in e.value for e in at.error)
     assert harness(at).value == "pi"  # and the switch back is still there
     fake_pi.say()
@@ -1313,7 +1320,7 @@ def test_pi_without_a_model_says_how_to_set_one_up_and_tries_again_when_asked(at
 
 def test_pi_that_is_not_installed_says_how_to_install_it(at, monkeypatch):
     monkeypatch.setattr(pi_harness, "PI_COMMAND", ["no-such-pi-anywhere"])
-    pick_pi(at)
+    pick_pi(at, "page")
     assert any(pi_harness.INSTALL in e.value for e in at.error)
 
 
@@ -1327,7 +1334,7 @@ def test_with_pi_docker_is_never_looked_for(at, fake_pi, sandbox):
 
 def test_back_from_pi_the_built_in_harness_keeps_its_model_and_settings(at, fake_pi, models):
     next(s for s in at.slider if s.label == "temperature").set_value(0.3).run()
-    pick_pi(at)
+    pick_pi(at, "pi")
     harness(at).set_value("simple").run()
     assert next(s for s in at.slider if s.label == "temperature").value == 0.3
     assert at.session_state["model_id"] == "google/gemma-4-E2B-it" and len(models) == 1
@@ -1340,13 +1347,51 @@ def test_switching_what_runs_the_loop_starts_a_new_conversation(at, fake_pi, out
     assert at.session_state["runs"] == [] and at.session_state["history"] == []
 
 
-def test_an_english_page_with_pi_has_no_chinese_left(browser, new_tab, fake_pi):
+@pytest.mark.parametrize("source", ["pi", "page"])
+def test_an_english_page_with_pi_has_no_chinese_left(browser, new_tab, fake_pi, outputs, source):
     browser["locale"] = "en-US"
     at = new_tab()
-    fake_pi.say({"say": [{"thinking": "Use date."}, TIME]}, {"say": [{"text": "It is 2 pm."}]})
-    pick_pi(at)
+    fake_pi.say({"say": [{"thinking": "Use date."}, TIME]}, {"say": [{"text": "It is 2 pm."}]}, results={"bash": TIME["result"]})
+    outputs += [tool_call("bash", command="date"), "It is 2 pm.<turn|>"]
+    pick_pi(at, source)
     ask(at, "What time is it?")
     for view in ("loop", "context", "model"):
         tab(at).set_value(view).run()
-        text = drawn_text(at)
+        text = "\n".join([drawn_text(at), *(e.label for e in at.expander)])
         assert not CJK.search(text), CJK.search(text).string[max(CJK.search(text).start() - 60, 0):CJK.search(text).end() + 20]
+
+
+# ---------- pi asking the page's own model ----------
+
+def test_pi_starts_on_the_pages_model_with_its_menu_and_decoding(at, fake_pi, models):
+    pick_pi(at, "page")
+    assert next(b for b in at.button_group if b.key == "pi_source").value == "page"
+    assert at.session_state["model_id"] == "google/gemma-4-E2B-it" and len(models) == 1  # the model already in memory
+    assert {s.label for s in at.slider} >= {"temperature", "top-p", "top-k", "步數上限", "每步 token 上限"}
+    assert {t.label for t in at.toggle} == {"思考模式", "執行工具前先問我", "MTP 推測解碼"}
+    assert any(c.startswith("pi 1.4.0 · `google/gemma-4-E2B-it` · Gemma 4") for c in captions(at))
+
+
+def test_a_question_to_pi_on_the_pages_model_draws_every_token(at, fake_pi, models, outputs):
+    fake_pi.say(results={"bash": TIME["result"]})
+    outputs += [tool_call("bash", command="date"), "下午兩點。<turn|>"]
+    pick_pi(at, "page")
+    next(s for s in at.slider if s.label == "temperature").set_value(0.0).run()
+    ask(at, "現在幾點？")
+    assert "下午兩點。" in [m.value for m in at.chat_message[1].markdown]
+    html = page_html(at)
+    assert "Step 1 · bash" in html and 'class="tok ' in html and "模型端點從 Gemma 4 格式解析成 JSON 交給 pi" in html
+    assert "operating inside pi" in models[0].prompts[0] and models[0].samplings[0].temperature == 0.0
+    assert len(buttons(at, "看這一步的完整脈絡 →")) == 2
+    tab(at).set_value("context").run()
+    assert "operating inside pi" in page_html(at) and any(e.label.startswith("pi 送出的請求（JSON）") for e in at.expander)
+    tab(at).set_value("model").run()
+    assert "特殊 token（24 個）" in page_html(at) and "pi 問的是這個網頁的模型" in page_html(at)
+
+
+def test_pi_on_a_provider_shows_its_request_in_the_context_tab(at, fake_pi):
+    fake_pi.say({"say": [TIME]}, {"say": [{"text": "下午兩點。"}]})
+    pick_pi(at)
+    ask(at, "現在幾點？")
+    tab(at).set_value("context").run()
+    assert "&quot;role&quot;: &quot;tool&quot;" in page_html(at) and '<mark class="added">' in page_html(at)

@@ -388,7 +388,8 @@ app/page.py: def harness_for(
         history, folder = st.session_state.history, chat_folder()
         if isinstance(who, PiAgent):
             settings, session = pi_settings(who), st.session_state.chat_id
-            return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session)
+            page = pi_harness.PageModel(who.llm, current_settings(who.llm).sampling) if who.llm else None
+            return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session, page)
         settings = current_settings(who)
         return lambda emit: SimpleHarness(who, history, text, settings, emit, attachments, folder)
 
@@ -1513,7 +1514,7 @@ app/render.py: def build(events: list[dict])
             elif kind == "step_start":
                 data["steps"].append({
                     "n": ev["step"], "t0": ev["t"], "t1": ev["t"], "context": None, "prefill": None,
-                    "tokens": [], "text": [], "done": None, "parsed": None, "calls": {},
+                    "tokens": [], "text": [], "request": None, "done": None, "parsed": None, "calls": {},
                 })
             elif kind == "run_end":
                 data["end"] = ev
@@ -1529,7 +1530,7 @@ app/render.py: def build(events: list[dict])
                         step["text"][-1] = {**step["text"][-1], "text": step["text"][-1]["text"] + ev["text"]}
                     else:
                         step["text"].append({"channel": ev["channel"], "text": ev["text"]})
-                elif kind in ("context", "prefill", "parsed"):
+                elif kind in ("request", "context", "prefill", "parsed"):
                     step[kind] = ev
                 elif kind == "model_end":
                     step["done"] = ev
@@ -1597,9 +1598,7 @@ harness/harnesses/simple_harness.py: def stop(self): … def decide(self, call_i
 == pi ==
 
 harness/harnesses/pi_harness.py: self._pi = Process(self._args() … self._loop()
-    self._pi = Process(self._args(), self.folder, self._inbox, {
-        "AGENT_LOOP_REFUSAL": pick(s.lang, "使用者拒絕執行這個工具呼叫", "The user refused to run this tool call"),
-    })
+    self._pi = Process(self._args(), self.folder, self._inbox, self._env())
     # Each waits for its answer: pi handles commands concurrently, and a prompt must not go to the model it starts on.
     self._pi.request({"type": "set_model", "provider": s.provider, "modelId": s.model})
     self._pi.request({"type": "set_thinking_level", "level": s.thinking})
@@ -1630,14 +1629,55 @@ harness/harnesses/pi_harness.py: def _on(self, rec: dict) -> bool:
             self._dialog(rec)
         return kind == "agent_settled"
 
+[[harness/harnesses/pi_harness.py|def _request(self, payload)]]
+    def _request(self, payload):
+
+harness/harnesses/pi_extension.ts: pi.on("before_provider_request" … });
+    pi.on("before_provider_request", (event, ctx) => {
+    	ctx.ui.notify(REQUEST_MARK + JSON.stringify(event.payload), "info");
+    });
+
+[[harness/harnesses/model_endpoint.py|def conversation(]]
+    def conversation(body: dict, llm: Backend, folder: Path) -> list[dict]:
+
+harness/harnesses/model_endpoint.py: messages = conversation(body, llm, serving.folder) … emit("context",
+        messages = conversation(body, llm, serving.folder)
+        prompt = llm.render(messages, tools, thinking)
+        encoded = llm.encode(prompt, media.parts(messages))
+    except Exception as e:  # pi shows it as the request's error
+        self._json(400, {"error": {"message": f"{type(e).__name__}: {e}"}})
+        return
+    before = seen_before(messages)
+    # Media sit in user messages, all before what is new; so the new part is the same text, further along (SimpleHarness).
+    if before:
+        previous = llm.render(before, tools, thinking, generation_prompt=False)
+        added_from = len(encoded.text) - len(prompt) + common_prefix(prompt, previous)
+    else:
+        added_from = 0
+    emit("context", prompt=encoded.text, n_tokens=encoded.n_tokens, added_from=added_from, media_tokens=encoded.media_tokens,
+         context_length=llm.context_length, roles={role: sum(m["role"] == role for m in messages) for role in dict.fromkeys(m["role"] for m in messages)})
+
+[[harness/harnesses/pi_harness.py|def _serving_step(self)]]
+    def _serving_step(self) -> int | None:
+
+harness/harnesses/model_endpoint.py: for ev in llm.generate(encoded, serving.sampling
+    for ev in llm.generate(encoded, serving.sampling, lambda: gone or serving.stopped()):
+        kind = ev.pop("type")
+        if kind == "done":
+            done = ev
+            continue
+        emit(kind, **ev)
+        if kind == "token" and ev["channel"] in ("thought", "content"):
+            send({"reasoning_content" if ev["channel"] == "thought" else "content": ev["text"]})
+
 [[app/render.py|def streamed_html(]]
     def streamed_html(step: dict, lang: str) -> str:
 
-harness/harnesses/pi_approve.ts: pi.on("tool_call" … return undefined;
+harness/harnesses/pi_extension.ts: pi.on("tool_call" … return undefined;
     pi.on("tool_call", async (event, ctx) => {
     	const call = JSON.stringify({ toolCallId: event.toolCallId, toolName: event.toolName, input: event.input });
-    	if (!(await ctx.ui.confirm(TITLE, call))) {
-    		return { block: true, reason: process.env.AGENT_LOOP_REFUSAL || "The user refused to run this tool call" };
+    	if (!(await ctx.ui.confirm(APPROVE_TITLE, call))) {
+    		return { block: true, reason: env.AGENT_LOOP_REFUSAL || "The user refused to run this tool call" };
     	}
     	return undefined;
 
@@ -1648,6 +1688,9 @@ harness/harnesses/pi_approve.ts: pi.on("tool_call" … return undefined;
 
 [[harness/harnesses/simple_harness.py|self.emit("step_start"]]
     self.emit("step_start", step=step)
+
+[[harness/harnesses/pi_harness.py|self.emit("request"]]
+    self.emit("request", step=self._step, text=text, added_from=added_from, added_to=added_to,
 
 [[harness/harnesses/simple_harness.py|"context",]]
     "context",

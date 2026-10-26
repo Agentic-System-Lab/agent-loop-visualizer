@@ -24,7 +24,8 @@ from typing import Protocol, runtime_checkable
 # the turn's settings and the tools the model gets; run_end the stop reason, the final reply and the conversation.
 ALWAYS = ("run_start", "step_start", "run_end")
 # The events a harness sends in a step when it knows what they say, in the order they come:
-#   context            the prompt as the model reads it, from a harness that renders it (simple_harness.SimpleHarness)
+#   request            the request sent to the model's API, as JSON, from a harness that asks one (pi)
+#   context            the prompt as the model reads it, from a harness that renders it (SimpleHarness, or pi's model endpoint)
 #   prefill, token     the prompt read, then each token (backend.TOKEN_FIELDS), from a harness that runs the model itself
 #   delta              a piece of the model's output as it streams, with its channel, from one that sees text, not tokens (pi)
 #   model_end          the model's turn ended: why, and how many tokens, with their speed when it was measured
@@ -33,7 +34,7 @@ ALWAYS = ("run_start", "step_start", "run_end")
 #   approval_request, approval   the call held for the user, and the user's answer
 #   tool_start, tool_result      the call running in its environment, and what came back
 #   error              what went wrong, before run_end
-SOMETIMES = ("context", "prefill", "token", "delta", "model_end", "parsed", "tool_call", "approval_request", "approval",
+SOMETIMES = ("request", "context", "prefill", "token", "delta", "model_end", "parsed", "tool_call", "approval_request", "approval",
              "tool_start", "tool_result", "error")
 
 

@@ -18,7 +18,7 @@ from fakes import DRAFTER, INFO, MEDIA_TOKENS, QWEN_INFO, FakeLLM, qwen_tool_cal
 from harness import families
 from harness.backends.backend import TOKEN_DETAILS, Sampling
 from harness.families import GEMMA4, QWEN3_5
-from harness.harnesses import pi_harness, simple_harness
+from harness.harnesses import model_endpoint, pi_harness, simple_harness
 from harness.harnesses.simple_harness import RunSettings, SimpleHarness
 from harness.i18n import LANGS
 from harness.media import Attachment
@@ -62,6 +62,16 @@ def as_reported(events: list[dict], details: tuple[str, ...] = ()) -> list[dict]
 
 LOGPROBS = ("p", "logprob", "top")  # what an OpenAI-style API's log probabilities give
 BASH = {"tool": "bash", "args": {"command": "date"}, "result": "Mon Oct 26 14:00:00 CST 2026\n"}
+
+
+def pi_page_events(outputs: list, text: str = "現在幾點？", **settings) -> list[dict]:
+    """A turn pi (its stand-in) runs on the page's own model (a FakeLLM) through model_endpoint, as its events."""
+    with pytest.MonkeyPatch.context() as mp, tempfile.TemporaryDirectory() as folder:
+        FakePi(mp, Path(folder)).say(results={"bash": BASH["result"]})
+        llm, events = FakeLLM(list(outputs)), []
+        pi_harness.PiHarness(pi_harness.PiSettings(model_endpoint.PROVIDER, llm.model_id, **settings), [], text, events.append,
+                             folder=Path(folder) / "chat", session="c", page=pi_harness.PageModel(llm, Sampling())).run()
+    return events
 
 
 def pi_events(*turns, approve: bool | None = None, text: str = "現在幾點？", **settings) -> list[dict]:
@@ -109,6 +119,7 @@ SCENARIOS = {
     "pi_rejected": lambda: pi_events({"say": [BASH]}, {"say": [{"text": "好吧。"}]}, approve=False),
     "pi_max_steps": lambda: pi_events(*[{"say": [BASH]}] * 3, max_steps=2),
     "pi_error": lambda: pi_events({"say": [], "stop": "error", "error": "Connection error."}),
+    "pi_page_model": lambda: pi_page_events([tool_call("bash", command="date"), ANSWER]),
 }
 
 
@@ -183,6 +194,7 @@ EN_SCENARIOS = {
     "pi_rejected": lambda: pi_events({"say": [BASH]}, {"say": [{"text": "OK."}]}, approve=False, text="Time?", lang="en"),
     "pi_max_steps": lambda: pi_events(*[{"say": [BASH]}] * 3, max_steps=2, text="Time?", lang="en"),
     "pi_error": lambda: pi_events({"say": [], "stop": "error", "error": "Connection error."}, text="Time?", lang="en"),
+    "pi_page_model": lambda: pi_page_events([tool_call("bash", command="date"), "It is 2 pm.<turn|>"], text="Time?", lang="en"),
 }
 
 
@@ -1021,7 +1033,8 @@ def test_a_pi_step_shows_the_text_it_streamed_by_channel_and_no_token_numbers():
     assert "wrote <b>20</b> tokens" in card and "read <b>1,200</b> tokens, 200 from the cache" in card and "at pi&#x27;s prices" not in card
     assert "about $0.0021 at pi's prices" in card
     assert "the API returned it as JSON" in card and "shell on this computer · returned" in card
-    assert "Context <small>" not in card and 'class="tok ' not in card and "token id" not in card  # no context and no tokens
+    assert "Context <small>the request pi sends the API</small>" in card and "system 1 · user 1" in card  # the request, not a context
+    assert 'class="tok ' not in card and "token id" not in card  # and no tokens
 
 
 def test_what_pi_streams_is_escaped():
@@ -1105,3 +1118,25 @@ def test_pis_card_escapes_what_pi_says_of_its_model():
     model = {"id": "<b>x</b>", "name": "<img src=x>", "provider": "p<i>", "api": "a", "input": ["text"]}
     card = render.pi_model_html(model, "<1.4>", "en")
     assert "<img" not in card and "<b>x" not in card and "&lt;1.4&gt;" in card
+
+
+def test_a_pi_step_on_the_pages_model_draws_its_tokens_and_its_context():
+    data = render.build(EN_SCENARIOS["pi_page_model"]())
+    assert data["harness"] == "pi" and data["family"] is GEMMA4
+    step = data["steps"][0]
+    card = render.step_html(step, data, lang="en", live=False)
+    assert "Context <small>everything the model sees in this step</small>" in card and 'class="tok ' in card
+    assert "the model endpoint parsed it from the Gemma 4 format into JSON for pi" in card
+    svg = svg_of(render.diagram_html(data, dark=False, lang="en"))
+    assert "tokens out" in svg and "text out" not in svg
+    assert step["request"] and "operating inside pi" in render.request_html(step)
+
+
+def test_the_whole_request_marks_what_the_step_added():
+    data = render.build(EN_SCENARIOS["pi"]())
+    first, second = data["steps"]
+    assert "<mark" not in render.request_html(first)
+    marked = re.search(r'<mark class="added">(.*?)</mark>', render.request_html(second), re.S).group(1)
+    assert "&quot;tool&quot;" in marked and "Mon Oct 26" in marked
+    assert render.request_summary(second, "en").startswith("1,200 tokens, as the provider counts them · ")
+    assert not CJK.search(render.REQUEST_LEGEND["en"])

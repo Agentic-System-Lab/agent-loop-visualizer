@@ -7,8 +7,10 @@ page's language, "zh" or "en" (i18n.py), so switching it redraws a finished run 
 
 A token shows as much of the model's distribution as the backend reported (backend.TOKEN_DETAILS):
 simple_backend.SimpleBackend reports all of it, and what a backend leaves out is left out here too, never filled in.
-So does a step: a harness that does not run the model itself (pi, harnesses/pi_harness.py) sends no context and no tokens,
-only the text the model streams (delta) and the token counts its provider reported, and its steps are drawn from those.
+So does a step: a harness that does not run the model itself (pi asking a provider's model, harnesses/pi_harness.py)
+sends no context and no tokens, only the request it sent the model's API (request), the text the model streams (delta)
+and the token counts its provider reported, and its steps are drawn from those. pi asking the page's own model sends
+both: its request, and the context and tokens of the model endpoint (harnesses/model_endpoint.py).
 """
 
 import base64
@@ -360,7 +362,7 @@ def build(events: list[dict]) -> dict:
         elif kind == "step_start":
             data["steps"].append({
                 "n": ev["step"], "t0": ev["t"], "t1": ev["t"], "context": None, "prefill": None,
-                "tokens": [], "text": [], "done": None, "parsed": None, "calls": {},
+                "tokens": [], "text": [], "request": None, "done": None, "parsed": None, "calls": {},
             })
         elif kind == "run_end":
             data["end"] = ev
@@ -376,7 +378,7 @@ def build(events: list[dict]) -> dict:
                     step["text"][-1] = {**step["text"][-1], "text": step["text"][-1]["text"] + ev["text"]}
                 else:
                     step["text"].append({"channel": ev["channel"], "text": ev["text"]})
-            elif kind in ("context", "prefill", "parsed"):
+            elif kind in ("request", "context", "prefill", "parsed"):
                 step[kind] = ev
             elif kind == "model_end":
                 step["done"] = ev
@@ -430,7 +432,7 @@ def draft(data: dict) -> str:
     if not data["steps"]:
         return ""
     step = data["steps"][-1]
-    return "".join(t["text"] for t in step["tokens"] + step["text"] if t["channel"] == "content")
+    return "".join(t["text"] for t in step["tokens"] or step["text"] if t["channel"] == "content")
 
 
 def generated(step: dict) -> int:
@@ -644,6 +646,8 @@ def diagram_html(data: dict | None, dark: bool, lang: str, counter: str | None =
     if model:
         st["captions"].setdefault("model", model.split("/")[-1])
     words_for = PI_DIAGRAM if ((data or {}).get("harness") or harness) == "pi" else {}
+    if data and data["family"]:  # pi asking the page's own model: the tokens come out as ever
+        words_for = {k: v for k, v in words_for.items() if k != "model-harness"}
     pal = PALETTES["dark" if dark else "light"]
     css = DIAGRAM_CSS
     for key, value in pal.items():
@@ -889,6 +893,8 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
             + f'</h4><p class="meta-line"><b>{ctx["n_tokens"]:,}</b> tokens · {pick(lang, f"上限的 {share}", f"{share} of the limit")} · {esc(roles)}{media}</p>'
             f'<p class="snippet-label">{label}</p><pre class="snippet">{special_html(prompt[start:], family, lang, last=1500)}</pre></section>'
         )
+    elif step["request"]:  # pi asking a provider's model: what pi sent, not what the model read
+        parts.append(request_section(step, lang))
 
     if step["prefill"]:
         pf = step["prefill"]
@@ -945,6 +951,10 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
             elif family is None:  # pi: the API sends the call as JSON already, and pi checks it as it runs the tool
                 body.append('<p class="check ok">' + pick(lang, "API 傳回的已經是 JSON；pi 執行前再用工具的 schema 檢查參數",
                                                           "the API returned it as JSON; pi checks the arguments against the tool's schema before running it") + "</p>")
+            elif data["harness"] == "pi":  # pi asking the page's own model: the endpoint parses, pi checks
+                name = esc(family.name)
+                body.append('<p class="check ok">✓ ' + pick(lang, f"模型端點從 {name} 格式解析成 JSON 交給 pi；pi 執行前再用工具的 schema 檢查參數",
+                                                            f"the model endpoint parsed it from the {name} format into JSON for pi; pi checks the arguments against the tool's schema before running it") + "</p>")
             else:
                 name = esc(family.name)
                 body.append('<p class="check ok">✓ ' + pick(lang, f"從 {name} 格式解析成 JSON，符合工具 schema",
@@ -990,6 +1000,27 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
         )
     parts.append("</div>")
     return "".join(parts)
+
+
+def request_section(step: dict, lang: str) -> str:
+    """The context section of a step whose harness asks a model's API (pi): the request it sent, as JSON, since what
+    the model read of it is not to be seen; its token count once the provider has said it."""
+    req = step["request"]
+    roles = " · ".join(f"{r} {n}" for r, n in req["roles"].items())
+    read = ((step["done"] or {}).get("usage") or {}).get("prompt")
+    meta = (f"<b>{read:,}</b> tokens · " if read else "") + pick(lang, f"{len(req['text']):,} 字元", f"{len(req['text']):,} characters") + f" · {esc(roles)}"
+    if req["added_from"] is None:
+        label = pick(lang, "pi 送給模型 API 的請求：system prompt、工具和對話，寫成 JSON", "The request pi sends the model's API: the system prompt, the tools and the conversation, as JSON")
+        new = req["text"]
+    else:
+        label = pick(lang, "這一步的請求新加的部分：上一步的回覆和觀察", "What is new in this step's request: the last step's reply and observation")
+        new = req["text"][req["added_from"]:req["added_to"]]
+    snippet = esc(new) if len(new) <= 1500 else "…" + esc(new[-1500:])
+    return (
+        '<section class="stage stage-context"><h4 class="stage-title">'
+        + pick(lang, "脈絡 <small>Context · pi 送給 API 的請求</small>", "Context <small>the request pi sends the API</small>")
+        + f'</h4><p class="meta-line">{meta}</p><p class="snippet-label">{label}</p><pre class="snippet">{snippet}</pre></section>'
+    )
 
 
 def text_html(runs: list[dict]) -> str:
@@ -1090,6 +1121,29 @@ def context_html(step: dict, family: families.Family, lang: str) -> str:
         f'<pre class="ctx-view">{special_html(prompt[:start], family, lang)}<mark class="added">{special_html(prompt[start:], family, lang)}</mark>'
         f'<span class="gen">{special_html(gen, family, lang)}</span></pre>'
     )
+
+
+REQUEST_LEGEND = {
+    "zh": '<p class="legend"><span>pi 送給模型 API 的請求，原樣寫成 JSON（圖片只留類型）</span><mark class="added">這一步新加入</mark></p>',
+    "en": '<p class="legend"><span>the request pi sends the model\'s API, as JSON (an image as its type alone)</span><mark class="added">new in this step</mark></p>',
+}
+
+
+def request_summary(step: dict, lang: str) -> str:
+    req = step["request"]
+    roles = " · ".join(f"{r} {n}" for r, n in req["roles"].items())
+    read = ((step["done"] or {}).get("usage") or {}).get("prompt")
+    tokens = pick(lang, f"provider 說讀了 {read:,} tokens · ", f"{read:,} tokens, as the provider counts them · ") if read else ""
+    return tokens + pick(lang, f"{len(req['text']):,} 字元", f"{len(req['text']):,} characters") + f" · {roles}"
+
+
+def request_html(step: dict) -> str:
+    """The whole request a step sent, its new part marked."""
+    req, text = step["request"], step["request"]["text"]
+    if req["added_from"] is None:
+        return f'<pre class="ctx-view">{esc(text)}</pre>'
+    a, b = req["added_from"], req["added_to"]
+    return f'<pre class="ctx-view">{esc(text[:a])}<mark class="added">{esc(text[a:b])}</mark>{esc(text[b:])}</pre>'
 
 
 # ---------- model tab ----------
@@ -1447,21 +1501,30 @@ def pi_model_html(model: dict, version: str, lang: str) -> str:
 
 def pi_settings_html(s: dict, lang: str) -> str:
     """What the sidebar gave pi for the turn."""
+    page = s.get("page_model")  # pi asking the page's own model, whose decoding the sidebar sets
+    if page:
+        thinking = (pick(lang, "思考模式", "Thinking mode"), pick(lang, "開", "on") if s.get("thinking", "off") != "off" else pick(lang, "關", "off"),
+                    pick(lang, "pi 把它當成思考等級送出，模型端點再換成 chat template 的思考開關。",
+                         "pi sends it as its thinking level, which the model endpoint turns into the chat template's thinking switch."))
+    else:
+        thinking = (pick(lang, "思考", "Thinking"), s.get("thinking", "off"),
+                    pick(lang, "pi 的思考等級：off 到 high，越高模型在回覆前想得越多（也越貴）。模型不會思考時只有 off。",
+                         "pi's thinking level, from off to high: the higher, the more the model thinks before it replies (and the more it costs). A model that does not think has only off."))
     rows = [
-        (pick(lang, "思考", "Thinking"), s.get("thinking", "off"),
-         pick(lang, "pi 的思考等級：off 到 high，越高模型在回覆前想得越多（也越貴）。模型不會思考時只有 off。",
-              "pi's thinking level, from off to high: the higher, the more the model thinks before it replies (and the more it costs). A model that does not think has only off.")),
+        thinking,
         (pick(lang, "執行工具前先問我", "Ask me before running a tool"), pick(lang, "開", "on") if s.get("approve_tools") else pick(lang, "關", "off"),
-         pick(lang, "pi 自己不問；網頁載入一個小 extension（pi_approve.ts），在每次執行工具前問你。",
-              "pi does not ask by itself; the page loads a small extension (pi_approve.ts) that asks you before every tool call.")),
+         pick(lang, "pi 自己不問；網頁讓 pi 載入的 extension（pi_extension.ts）在每次執行工具前問你。",
+              "pi does not ask by itself; the extension the page loads into pi (pi_extension.ts) asks you before every tool call.")),
         (pick(lang, "步數上限", "Max steps"), s.get("max_steps"),
          pick(lang, "pi 沒有步數上限；跑滿設定的步數，網頁就請 pi 中止。", "pi has no step limit; once the loop has gone around this many times, the page asks pi to abort.")),
     ]
     body = "".join(f"<div><dt>{k} <b>{esc(v)}</b></dt><dd>{d}</dd></div>" for k, v, d in rows)
     return (
         f'<div class="card"><h4>{pick(lang, "pi 的設定", "pi settings")}</h4><p class="card-sub">'
-        + pick(lang, "解碼的設定（temperature、top-k、top-p）在 provider 那邊，pi 不讓人改；側欄只給得了這些。",
-               "The decoding settings (temperature, top-k, top-p) are the provider's, and pi does not let them be changed; the sidebar gives only these.")
+        + (pick(lang, "pi 問的是這個網頁的模型：解碼設定是側欄的，寫在上面；模型端點照它們生成，不管請求裡要什麼。",
+                "pi asks this page's model: the decoding settings are the sidebar's, above, and the model endpoint generates with them, whatever the request asks for.")
+           if page else pick(lang, "解碼的設定（temperature、top-k、top-p）在 provider 那邊，pi 不讓人改；側欄只給得了這些。",
+                             "The decoding settings (temperature, top-k, top-p) are the provider's, and pi does not let them be changed; the sidebar gives only these."))
         + f'</p><dl class="knobs">{body}</dl></div>'
     )
 

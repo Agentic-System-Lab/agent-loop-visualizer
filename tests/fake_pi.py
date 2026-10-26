@@ -7,9 +7,16 @@ stdout, one JSON object per line. What its model says comes from the JSON file i
 
 and each turn is {"stop": pi's stopReason, "error": its errorMessage, "usage": {...}, "say": [item, ...]}, where an item
 is {"thinking": text}, {"text": text} or {"tool": name, "args": {...}, "result": text, "fails": bool}. A turn with
-"forever": true streams until it is aborted, and with "deaf": true even then. Loaded with --extension (pi_approve.ts), it asks before each tool, as the
-extension does. What it was started with and every command it read are appended to FAKE_PI_LOG, one JSON per line.
-FakePi, at the end, puts it in pi's place for a test.
+"forever": true streams until it is aborted, and with "deaf": true even then.
+
+Loaded with --extension (pi_extension.ts), it does what the extension does: before each request to its model it
+reports the request as a notification, with AGENT_LOOP_APPROVE it asks before each tool, and with AGENT_LOOP_ENDPOINT
+it has the provider agent-loop, whose model is the page's own (model_endpoint.py): then each turn really asks that
+endpoint over HTTP, as pi's openai-completions provider does, streams back what the model says and runs the tool calls
+it gets, each answering what "results" says for its tool ("done" otherwise), until a reply calls no tool.
+
+What it was started with and every command it read are appended to FAKE_PI_LOG, one JSON per line. FakePi, at the
+end, puts it in pi's place for a test.
 """
 
 import json
@@ -18,6 +25,7 @@ import queue
 import sys
 import threading
 import time
+import urllib.request
 
 ARGS = sys.argv[1:]
 LOG = os.environ.get("FAKE_PI_LOG")
@@ -26,8 +34,16 @@ DELAY = SCRIPT.get("delay", 0.005)
 MODELS = SCRIPT.get("models", [{"id": "fake-model", "name": "Fake Model", "provider": "fake", "api": "openai-completions",
                                 "reasoning": False, "input": ["text", "image"], "contextWindow": 32000, "maxTokens": 2048,
                                 "cost": {"input": 1, "output": 2, "cacheRead": 0, "cacheWrite": 0}}])
+ENDPOINT = os.environ.get("AGENT_LOOP_ENDPOINT")
+if ENDPOINT:  # what pi_extension.ts registers
+    MODELS = [*MODELS, {"id": os.environ["AGENT_LOOP_MODEL"], "name": os.environ["AGENT_LOOP_MODEL"], "provider": "agent-loop",
+                        "api": "openai-completions", "reasoning": True, "input": os.environ.get("AGENT_LOOP_INPUT", "text").split(","),
+                        "contextWindow": int(os.environ["AGENT_LOOP_CONTEXT"]), "maxTokens": int(os.environ["AGENT_LOOP_MAX_TOKENS"]),
+                        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]
+SYSTEM = "You are an expert coding assistant operating inside pi, a coding agent harness."
 inbox: queue.Queue = queue.Queue()
 model = MODELS[0] if MODELS else None
+thinking = "off"
 
 
 def log(entry: dict):
@@ -71,7 +87,7 @@ def check(abortable=True):
 
 
 def answer(command: dict):
-    global model
+    global model, thinking
     kind, rid = command.get("type"), command.get("id")
     ok = {"id": rid, "type": "response", "command": kind, "success": True}
     if kind == "get_available_models":
@@ -91,6 +107,9 @@ def answer(command: dict):
             return
         out({**ok, "data": {"disposition": "started"}})
         run(command)
+    elif kind == "set_thinking_level":
+        thinking = command["level"]
+        out(ok)
     elif kind == "extension_ui_response":
         pass  # an answer to a dialog nobody is waiting for any more
     else:
@@ -125,18 +144,118 @@ def stream(kind: str, index: int, text: str):
         time.sleep(DELAY)
 
 
+def tools() -> list[dict]:
+    """The tools pi declares to its model, as its openai-completions provider sends them."""
+    names = ARGS[ARGS.index("--tools") + 1].split(",") if "--tools" in ARGS else []
+    params = {"bash": {"command": {"type": "string"}}, "read": {"path": {"type": "string"}}}
+    return [{"type": "function", "function": {"name": n, "description": f"pi's {n} tool",
+                                              "parameters": {"type": "object", "properties": params.get(n, {"path": {"type": "string"}}),
+                                                             "required": list(params.get(n, {"path": 0}))}}} for n in names]
+
+
+def report(messages: list[dict]):
+    """What pi_extension.ts does before each request: the request, to the page."""
+    if "--extension" in ARGS:
+        payload = {"model": model["id"], "messages": messages, "tools": tools(), "stream": True}
+        out({"type": "extension_ui_request", "id": f"notify-{time.monotonic_ns()}", "method": "notify",
+             "message": "agent-loop:request " + json.dumps(payload), "notifyType": "info"})
+
+
+def run_tool(call: dict, item: dict) -> str:
+    """Run one tool call: ask first if told to, then answer from the script; return the result the model reads."""
+    out({"type": "tool_execution_start", "toolCallId": call["id"], "toolName": call["name"], "args": call["arguments"]})
+    allowed = True
+    if os.environ.get("AGENT_LOOP_APPROVE"):
+        dialog = f"dialog-{call['id']}"
+        out({"type": "extension_ui_request", "id": dialog, "method": "confirm", "title": "agent-loop:approve",
+             "message": json.dumps({"toolCallId": call["id"], "toolName": call["name"], "input": call["arguments"]})})
+        allowed = wait_for_answer(dialog)
+    if allowed:
+        time.sleep(DELAY)
+        text = item.get("result", "")
+        out({"type": "tool_execution_end", "toolCallId": call["id"], "toolName": call["name"],
+             "result": {"content": [{"type": "text", "text": text}], "details": {}}, "isError": bool(item.get("fails")), "durationMs": 3})
+        return text
+    text = os.environ.get("AGENT_LOOP_REFUSAL", "")
+    out({"type": "tool_execution_end", "toolCallId": call["id"], "toolName": call["name"],
+         "result": {"content": [{"type": "text", "text": text}], "details": {}}, "isError": True})
+    return text
+
+
+def ask_endpoint(messages: list[dict]) -> dict:
+    """One turn's request to the page's model, as pi's openai-completions provider makes it; the assistant message the
+    stream adds up to, streamed on as pi streams it."""
+    body = {"model": model["id"], "messages": messages, "tools": tools() or None, "stream": True, "stream_options": {"include_usage": True},
+            "max_tokens": model["maxTokens"], "chat_template_kwargs": {"enable_thinking": thinking != "off"}}
+    request = urllib.request.Request(ENDPOINT + "/chat/completions", json.dumps({k: v for k, v in body.items() if v is not None}).encode(),
+                                     {"Content-Type": "application/json", "Authorization": f"Bearer {os.environ['AGENT_LOOP_TOKEN']}"})
+    text, reasoning, calls, finish, usage = "", "", [], None, {}
+    with urllib.request.urlopen(request, timeout=30) as response:
+        for line in response:
+            check()
+            line = line.decode().strip()
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            chunk = json.loads(line[6:])
+            usage = chunk.get("usage") or usage
+            for choice in chunk.get("choices", []):
+                delta, finish = choice.get("delta") or {}, choice.get("finish_reason") or finish
+                if piece := delta.get("reasoning_content"):
+                    reasoning += piece
+                    out({"type": "message_update", "assistantMessageEvent": {"type": "thinking_delta", "contentIndex": 0, "delta": piece}})
+                if piece := delta.get("content"):
+                    text += piece
+                    out({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 1, "delta": piece}})
+                calls += delta.get("tool_calls") or []
+    content = ([{"type": "thinking", "thinking": reasoning}] if reasoning else []) + ([{"type": "text", "text": text}] if text else [])
+    content += [{"type": "toolCall", "id": c["id"], "name": c["function"]["name"], "arguments": json.loads(c["function"]["arguments"])} for c in calls]
+    stop = {"tool_calls": "toolUse", "length": "length", "stop": "stop"}.get(finish, "error")
+    usage = {"input": usage.get("prompt_tokens", 0), "output": usage.get("completion_tokens", 0), "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0}}
+    return assistant(content, stop, usage, None if stop != "error" else f"Provider finish_reason: {finish}")
+
+
+def run_on_endpoint(prompt: dict):
+    """A run on the page's model: turns until a reply calls no tool, each a real request to the endpoint."""
+    user = [{"type": "text", "text": prompt["message"]}] + [{"type": "image_url", "image_url": {"url": f"data:{i['mimeType']};base64,{i['data']}"}}
+                                                             for i in prompt.get("images", [])]
+    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+    results = SCRIPT.get("results", {})
+    for n in range(20):
+        if n:
+            check()
+            out({"type": "turn_start"})
+        report(messages)
+        out({"type": "message_start", "message": assistant([])})
+        message = ask_endpoint(messages)
+        out({"type": "message_end", "message": message})
+        calls = [b for b in message["content"] if b["type"] == "toolCall"]
+        thinking_text = next((b["thinking"] for b in message["content"] if b["type"] == "thinking"), "")
+        text = next((b["text"] for b in message["content"] if b["type"] == "text"), "")
+        messages.append({"role": "assistant", "content": text or None, **({"reasoning_content": thinking_text} if thinking_text else {}),
+                         **({"tool_calls": [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}}
+                                            for c in calls]} if calls else {})})
+        for call in calls:
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": run_tool(call, {"result": results.get(call["name"], "done")})})
+        out({"type": "turn_end", "message": message, "toolResults": [c["id"] for c in calls]})
+        if not calls:
+            return
+
+
 def run(prompt: dict):
-    approve = "--extension" in ARGS
     out({"type": "agent_start"})
     out({"type": "turn_start"})
     out({"type": "message_start", "message": {"role": "user", "content": [{"type": "text", "text": prompt["message"]}]}})
     out({"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": prompt["message"]}]}})
     aborted, calls = False, 0
+    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt["message"]}]
     try:
-        for n, turn in enumerate(SCRIPT["turns"]):
+        if model["provider"] == "agent-loop":
+            run_on_endpoint(prompt)
+        for n, turn in enumerate(SCRIPT["turns"] if model["provider"] != "agent-loop" else []):
             if n:
                 check()
                 out({"type": "turn_start"})
+            report(messages)
             time.sleep(DELAY)
             check()
             content: list = []
@@ -162,24 +281,13 @@ def run(prompt: dict):
             message = assistant(content, turn.get("stop", "toolUse" if calls_here else "stop"), usage, turn.get("error"))
             out({"type": "message_end", "message": message})
             results = []
+            text = "".join(b.get("text", "") for b in content if b["type"] == "text")
+            messages.append({"role": "assistant", "content": text or None,
+                             **({"tool_calls": [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}}
+                                                for c in calls_here]} if calls_here else {})})
             for call in calls_here:
                 item = next(i for i in turn["say"] if i.get("tool") == call["name"])
-                out({"type": "tool_execution_start", "toolCallId": call["id"], "toolName": call["name"], "args": call["arguments"]})
-                allowed = True
-                if approve:
-                    dialog = f"dialog-{call['id']}"
-                    out({"type": "extension_ui_request", "id": dialog, "method": "confirm", "title": "agent-loop:approve",
-                         "message": json.dumps({"toolCallId": call["id"], "toolName": call["name"], "input": call["arguments"]})})
-                    allowed = wait_for_answer(dialog)
-                if allowed:
-                    time.sleep(DELAY)
-                    result = {"content": [{"type": "text", "text": item.get("result", "")}], "details": {}}
-                    out({"type": "tool_execution_end", "toolCallId": call["id"], "toolName": call["name"], "result": result,
-                         "isError": bool(item.get("fails")), "durationMs": 3})
-                else:
-                    refusal = os.environ.get("AGENT_LOOP_REFUSAL", "")
-                    out({"type": "tool_execution_end", "toolCallId": call["id"], "toolName": call["name"],
-                         "result": {"content": [{"type": "text", "text": refusal}], "details": {}}, "isError": True})
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": run_tool(call, item)})
                 results.append(call["id"])
             out({"type": "turn_end", "message": message, "toolResults": results})
             if message["stopReason"] in ("stop", "length", "error"):
@@ -194,7 +302,8 @@ def run(prompt: dict):
 
 
 def main():
-    log({"args": ARGS, "cwd": os.getcwd(), "refusal": os.environ.get("AGENT_LOOP_REFUSAL")})
+    log({"args": ARGS, "cwd": os.getcwd(), "refusal": os.environ.get("AGENT_LOOP_REFUSAL"), "approve": os.environ.get("AGENT_LOOP_APPROVE"),
+         "endpoint": ENDPOINT})
     if ARGS == ["--version"]:
         print(SCRIPT.get("version", "1.4.0"))
         return

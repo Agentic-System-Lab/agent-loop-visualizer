@@ -9,14 +9,18 @@ streams is delta, the finished assistant message is model_end and parsed, and ea
 tool_start and tool_result. pi keeps the conversation in a session file in the conversation's folder, so the next
 question starts pi on the same session and the model reads all of it.
 
-pi asks a model's API (Anthropic, OpenAI, Google, ...) or any endpoint in its models.json, with the credentials it
-keeps itself: `pi` then /login, or an API key in the environment. An API sends back text, not tokens, so a step shows
-the text as it streams and the token counts the provider reported, and no probabilities; nor does pi say what prompt
-it sends, so a step has no context section either.
+pi asks a model over HTTP, in one of two ways. It can ask the page's own model (PageModel: Gemma or Qwen on
+transformers or vLLM), which model_endpoint.py serves on 127.0.0.1 as the provider agent-loop: then the endpoint renders
+each request with the model's chat template and generates, and its events (context, prefill, token, model_end) go
+into pi's step, which shows every token as SimpleHarness's do. Or it can ask a model at a provider (Anthropic, OpenAI,
+Google, ... or any endpoint in its models.json), with the credentials it keeps itself (`pi` then /login, or an API
+key in the environment): an API sends back text, not tokens, so a step shows the text as it streams (delta) and the
+token counts the provider reported, and no probabilities. Either way pi_extension.ts reports each request pi sends,
+and the step shows it (request): pi's system prompt, its tools and the conversation, as JSON.
 
 pi's tools (read, bash, edit, write, grep, find, ls) run on this machine, in the conversation's folder, without a
-sandbox: bash reaches whatever the user can. Ask me before running a tool goes through pi_approve.ts, a pi extension
-that asks before every call. In RPC mode its question is a dialog on stdout (extension_ui_request), which becomes the
+sandbox: bash reaches whatever the user can. Ask me before running a tool goes through the same extension, which then
+asks before every call. In RPC mode its question is a dialog on stdout (extension_ui_request), which becomes the
 page's approval_request; the user's answer goes back on stdin.
 
 The page starts pi without the user's own extensions, skills, prompt templates and context files (AGENTS.md), so
@@ -40,7 +44,9 @@ from pathlib import Path
 from typing import Callable
 
 from harness import media
-from harness.harnesses.simple_harness import APPROVAL_TIMEOUT
+from harness.backends.backend import Backend, Sampling
+from harness.harnesses import model_endpoint
+from harness.harnesses.simple_harness import APPROVAL_TIMEOUT, common_prefix
 from harness.i18n import pick
 
 # How to start pi: the `pi` on the PATH, unless PI_COMMAND says otherwise (a path, or "npx -y @earendil-works/pi-coding-agent").
@@ -61,8 +67,9 @@ TOOLS = {
 OTHER_TOOL = {"zh": "pi 的工具", "en": "a pi tool"}  # where a tool runs that pi has and the page does not know
 DEFAULT_TOOLS = ("read", "bash", "edit", "write")  # what pi offers the model unless told otherwise
 THINKING = ("off", "minimal", "low", "medium", "high")  # pi's thinking levels for a model that thinks
-APPROVE = Path(__file__).with_name("pi_approve.ts")
-APPROVE_TITLE = "agent-loop:approve"  # the title pi_approve.ts gives its dialog
+EXTENSION = Path(__file__).with_name("pi_extension.ts")
+APPROVE_TITLE = "agent-loop:approve"  # the title pi_extension.ts gives its confirm dialog
+REQUEST_MARK = "agent-loop:request "  # how pi_extension.ts starts the notification of a request
 SESSION_DIR = ".pi-session"  # in the conversation's folder
 START_TIMEOUT = 30  # seconds pi may take to start and to answer a command
 STOP_GRACE = 10  # seconds pi has to settle after an abort, or to exit after its stdin closes, before it is killed
@@ -192,23 +199,31 @@ def probe() -> dict:
 
 
 @dataclass
+class PageModel:
+    """The page's own model, for pi to ask through model_endpoint.py instead of a provider's, with the sidebar's decoding."""
+    llm: Backend
+    sampling: Sampling
+
+
+@dataclass
 class PiSettings:
-    provider: str  # the model, as pi names it: its provider and its id there
+    provider: str  # the model, as pi names it: its provider and its id there (model_endpoint.PROVIDER for the page's own)
     model: str
     thinking: str = "off"  # one of THINKING
     tools: tuple[str, ...] = DEFAULT_TOOLS
     approve_tools: bool = False
     max_steps: int = 6
-    lang: str = "zh"  # what pi_approve.ts tells the model when the user refuses a call is worded in this language
+    lang: str = "zh"  # what pi_extension.ts tells the model when the user refuses a call is worded in this language
 
 
 class PiHarness:
     """One turn, run by pi (harness.Harness)."""
 
     def __init__(self, settings: PiSettings, history: list[dict], text: str, emit: Callable[[dict], None],
-                 attachments: list[media.Attachment] = (), folder: Path | None = None, session: str = "chat"):
+                 attachments: list[media.Attachment] = (), folder: Path | None = None, session: str = "chat", page: PageModel | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.settings = settings
+        self.page = page  # the page's own model, when pi asks it rather than a provider's
         self.history = history  # only for run_end: pi keeps the conversation in its session
         self.text = text
         self.attachments = list(attachments)
@@ -229,6 +244,10 @@ class PiHarness:
         self._aborting: str | None = None  # why the turn is being stopped: user_stopped, max_steps, approval_timeout
         self._kill_at: float | None = None  # after an abort: when to stop waiting for pi to settle
         self._hung = False  # pi did not settle in time, so it is killed rather than asked to exit
+        self._emit_lock = threading.Lock()  # the endpoint's thread sends the model's events, beside run()'s
+        self._unserved = threading.Condition()  # a step opened whose request the endpoint has not taken yet
+        self._waiting: int | None = None
+        self._request_text = ""  # the last request pi sent, as JSON, to mark what the next one adds
 
     # --- controls called from the web server ---
 
@@ -241,22 +260,24 @@ class PiHarness:
     # --- the turn ---
 
     def emit(self, event_type: str, **data):
-        self._emit({"type": event_type, "t": round((time.perf_counter() - self._start) * 1000), **data})
+        with self._emit_lock:
+            self._emit({"type": event_type, "t": round((time.perf_counter() - self._start) * 1000), **data})
 
     def run(self):
-        s = self.settings
+        s, page = self.settings, self.page
+        settings = {"model": f"{s.provider}/{s.model}", "thinking": s.thinking, "use_tools": bool(s.tools), "tools": list(s.tools),
+                    "approve_tools": s.approve_tools, "max_steps": s.max_steps, "lang": s.lang, "page_model": page is not None}
+        if page:  # what the step cards and the Model tab say of the decoding
+            sm = page.sampling
+            settings |= {"temperature": sm.temperature, "top_p": sm.top_p, "top_k": sm.top_k, "max_new_tokens": sm.max_new_tokens, "mtp": sm.mtp}
         self.emit(
-            "run_start", run_id=self.id, model=f"{s.provider}/{s.model}", family=None, harness="pi",
-            settings={"model": f"{s.provider}/{s.model}", "thinking": s.thinking, "use_tools": bool(s.tools), "tools": list(s.tools),
-                      "approve_tools": s.approve_tools, "max_steps": s.max_steps, "lang": s.lang},
-            tools=list(s.tools),
+            "run_start", run_id=self.id, model=page.llm.model_id if page else f"{s.provider}/{s.model}",
+            family=page.llm.family.key if page else None, harness="pi", settings=settings, tools=list(s.tools),
         )
         stop_reason = "error"
         try:
             self.folder.mkdir(parents=True, exist_ok=True)
-            self._pi = Process(self._args(), self.folder, self._inbox, {
-                "AGENT_LOOP_REFUSAL": pick(s.lang, "使用者拒絕執行這個工具呼叫", "The user refused to run this tool call"),
-            })
+            self._pi = Process(self._args(), self.folder, self._inbox, self._env())
             # Each waits for its answer: pi handles commands concurrently, and a prompt must not go to the model it starts on.
             self._pi.request({"type": "set_model", "provider": s.provider, "modelId": s.model})
             self._pi.request({"type": "set_thinking_level", "level": s.thinking})
@@ -274,6 +295,8 @@ class PiHarness:
         except Exception as e:  # a crash here is shown, not a silent hang
             self.emit("error", message=f"{type(e).__name__}: {e}")
         finally:
+            if page:
+                model_endpoint.endpoint().stop_serving()
             if self._pi:
                 self._pi.close(0 if self._hung else STOP_GRACE)
         final = self._text(self._last) if self._last and stop_reason != "error" else ""
@@ -282,10 +305,32 @@ class PiHarness:
 
     def _args(self) -> list[str]:
         s = self.settings
-        args = ["--session-dir", str(self.folder / SESSION_DIR), "--session-id", self.session]
-        args += ["--tools", ",".join(s.tools)] if s.tools else ["--no-tools"]
-        return args + (["--extension", str(APPROVE)] if s.approve_tools else [])
+        args = ["--session-dir", str(self.folder / SESSION_DIR), "--session-id", self.session, "--extension", str(EXTENSION)]
+        return args + (["--tools", ",".join(s.tools)] if s.tools else ["--no-tools"])
 
+    def _env(self) -> dict[str, str]:
+        """What pi_extension.ts is told: the refusal's words, whether to ask, and the page's model if pi asks it."""
+        s, env = self.settings, {"AGENT_LOOP_REFUSAL": pick(self.settings.lang, "使用者拒絕執行這個工具呼叫", "The user refused to run this tool call")}
+        if s.approve_tools:
+            env["AGENT_LOOP_APPROVE"] = "1"
+        if page := self.page:
+            ep = model_endpoint.endpoint()
+            ep.serve(model_endpoint.Serving(page.llm, page.sampling, s.lang, self.folder, self._serving_step, self.emit,
+                                            lambda: self._aborting is not None))
+            env |= {"AGENT_LOOP_ENDPOINT": ep.url, "AGENT_LOOP_TOKEN": ep.token, "AGENT_LOOP_MODEL": page.llm.model_id,
+                    "AGENT_LOOP_CONTEXT": str(page.llm.context_length), "AGENT_LOOP_MAX_TOKENS": str(page.sampling.max_new_tokens),
+                    # pi sends images alone of what a model reads
+                    "AGENT_LOOP_INPUT": "text,image" if "image" in page.llm.modalities else "text"}
+        return env
+
+    def _serving_step(self) -> int | None:
+        """For the endpoint: the step a request pi sent belongs to. pi starts a turn and then sends its request, and the two
+        reach the page by different ways, so a request waits until the page has opened that step; one that comes outside
+        every step (pi compacting the conversation, say) is served without being drawn."""
+        with self._unserved:
+            self._unserved.wait_for(lambda: self._waiting is not None or self._aborting is not None, timeout=model_endpoint.WAIT_FOR_STEP)
+            step, self._waiting = self._waiting, None
+            return step
     def _message(self) -> tuple[str, list[dict]]:
         """The question, with a line for the model on the files attached (in English, as all the model reads from the
         page is), and the images it reads inline."""
@@ -381,6 +426,9 @@ class PiHarness:
         self._open = True
         self._turn_t = self._stream_t = time.perf_counter()
         self.emit("step_start", step=self._step)
+        with self._unserved:
+            self._waiting = self._step
+            self._unserved.notify_all()
 
     def _update(self, e: dict):
         kind = e.get("type")
@@ -394,7 +442,7 @@ class PiHarness:
             self._delta("tool_call", e.get("delta", ""))
 
     def _delta(self, channel: str, text: str):
-        if text:
+        if text and not self.page:  # the page's model sends its tokens instead
             self._wrote = True
             self.emit("delta", step=self._step, channel=channel, text=text)
 
@@ -406,14 +454,15 @@ class PiHarness:
             self._error = message.get("errorMessage") or reason
         finish = "user_stopped" if self._aborting else {"length": "max_new_tokens", "aborted": "user_stopped", "error": "error"}.get(reason, "end_turn")
         n, seconds = usage.get("output") or 0, now - self._stream_t
-        self.emit(
-            "model_end", step=self._step, finish=finish, stop_piece=None, n_tokens=n,
-            first_ms=round((self._stream_t - self._turn_t) * 1000), decode_ms=round(seconds * 1000),
-            # tokens over the time they took to arrive, network included; nothing when they came all at once
-            tok_per_s=round(n / seconds, 1) if n and seconds > 0.05 else None, mtp=None,
-            usage={"prompt": (usage.get("input") or 0) + (usage.get("cacheRead") or 0) + (usage.get("cacheWrite") or 0),
-                   "cached": usage.get("cacheRead") or 0, "output": n, "cost": (usage.get("cost") or {}).get("total")},
-        )
+        if not self.page:  # the page's model sent its own, with what the backend knows
+            self.emit(
+                "model_end", step=self._step, finish=finish, stop_piece=None, n_tokens=n,
+                first_ms=round((self._stream_t - self._turn_t) * 1000), decode_ms=round(seconds * 1000),
+                # tokens over the time they took to arrive, network included; nothing when they came all at once
+                tok_per_s=round(n / seconds, 1) if n and seconds > 0.05 else None, mtp=None,
+                usage={"prompt": (usage.get("input") or 0) + (usage.get("cacheRead") or 0) + (usage.get("cacheWrite") or 0),
+                       "cached": usage.get("cacheRead") or 0, "output": n, "cost": (usage.get("cost") or {}).get("total")},
+            )
         blocks = message.get("content") or []
         calls = [{"name": b.get("name", ""), "arguments": b.get("arguments") or {}, "raw_args": json.dumps(b.get("arguments") or {}, ensure_ascii=False),
                   "error": None} for b in blocks if b.get("type") == "toolCall"]
@@ -446,7 +495,10 @@ class PiHarness:
 
     def _dialog(self, rec: dict):
         method = rec.get("method")
-        if method == "confirm" and rec.get("title") == APPROVE_TITLE:
+        if method == "notify" and (rec.get("message") or "").startswith(REQUEST_MARK):
+            if self._open:  # not one past an abort
+                self._request(json.loads(rec["message"][len(REQUEST_MARK):]))
+        elif method == "confirm" and rec.get("title") == APPROVE_TITLE:
             call_id = json.loads(rec.get("message") or "{}").get("toolCallId")
             if self._aborting or call_id not in self._calls:
                 self._pi.send({"type": "extension_ui_response", "id": rec["id"], "cancelled": True})
@@ -457,6 +509,24 @@ class PiHarness:
         elif method in DIALOGS:  # no other extension is loaded, so nothing else should ask; an answer keeps pi from waiting
             self._pi.send({"type": "extension_ui_response", "id": rec["id"], "cancelled": True})
 
+    def _request(self, payload):
+        """The request pi is sending the model, as JSON, the part that is new since its last request marked: the lines
+        between what the two begin and end with alike (the step's new messages; the tools after them do not change)."""
+        text = json.dumps(without_media(payload), ensure_ascii=False, indent=2)
+        last, self._request_text = self._request_text, text
+        added_from = added_to = None
+        if last:
+            start = common_prefix(text, last)
+            end = common_prefix(text[::-1], last[::-1])
+            end = min(end, len(text) - start, len(last) - start)
+            added_from, added_to = text.rfind("\n", 0, start) + 1, len(text) - end
+            line_end = text.find("\n", added_to)
+            added_to = len(text) if line_end < 0 else line_end
+        messages = next((payload[k] for k in ("messages", "input", "contents") if isinstance(payload, dict) and isinstance(payload.get(k), list)), [])
+        roles = [m.get("role") for m in messages if isinstance(m, dict) and m.get("role")]
+        self.emit("request", step=self._step, text=text, added_from=added_from, added_to=added_to,
+                  roles={role: roles.count(role) for role in dict.fromkeys(roles)})
+
     def _decided(self, call_id: str, approved: bool):
         if call_id not in self._pending:
             return
@@ -466,3 +536,21 @@ class PiHarness:
         if approved:
             self.emit("tool_start", step=call["step"], call_id=call_id, name=call["name"], environment=environment_of(call["name"]))
         self._pi.send({"type": "extension_ui_response", "id": dialog, "confirmed": approved})
+
+
+def without_media(value):
+    """A request with each image's bytes left out, as the page shows it: a data URL keeps its type, and a long base64
+    string says how long it was."""
+    if isinstance(value, dict):
+        return {k: without_media(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [without_media(v) for v in value]
+    if isinstance(value, str) and value.startswith("data:") and ";base64," in value:
+        kind, data = value.split(";base64,", 1)
+        return f"{kind};base64,…({len(data):,} characters)"
+    if isinstance(value, str) and len(value) > 1000 and not value.strip(BASE64):
+        return f"…({len(value):,} base64 characters)"
+    return value
+
+
+BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="

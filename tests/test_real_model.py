@@ -5,6 +5,7 @@ Opt in with:  RUN_MODEL_TESTS=1 uv run pytest -m model   (add  -k Qwen  for one 
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from app import render
 from harness import families, media, tools
 from harness.backends.backend import Backend
 from harness.backends.simple_backend import SimpleBackend, Sampling
+from harness.harnesses import model_endpoint, pi_harness
 from harness.harnesses.simple_harness import SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
 from harness.tools import TOOLS
 from html_check import assert_balanced
@@ -64,6 +66,24 @@ def test_greedy_decoding_matches_generate(gemma):
         out = gemma.model.generate(ids, do_sample=False, max_new_tokens=24, top_p=None, top_k=None, temperature=None)
     theirs = out[0, ids.shape[-1]:].tolist()
     assert ours == theirs[: len(ours)]
+
+
+def test_the_real_pi_asks_the_model_through_the_endpoint_and_every_token_is_drawn(gemma, tmp_path, monkeypatch):
+    """pi (on the PATH, or PI_COMMAND) asking this model through model_endpoint, with no credentials of its own."""
+    if not (shutil.which(pi_harness.PI_COMMAND[0]) or Path(pi_harness.PI_COMMAND[0]).exists()):
+        pytest.skip(f"{pi_harness.PI_COMMAND[0]} is not installed")
+    (tmp_path / "agent").mkdir()
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "agent"))
+    events = []
+    run = pi_harness.PiHarness(pi_harness.PiSettings(model_endpoint.PROVIDER, gemma.model_id, tools=("bash",), max_steps=4, lang="en"), [],
+                               "Use the bash tool to print today's date, then tell me the date.", events.append, folder=tmp_path / "chat",
+                               session="c", page=pi_harness.PageModel(gemma, Sampling(temperature=0, max_new_tokens=256)))
+    run.run()
+    calls = [e for e in events if e["type"] == "tool_call"]
+    assert calls and calls[0]["name"] == "bash" and "date" in calls[0]["arguments"]["command"], [e for e in events if e["type"] in ("model_end", "error")]
+    assert events[-1]["stop_reason"] == "no_tool_call" and events[-1]["final"]
+    assert [e["step"] for e in events if e["type"] == "context"] == [1, 2]
+    assert all(e["rank"] == 1 for e in events if e["type"] == "token")  # greedy, and every token drawn with its rank
 
 
 def test_agent_uses_a_tool_and_answers(gemma):

@@ -18,7 +18,10 @@ from pathlib import Path
 import pytest
 
 from fake_pi import FakePi
-from harness.harnesses import pi_harness
+from fakes import FakeLLM, qwen_tool_call, tool_call
+from harness.backends.backend import Sampling
+from harness.families import QWEN3_5
+from harness.harnesses import model_endpoint, pi_harness
 from harness.harnesses.harness import ALWAYS, SOMETIMES, Harness
 from harness.harnesses.simple_harness import RunSettings, SimpleHarness
 from harness.media import Attachment
@@ -114,8 +117,8 @@ def test_a_turn_becomes_the_pages_events(fake):
 
 def test_the_order_of_a_step_follows_the_loop(fake):
     kinds = [e["type"] for e in run_pi(fake, {"say": [TIME]}, {"say": [ANSWER]}) if e["type"] != "delta"]
-    assert kinds == ["run_start", "step_start", "model_end", "parsed", "tool_call", "tool_start", "tool_result",
-                     "step_start", "model_end", "parsed", "run_end"]
+    assert kinds == ["run_start", "step_start", "request", "model_end", "parsed", "tool_call", "tool_start", "tool_result",
+                     "step_start", "request", "model_end", "parsed", "run_end"]
 
 
 def test_pi_starts_in_the_conversations_folder_on_its_session_with_the_pages_tools_only(fake):
@@ -126,7 +129,8 @@ def test_pi_starts_in_the_conversations_folder_on_its_session_with_the_pages_too
     assert args[:len(pi_harness.FLAGS)] == pi_harness.FLAGS and "--no-extensions" in args and "--no-context-files" in args
     assert args[args.index("--session-id") + 1] == "chat1"
     assert Path(args[args.index("--session-dir") + 1]) == fake.folder / pi_harness.SESSION_DIR
-    assert args[args.index("--tools") + 1] == "read,ls" and "--extension" not in args
+    assert args[args.index("--tools") + 1] == "read,ls" and args[args.index("--extension") + 1] == str(pi_harness.EXTENSION)
+    assert started["approve"] is None and started["endpoint"] is None  # pi asks before nothing, and asks its own model
 
 
 def test_the_model_is_set_and_retries_turned_off_before_the_question_goes(fake):
@@ -177,6 +181,98 @@ def test_the_next_question_continues_the_same_session(fake):
     assert sessions == ["chat1", "chat1"]
 
 
+# ---------- what pi sends its model ----------
+
+def test_each_step_shows_the_request_pi_sends_and_marks_what_is_new(fake):
+    events = run_pi(fake, {"say": [TIME]}, {"say": [ANSWER]})
+    first, second = of(events, "request")
+    assert [first["step"], second["step"]] == [1, 2]
+    assert json.loads(first["text"])["messages"][0]["content"].startswith("You are an expert coding assistant operating inside pi")
+    assert first["added_from"] is None and first["roles"] == {"system": 1, "user": 1}
+    new = second["text"][second["added_from"]:second["added_to"]]
+    assert '"role": "assistant"' in new and '"role": "tool"' in new and TIME["result"].strip() in new and '"role": "user"' not in new
+    assert second["roles"] == {"system": 1, "user": 1, "assistant": 1, "tool": 1}
+
+
+def test_a_request_shows_no_image_bytes():
+    assert pi_harness.without_media({"url": "data:image/png;base64," + "A" * 40, "data": "QUJD" * 300, "text": "hi"}) == {
+        "url": "data:image/png;base64,…(40 characters)", "data": "…(1,200 base64 characters)", "text": "hi"}
+
+
+# ---------- pi asking the page's own model ----------
+
+def on_page_model(fake, outputs, family=None, text="What time is it?", attachments=(), hold=False, **settings):
+    """Start a turn of pi asking a FakeLLM through model_endpoint, as the page does with pi picked on the page's model;
+    with `hold`, the model waits for llm.gate before it generates."""
+    fake.say(results={"bash": TIME["result"]})
+    llm = FakeLLM(list(outputs), family=family)
+    llm.gate = threading.Event() if hold else None
+    events = []
+    run = pi_harness.PiHarness(pi_harness.PiSettings(model_endpoint.PROVIDER, llm.model_id, **{"lang": "en", **settings}), [], text,
+                               events.append, attachments, fake.folder, "chat1", pi_harness.PageModel(llm, Sampling()))
+    thread = threading.Thread(target=run.run, daemon=True)
+    thread.start()
+    return llm, run, events, thread
+
+
+def test_pi_asks_the_pages_model_and_every_token_is_drawn(fake):
+    llm, *started = on_page_model(fake, [tool_call("bash", command="date"), "It is 2 pm.<turn|>"])
+    events = finish(*started)
+    assert events[0]["family"] == "gemma4" and events[0]["model"] == llm.model_id and events[0]["settings"]["page_model"]
+    assert fake.started()["endpoint"] == model_endpoint.endpoint().url
+    kinds = [e["type"] for e in events if e["type"] != "token"]
+    assert kinds == ["run_start", "step_start", "request", "context", "prefill", "model_end", "parsed", "tool_call", "tool_start", "tool_result",
+                     "step_start", "request", "context", "prefill", "model_end", "parsed", "run_end"]
+    assert not of(events, "delta")  # the tokens say it all
+    assert {e["step"] for e in of(events, "token")} == {1, 2}
+    first, second = of(events, "context")
+    assert "operating inside pi" in first["prompt"] and first["step"] == 1 and second["step"] == 2
+    assert TIME["result"] in second["prompt"][second["added_from"]:] and "What time is it?" not in second["prompt"][second["added_from"]:]
+    done = of(events, "model_end")[0]
+    assert done["stop_piece"] == "<|tool_response>" and done["raw"].startswith("<|tool_call>")
+    assert of(events, "tool_call")[0]["arguments"] == {"command": "date"} and of(events, "tool_result")[0]["result"] == TIME["result"]
+    assert llm.renders[1]["messages"][-1] == {"role": "tool", "tool_call_id": of(events, "tool_call")[0]["call_id"], "name": "bash", "content": TIME["result"]}
+    assert end(events)["stop_reason"] == "no_tool_call" and end(events)["final"] == "It is 2 pm."
+
+
+def test_pi_asks_qwen_too(fake):
+    llm, *started = on_page_model(fake, [qwen_tool_call("bash", command="date"), "Two.<|im_end|>"], family=QWEN3_5)
+    events = finish(*started)
+    assert events[0]["family"] == "qwen3_5" and of(events, "tool_call")[0]["arguments"] == {"command": "date"}
+    assert end(events)["final"] == "Two."
+
+
+@pytest.mark.parametrize("level, on", [("off", False), ("medium", True)])
+def test_pis_thinking_level_is_the_pages_thinking_mode(fake, level, on):
+    llm, *started = on_page_model(fake, ["好的<channel|>It is 2 pm.<turn|>" if on else "It is 2 pm.<turn|>"], thinking=level)
+    events = finish(*started)
+    assert llm.renders[0]["thinking"] is on
+    assert end(events)["final"] == "It is 2 pm."
+
+
+def test_an_image_reaches_the_pages_model(fake, tmp_path):
+    photo = tmp_path / "photo.png"
+    photo.write_bytes(b"\x89PNG fake")
+    llm, *started = on_page_model(fake, ["A receipt.<turn|>"], attachments=[Attachment("photo.png", "image", str(photo), 9)])
+    events = finish(*started)
+    [part] = llm.encodes[0]
+    assert part["type"] == "image" and Path(part["path"]).read_bytes() == b"\x89PNG fake"
+    assert of(events, "context")[0]["media_tokens"] == {"image": 6}
+
+
+def test_stop_stops_the_pages_model_before_its_next_token(fake):
+    llm, run, events, thread = on_page_model(fake, ["It is 2 pm.<turn|>"], hold=True)
+    wait_for(events, "context")
+    run.stop()
+    deadline = time.monotonic() + 5
+    while run._aborting is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    llm.gate.set()
+    finish(run, events, thread)
+    assert end(events)["stop_reason"] == "user_stopped" and of(events, "model_end")[0]["finish"] == "user_stopped"
+    assert not of(events, "token")
+
+
 # ---------- asking first ----------
 
 def asking(fake, lang="en"):
@@ -188,7 +284,7 @@ def test_ask_first_loads_the_extension_and_holds_the_call(fake):
     run, events, thread = asking(fake)
     request = wait_for(events, "approval_request")
     assert request["call_id"] == "call_1" and request["name"] == "bash" and request["arguments"] == {"command": "date"}
-    assert str(pi_harness.APPROVE) in fake.started()["args"] and not of(events, "tool_start")
+    assert fake.started()["approve"] == "1" and not of(events, "tool_start")
     run.decide("call_1", True)
     finish(run, events, thread)
     kinds = [e["type"] for e in events]
@@ -406,3 +502,21 @@ def test_the_real_pi_runs_a_turn_the_page_can_draw(real_pi, tmp_path, approve):
     assert "".join(e["text"] for e in of(events, "delta") if e["step"] == 2) == "It says hi."
     system = real_pi.requests[0]["messages"][0]
     assert system["role"] in ("system", "developer") and "pi" in str(system["content"])
+
+
+@pytest.mark.parametrize("thinking", ["off", "medium"])
+def test_the_real_pi_asks_the_pages_model_through_the_endpoint(real_pi, tmp_path, thinking):
+    think = "" if thinking == "off" else "Run it.<channel|>"  # a thought the prompt opened ends before the call
+    llm = FakeLLM([think + tool_call("bash", command="echo hi"), think.replace("Run it", "It printed hi") + "It says hi.<turn|>"])
+    events = []
+    run = pi_harness.PiHarness(pi_harness.PiSettings(model_endpoint.PROVIDER, llm.model_id, thinking=thinking, lang="en"), [], "Run echo hi",
+                               events.append, folder=tmp_path / "chat", session="chat1", page=pi_harness.PageModel(llm, Sampling()))
+    thread = threading.Thread(target=run.run, daemon=True)
+    thread.start()
+    thread.join(60)
+    assert end(events)["stop_reason"] == "no_tool_call", [e for e in events if e["type"] == "error"]
+    assert end(events)["final"] == "It says hi." and of(events, "tool_result")[0]["result"].strip() == "hi"
+    assert [e["step"] for e in of(events, "context")] == [1, 2] and of(events, "token") and not of(events, "delta")
+    assert "pi" in llm.renders[0]["messages"][0]["content"] and llm.renders[0]["thinking"] is (thinking != "off")
+    assert [r["step"] for r in of(events, "request")] == [1, 2]
+    assert not real_pi.requests  # the scripted provider's model was never asked

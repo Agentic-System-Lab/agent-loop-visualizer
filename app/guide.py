@@ -59,7 +59,7 @@ STAGES = {
 }
 REF_RE = re.compile(r"\[\[([\w./-]+)\|(.+?)\]\]")
 # The tabs a part of a section can come in: one per backend where what runs the model changes it, one per model where
-# the model does. Each kind has the name of its row of tabs, and each tab its label and the small print beside it (the
+# the model does, and, for pi, one per kind of model it asks. Each kind has the name of its row of tabs, and each tab its label and the small print beside it (the
 # class that runs the model, or the family's module). A key with a dash is a narrower one of the key before the dash:
 # "vllm-docker" and "vllm-url" are kinds of "vllm" (any vLLM server, where the two do not differ), and guide.js takes
 # either for the other.
@@ -75,6 +75,10 @@ TAB_KINDS = {
         "gemma4": ({"zh": "Gemma 4", "en": "Gemma 4"}, "gemma4.py"),
         "qwen3_5": ({"zh": "Qwen3.5", "en": "Qwen3.5"}, "qwen3_5.py"),
         "gemma4-drafter": ({"zh": "Gemma 4 的草稿模型", "en": "Gemma 4's drafter"}, "MTP"),
+    }),
+    "pi_model": ({"zh": "pi 問的模型", "en": "The model pi asks"}, {
+        "page_model": ({"zh": "這個網頁的模型", "en": "This page's model"}, "model_endpoint.py"),
+        "provider": ({"zh": "pi 自己的模型", "en": "pi's own models"}, "models.json · /login"),
     }),
 }
 MAX_TABS = 4  # guide.css hides the panels of the tabs not picked, by place, up to this many
@@ -470,10 +474,12 @@ SECTIONS = [
         (
             {"zh": "`harness/harnesses/`：跑迴圈的那一層。`harness.py` 是畫面對它的要求 `Harness`，以及每個 harness 送出的事件；"
                    "`simple_harness.py` 是這個專案的 harness，迴圈本體 `SimpleHarness.run()`（[[harness/harnesses/simple_harness.py|def run(self):]]）；"
-                   "`pi_harness.py` 把迴圈交給 pi，`pi_approve.ts` 是讓網頁在 pi 執行工具前先問你的 pi extension（{{pi}}）。",
+                   "`pi_harness.py` 把迴圈交給 pi；`pi_extension.ts` 是網頁讓 pi 載入的 extension，回報 pi 送出的每個請求、在 pi 執行工具前先問你；"
+                   "`model_endpoint.py` 把這個網頁的模型當成一個相容 OpenAI 的端點提供給 pi（{{pi}}）。",
              "en": "`harness/harnesses/`: what runs the loop. `harness.py` is what the page asks of it, `Harness`, and the events every harness sends; "
                    "`simple_harness.py` is this project's harness, with the loop itself, `SimpleHarness.run()` ([[harness/harnesses/simple_harness.py|def run(self):]]); "
-                   "`pi_harness.py` hands the loop to pi, and `pi_approve.ts` is the pi extension through which the page asks you before pi runs a tool ({{pi}})."},
+                   "`pi_harness.py` hands the loop to pi; `pi_extension.ts` is the extension the page has pi load, which reports every request pi sends and asks you "
+                   "before pi runs a tool; and `model_endpoint.py` serves this page's model to pi as an OpenAI-compatible endpoint ({{pi}})."},
             {"zh": "`harness/backends/backend.py`：harness 和畫面對「跑模型的那一層」的全部要求，`Backend`（[[harness/backends/backend.py|class Backend(Protocol):]]）："
                    "`render()`、`encode()`、`generate()`，以及 token 事件裡哪些欄位一定有、哪些要 backend 知道才有。"
                    "`simple_backend.py` 的 `SimpleBackend` 是其中一種，`vllm_backend.py` 是另一種（{{backends}}）。",
@@ -854,7 +860,7 @@ SECTIONS = [
                "`release_model()` 先清掉快取、把記憶體還給系統，下一個模型才載入，兩個不會同時佔著記憶體。Streamlit 的 fast reruns 也關掉了（`.streamlit/config.toml`）：重跑會等正在跑的那一次到下一個 Streamlit 呼叫，而不是在新的 thread 裡和它同時跑，所以模型載入到一半時切換的設定，要等載入完才生效，不會在放掉之後才又載入完、留在記憶體裡。"
                "第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family"
                "（[[harness/backends/simple_backend.py|def _sampling_defaults(self)]]）。側欄的模型選單換了之後會開新對話（[[app/page.py|key=\"model_id\", on_change=switch_model]]）。"
-               "側欄的「用什麼跑迴圈」選了 pi 時，這台電腦不載入模型，改由 `pi_picker()` 問 pi 有哪些模型（{{pi}}）。",
+               "側欄的「用什麼跑迴圈」選了 pi 時，`pi_picker()` 先問 pi 有哪些模型；pi 問這個網頁的模型時，模型照上面那樣載入，問 pi 自己的模型時，這台電腦什麼都不載入（{{pi}}）。",
          "en": "On every rerun, `current_llm()` first gets a `Backend` for the model picked in the sidebar, and the rest of the page takes it for just that ({{backends}}). "
                "`load_llm()` is cached with `st.cache_resource(max_entries=1)`, so only one model stays in memory. Switching models, or what runs them, first has "
                "`release_model()` clear that cache and hand the memory back, and only then does the next model load, so the two never hold memory at once. "
@@ -862,7 +868,8 @@ SECTIONS = [
                "The first time a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "
                "generation_config.json, so its recommendations come from the family ([[harness/backends/simple_backend.py|def _sampling_defaults(self)]]). "
                "Switching models in the sidebar's menu starts a new conversation ([[app/page.py|key=\"model_id\", on_change=switch_model]]). "
-               "With pi picked under What runs the loop, no model loads on this machine; `pi_picker()` asks pi which models it has instead ({{pi}})."},
+               "With pi picked under What runs the loop, `pi_picker()` first asks pi which models it has; pi asking this page's model loads it as above, and pi "
+               "asking one of its own loads nothing on this machine ({{pi}})."},
         Code("app/page.py", "@st.cache_resource(max_entries=1", end="def release_model():"),
         {"zh": "其他的看是用什麼跑模型：", "en": "The rest depends on what runs the model:"},
         Tabs({
@@ -918,10 +925,11 @@ SECTIONS = [
                "language: the errors that the harness and the tools send the model are worded in it for the whole turn. `tools` are the tools "
                "the model is offered: `run_python` only when Let the model write code is on and Docker is ready ({{execute}})."},
         Code("app/page.py", "def current_settings("),
-        {"zh": "`harness_for()` 決定這一輪由誰跑：`SimpleHarness` 跑在記憶體裡的模型上，或是 `PiHarness`（{{pi}}）。兩種都帶著這段對話的歷史、附件和資料夾，"
-               "設定在這時候就固定下來。",
-         "en": "`harness_for()` decides what runs the turn: a `SimpleHarness` on the model in memory, or a `PiHarness` ({{pi}}). Either gets the conversation so far, "
-               "the attachments and the conversation's folder, and its settings are fixed now."},
+        {"zh": "`harness_for()` 決定這一輪由誰跑：`SimpleHarness` 跑在記憶體裡的模型上，或是 `PiHarness`（{{pi}}）；pi 問這個網頁的模型時，"
+               "`PiHarness` 也拿到那個模型和側欄的解碼設定（`PageModel`）。兩種都帶著這段對話的歷史、附件和資料夾，設定在這時候就固定下來。",
+         "en": "`harness_for()` decides what runs the turn: a `SimpleHarness` on the model in memory, or a `PiHarness` ({{pi}}), which, when pi asks this page's model, "
+               "gets that model and the sidebar's decoding too (`PageModel`). Either gets the conversation so far, the attachments and the conversation's folder, "
+               "and its settings are fixed now."},
         Code("app/page.py", "def harness_for("),
         {"zh": "`LiveRun` 拿 `self.events.append` 當成 `emit` 建出這個 harness，然後開背景 thread。"
                "thread 跑完 `run.run()` 之後才在 `finally` 裡放開鎖，所以就算 agent 出錯，鎖也一定會還回去。",
@@ -1748,14 +1756,14 @@ SECTIONS = [
         Code("app/page.py", "@st.fragment(run_every=", end="viz_panel(llm)"),
         {"zh": "每次重畫，`LiveRun.data()` 複製一份目前的事件列表交給 `render.build()`，按順序折成一個個 step。"
                "`run_start` 告訴它這一輪是哪個模型、哪個 family，之後畫特殊 token、停止 token 和使用者訊息的位置都問這個 family；"
-               "`step_start` 開一個新的 step，`context`、`prefill`、`token`、`parsed` 填進去（pi 跑的一輪沒有 family，也沒有前三個，換成串流進來的文字 `delta`，{{pi}}），`model_end` 帶來的推測解碼結果標出哪些 token 是猜中的"
+               "`step_start` 開一個新的 step，`context`、`prefill`、`token`、`parsed` 填進去（pi 跑的一輪還有 pi 送出的請求 `request`；pi 問 provider 的模型時，沒有 family 也沒有前三個，換成串流進來的文字 `delta`，{{pi}}），`model_end` 帶來的推測解碼結果標出哪些 token 是猜中的"
                "（伺服器到這時才說，{{mtp}}），工具相關的事件依 `call_id` 歸到各自的呼叫。"
                "之後所有 HTML 都是這個結構（和頁面語言）的純函式，所以執行到一半的任何時刻都畫得出來；"
                "切換語言也只是用另一種語言重畫同一份事件，跑完的對話也會跟著換。",
          "en": "On every redraw, `LiveRun.data()` copies the event list so far and hands it to `render.build()`, which folds it into steps in "
                "order. `run_start` says which model and family the turn uses, and from then on the special tokens, the stop tokens and where "
                "the user's message starts are all asked of that family; `step_start` opens a new step, `context`, `prefill`, `token` and "
-               "`parsed` fill it in (a turn pi ran has no family and none of the first three, but `delta`, the text as it streams, {{pi}}), `model_end` marks the tokens that were guesses when a server says so only then ({{mtp}}), and the tool events go to their calls by `call_id`. All the HTML after that is a pure function of this "
+               "`parsed` fill it in (a turn pi ran also has the request pi sent, `request`, and when pi asks a provider's model, no family and none of the first three, but `delta`, the text as it streams, {{pi}}), `model_end` marks the tokens that were guesses when a server says so only then ({{mtp}}), and the tool events go to their calls by `call_id`. All the HTML after that is a pure function of this "
                "structure (and of the page's language), so it can be drawn at any moment of a run; switching the language just redraws the "
                "same events in the other one, finished turns included."},
         Code("app/render.py", "def build(events: list[dict])"),
@@ -1775,12 +1783,12 @@ SECTIONS = [
     )),
     Section("pi", "harness",
             {"zh": "換一個 harness：pi", "en": "Another harness: pi"},
-            {"zh": "同一張圖、同一套事件，迴圈換成 pi 跑：看得到它每一步做了什麼，看不到 token。",
-             "en": "The same diagram and the same events, with pi running the loop: what it does at each step shows, its tokens do not."}, (
-        {"zh": "pi 是一個 coding agent，有它自己的迴圈、system prompt 和工具（read、bash、edit、write…），問的是它在 provider 那邊登入過的模型（Claude、GPT…）。"
+            {"zh": "同一張圖、同一套事件，迴圈換成 pi 跑：它可以問這個網頁的模型，也可以問它自己的。",
+             "en": "The same diagram and the same events, with pi running the loop: it can ask this page's model, or one of its own."}, (
+        {"zh": "pi 是一個 coding agent，有它自己的迴圈、system prompt 和工具（read、bash、edit、write…）。"
                "側欄的「用什麼跑迴圈」選 pi 時，每個問題都由 `PiHarness` 用 RPC 模式啟動一個 pi 子行程：指令從 stdin 送進去，紀錄從 stdout 讀出來，一行一個 JSON。"
                "它先選好模型和思考等級、關掉 pi 自己的自動重試，再把問題當成 prompt 送出；每一個指令都等到 pi 回應才送下一個，因為 pi 是同時處理指令的。",
-         "en": "pi is a coding agent with its own loop, system prompt and tools (read, bash, edit, write…), and it asks a model it is logged in to at a provider (Claude, GPT…). "
+         "en": "pi is a coding agent with its own loop, system prompt and tools (read, bash, edit, write…). "
                "With pi picked under What runs the loop, `PiHarness` starts pi in RPC mode as a child process for each question: commands go in on stdin, "
                "records come out on stdout, one JSON object per line. It picks the model and the thinking level and turns pi's own retries off, then sends the question "
                "as a prompt, each command only after pi has answered the last, since pi handles commands concurrently."},
@@ -1790,29 +1798,67 @@ SECTIONS = [
         (
             {"zh": "`turn_start` → `step_start`；pi 自己沒有步數上限，跑滿側欄的步數，`PiHarness` 就請 pi 中止，不再畫下一步。",
              "en": "`turn_start` → `step_start`; pi has no step limit of its own, so once the sidebar's limit is reached `PiHarness` asks pi to abort and draws no further step."},
-            {"zh": "`message_update` 裡一段段的文字、思考和工具呼叫的參數 → `delta`，帶著它是哪一種（channel）。",
-             "en": "the pieces of text, thinking and tool-call arguments in `message_update` → `delta`, with which of them it is (its channel)."},
-            {"zh": "模型那則訊息的 `message_end` → `model_end`（provider 報的 token 數和 pi 估的費用）和 `parsed`（思考、回覆、工具呼叫）。",
-             "en": "the `message_end` of the model's message → `model_end` (the token counts the provider reported, and the cost by pi's prices) and `parsed` (the thinking, the reply, the tool calls)."},
+            {"zh": "模型那則訊息的 `message_end` → `parsed`（思考、回覆、工具呼叫）。",
+             "en": "the `message_end` of the model's message → `parsed` (the thinking, the reply, the tool calls)."},
             {"zh": "`tool_execution_start` → `tool_call` 和 `tool_start`，`tool_execution_end` → `tool_result`；`agent_settled` → `run_end`。",
              "en": "`tool_execution_start` → `tool_call` and `tool_start`, `tool_execution_end` → `tool_result`; `agent_settled` → `run_end`."},
         ),
         Code("harness/harnesses/pi_harness.py", "def _on(self, rec: dict) -> bool:"),
-        {"zh": "pi 問模型用的是 provider 的 API，拿回來的是文字，不是 token：沒有 token id、機率和候選，也不知道模型實際讀到什麼字串；pi 也不說它送出的 prompt。"
-               "所以 pi 的 step 沒有脈絡段，模型段畫的是一段段傳回來的文字，加上 provider 報的數字（[[app/render.py|def streamed_html(]]），"
-               "就像 backend 沒回報的 token 細節，畫面寧可少畫，也不拿別的數字湊（{{backends}}）。",
-         "en": "pi asks the model through its provider's API, which sends back text, not tokens: no token ids, probabilities or candidates, and nothing of the "
-               "string the model really read; nor does pi say which prompt it sends. So a step of pi's has no context section, and its model section is the text "
-               "as it came back, with the numbers the provider reported ([[app/render.py|def streamed_html(]]); as with the token details a backend does not report, "
-               "the page would rather show less than fill in a number of its own ({{backends}})."},
-        {"zh": "pi 執行工具前不會問人。打開「執行工具前先問我」時，`PiHarness` 讓 pi 多載入一個很小的 extension：pi 每次要執行工具，它就開一個確認對話框。"
+        {"zh": "網頁啟動的每個 pi 都載入一個小 extension，`pi_extension.ts`。pi 每次要向模型送出請求前，它把請求的內容當成一則通知送出；"
+               "在 RPC 模式下，通知是 stdout 上的一筆 `extension_ui_request`，`PiHarness` 把它變成 `request` 事件（[[harness/harnesses/pi_harness.py|def _request(self, payload)]]）："
+               "step 卡片的脈絡段和「脈絡」分頁畫出 pi 的 system prompt、工具和對話，寫成 JSON，這一步新加的部分（上一步的回覆和觀察）另外標出來。",
+         "en": "Every pi the page starts loads one small extension, `pi_extension.ts`. Before each request pi sends the model, it sends what the request holds as "
+               "a notification; in RPC mode a notification is an `extension_ui_request` on stdout, which `PiHarness` turns into a `request` event "
+               "([[harness/harnesses/pi_harness.py|def _request(self, payload)]]): the step card's context section and the Context tab show pi's system prompt, its "
+               "tools and the conversation as JSON, with what this step added (the last step's reply and observation) marked."},
+        Code("harness/harnesses/pi_extension.ts", 'pi.on("before_provider_request"', end="});"),
+        {"zh": "其他的看 pi 問的是哪一種模型：", "en": "The rest depends on which kind of model pi asks:"},
+        Tabs({
+            "page_model": (
+                {"zh": "側欄的「pi 問的模型」選「這個網頁的模型」時，pi 問的是記憶體裡那個模型，Gemma 或 Qwen，跑在 transformers 或 vLLM 上，和內建 harness 用的一樣（{{backends}}）。"
+                       "pi 只會用 HTTP 問模型，所以 `model_endpoint.py` 在 127.0.0.1 上開一個相容 OpenAI 的 chat completions 端點，用一個 token 擋住別的程式；"
+                       "extension 把它註冊成 pi 的 provider `agent-loop`。每個請求的訊息和工具，先換回 `SimpleHarness` 用的那種對話"
+                       "（[[harness/harnesses/model_endpoint.py|def conversation(]]），再用模型的 chat template render、encode、生成，和 `SimpleHarness` 的一步一樣。",
+                 "en": "With This page's model picked under The model pi asks, pi asks the model in memory, Gemma or Qwen, on transformers or vLLM, the same one the "
+                       "built-in harness runs ({{backends}}). pi asks models over HTTP alone, so `model_endpoint.py` serves an OpenAI-compatible chat completions "
+                       "endpoint on 127.0.0.1, behind a token that keeps other programs out, and the extension registers it as pi's provider `agent-loop`. The messages "
+                       "and tools of each request become the conversation `SimpleHarness` keeps ([[harness/harnesses/model_endpoint.py|def conversation(]]), which is "
+                       "rendered with the model's chat template, encoded and generated, as in a step of `SimpleHarness`."},
+                Code("harness/harnesses/model_endpoint.py", "messages = conversation(body, llm, serving.folder)", end='emit("context",'),
+                {"zh": "端點的事件（`context`、`prefill`、`token`、`model_end`）進到 pi 的那一步：pi 先開始一個 turn 才送出請求，兩件事從不同的路到頁面，"
+                       "所以請求先等頁面開好那一步（[[harness/harnesses/pi_harness.py|def _serving_step(self)]]）。所以 pi 的 step 和內建 harness 的一樣，"
+                       "看得到模型讀的字串和每個 token 的機率。回覆一邊生成一邊傳回 pi：思考是 `reasoning_content`，回覆是 `content`，"
+                       "最後是 family 從模型自己的格式解析出來的工具呼叫（`tool_calls`），交給 pi 去執行。解析不出來的呼叫不送，pi 的這一輪就停在那裡，"
+                       "因為沒有人告訴模型哪裡寫錯（{{record}}）。解碼設定是側欄的；思考跟著 pi 的思考等級，端點把它換成 chat template 的思考開關。",
+                 "en": "The endpoint's events (`context`, `prefill`, `token`, `model_end`) go into pi's step: pi starts a turn and then sends its request, and the two "
+                       "reach the page by different ways, so the request waits until the page has opened that step ([[harness/harnesses/pi_harness.py|def _serving_step(self)]]). "
+                       "So pi's steps show, as the built-in harness's do, the string the model read and every token's probability. The reply streams back to pi as it is "
+                       "generated: the thinking as `reasoning_content`, the reply as `content`, and at the end the tool calls the family parses out of the model's own "
+                       "format, as `tool_calls`, for pi to run. A call it cannot parse is not sent, and pi's turn ends there, since nothing tells the model what it "
+                       "wrote wrong ({{record}}). The decoding settings are the sidebar's; the thinking follows pi's thinking level, which the endpoint turns into the "
+                       "chat template's thinking switch."},
+                Code("harness/harnesses/model_endpoint.py", "for ev in llm.generate(encoded, serving.sampling"),
+            ),
+            "provider": (
+                {"zh": "選「pi 自己的模型」時，pi 問的是它在 provider 那邊登入過的模型（Claude、GPT…）。provider 的 API 拿回來的是文字，不是 token："
+                       "沒有 token id、機率和候選，也不知道模型實際讀到什麼字串；API 那邊怎麼把請求寫成模型讀的字串，pi 和 provider 都不說。"
+                       "所以 step 的脈絡段是 pi 送出的請求，模型段畫的是一段段傳回來的文字（`delta`），加上 provider 報的 token 數和照 pi 價目估的費用"
+                       "（[[app/render.py|def streamed_html(]]）。就像 backend 沒回報的 token 細節，畫面寧可少畫，也不拿別的數字湊（{{backends}}）。",
+                 "en": "With pi's own models picked, pi asks a model it is logged in to at a provider (Claude, GPT…). A provider's API sends back text, not tokens: no token "
+                       "ids, probabilities or candidates, and nothing of the string the model really read; how the API writes the request out for its model, neither pi nor "
+                       "the provider says. So a step's context section is the request pi sent, and its model section the text as it streamed back (`delta`), with the "
+                       "token counts the provider reported and the cost at pi's prices ([[app/render.py|def streamed_html(]]); as with the token details a backend does "
+                       "not report, the page would rather show less than fill in a number of its own ({{backends}})."},
+            ),
+        }),
+        {"zh": "pi 執行工具前不會問人。打開「執行工具前先問我」時，同一個 extension 在 pi 每次要執行工具前開一個確認對話框。"
                "在 RPC 模式下，這個對話框是 stdout 上的一筆 `extension_ui_request`，`PiHarness` 把它變成 `approval_request`，你按的「允許」或「拒絕」再從 stdin 送回去；"
                "被拒絕的呼叫不執行，模型讀到的結果就是拒絕的原因，用這一輪開始時頁面的語言寫。",
-         "en": "pi does not ask anyone before it runs a tool. With Ask me before running a tool on, `PiHarness` has pi load one small extension, which opens a confirm "
-               "dialog every time pi is about to run a tool. In RPC mode the dialog is an `extension_ui_request` on stdout, which `PiHarness` turns into an "
-               "`approval_request`, and your Allow or Reject goes back on stdin; a rejected call does not run, and the result the model reads is the refusal, in the "
-               "language the page was in when the turn started."},
-        Code("harness/harnesses/pi_approve.ts", 'pi.on("tool_call"', end="return undefined;"),
+         "en": "pi does not ask anyone before it runs a tool. With Ask me before running a tool on, the same extension opens a confirm dialog every time pi is about "
+               "to run a tool. In RPC mode the dialog is an `extension_ui_request` on stdout, which `PiHarness` turns into an `approval_request`, and your Allow or "
+               "Reject goes back on stdin; a rejected call does not run, and the result the model reads is the refusal, in the language the page was in when the "
+               "turn started."},
+        Code("harness/harnesses/pi_extension.ts", 'pi.on("tool_call"', end="return undefined;"),
         {"zh": "pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱：不像 `run_python` 在沒有網路、唯讀的 Docker 容器裡（{{execute}}），bash 碰得到你碰得到的一切。"
                "網頁啟動 pi 時不載入你自己的 extension、skill、prompt 範本和 AGENTS.md，畫出來的就是 pi 本身的迴圈；模型和登入資訊還是你的。"
                "pi 把對話存在這段對話資料夾裡的 session 檔，下一個問題用同一個 session 啟動 pi，模型就讀得到前面的全部。"
@@ -1833,6 +1879,10 @@ EVENTS = [
     ("step_start", "harness/harnesses/simple_harness.py", 'self.emit("step_start"',
      {"zh": "step 編號", "en": "the step number"},
      {"zh": "開一張新的 step 卡片；迴圈圖亮起「脈絡」", "en": "opens a new step card; Context lights up in the loop diagram"}),
+    ("request", "harness/harnesses/pi_harness.py", 'self.emit("request"',
+     {"zh": "pi 送給模型的請求，寫成 JSON（圖片只留類型）、這一步新加的部分在哪、各角色訊息數；只有 pi 送",
+      "en": "the request pi sends the model, as JSON (an image as its type alone), where this step's new part is, the number of messages per role; only from pi"},
+     {"zh": "pi 問 provider 的模型時，step 卡片的脈絡段；「脈絡」分頁", "en": "the step card's context section when pi asks a provider's model; the Context tab"}),
     ("context", "harness/harnesses/simple_harness.py", '"context",',
      {"zh": "模型讀到的完整 prompt（媒體已展開）、token 數、`added_from`、每種媒體佔的 token 數、脈絡上限、各角色訊息數",
       "en": "the whole prompt as the model reads it (media expanded), its token count, `added_from`, the tokens each kind of media takes, "

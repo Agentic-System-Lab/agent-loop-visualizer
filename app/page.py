@@ -41,7 +41,7 @@ import shutil
 import threading
 import uuid
 import weakref
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 from urllib.parse import quote, urlencode
@@ -53,7 +53,7 @@ from harness import families, media, tools
 from harness.backends import vllm_backend, vllm_docker
 from harness.backends.backend import Backend, Sampling
 from harness.backends.simple_backend import SimpleBackend, empty_cache
-from harness.harnesses import pi_harness
+from harness.harnesses import model_endpoint, pi_harness
 from harness.harnesses.harness import Harness
 from harness.harnesses.simple_harness import RunSettings, SimpleHarness
 from harness.i18n import LANGS, from_locale, pick
@@ -249,15 +249,22 @@ def current_llm() -> Backend:
 
 @dataclass
 class PiAgent:
-    """pi and the model it asks, where the page would otherwise have a Backend: what the chat needs to know of it."""
-    model_id: str  # "provider/id", as pi's own model menu names it
-    model: dict  # pi's model object for it (pi_harness.probe)
+    """pi and the model it asks, where the page would otherwise have a Backend: what the chat needs to know of it. The
+    model is the page's own (`llm`, served to pi by model_endpoint.py) or one of pi's own (`model`, at a provider)."""
+    model_id: str  # the page's model id, or "provider/id", as pi's own model menu names it
     version: str
-    info: dict = field(default_factory=dict)  # no server and no model folder: pi's model runs at its provider
+    llm: Backend | None = None
+    model: dict | None = None  # pi's model object for one of its own (pi_harness.probe)
 
     @property
     def modalities(self) -> tuple[str, ...]:
-        return ("image",) if "image" in self.model.get("input", ()) else ()
+        """What pi sends the model besides text: images alone, and those only to a model that reads them."""
+        reads = self.llm.modalities if self.llm else self.model.get("input", ())
+        return ("image",) if "image" in reads else ()
+
+    @property
+    def info(self) -> dict:
+        return self.llm.info if self.llm else {}  # a provider's model has no server or folder here
 
 
 def pi_picked() -> bool:
@@ -276,14 +283,32 @@ def retry_pi():
 
 def pi_settings(who: PiAgent) -> pi_harness.PiSettings:
     s = st.session_state
-    return pi_harness.PiSettings(who.model["provider"], who.model["id"], thinking=s.pi_thinking, tools=tuple(s.pi_tools),
-                         approve_tools=s.approve_tools, max_steps=s.max_steps, lang=s.lang)
+    if who.llm:  # Thinking mode, which pi sends as its thinking level and the endpoint turns into the template's switch
+        provider, model, thinking = model_endpoint.PROVIDER, who.llm.model_id, "medium" if s.thinking else "off"
+    else:
+        provider, model, thinking = who.model["provider"], who.model["id"], s.pi_thinking
+    return pi_harness.PiSettings(provider, model, thinking=thinking, tools=tuple(s.pi_tools), approve_tools=s.approve_tools,
+                                 max_steps=s.max_steps, lang=s.lang)
 
 
 def pi_picker(busy: bool) -> PiAgent:
-    """The models pi has credentials for, in the sidebar; pi is started once to ask (and again after a minute)."""
+    """Which model pi asks: the page's own, with the model menu and what runs it as the built-in harness has them, or one
+    of the models pi has credentials for. pi is started once to ask which (and again after a minute)."""
     with st.spinner(tr("問 pi 它能用哪些模型…", "Asking pi which models it can use…")):
         found = pi_found()
+    with st.sidebar:
+        sources = {"page": tr("這個網頁的模型", "This page's model"), "pi": tr("pi 自己的模型", "pi's own models")}
+        st.segmented_control(
+            tr("pi 問的模型", "The model pi asks"), list(sources), format_func=sources.get, key="pi_source", required=True,
+            on_change=new_chat, disabled=busy,
+            help=tr("這個網頁的模型：Gemma 或 Qwen，跑在 transformers 或 vLLM 上，由網頁在 127.0.0.1 上當成一個相容 OpenAI 的端點提供給 pi；"
+                    "每個 token 和模型讀到的字串都看得到。pi 自己的模型：pi 登入過的 provider 的模型（Claude、GPT…），只看得到文字。",
+                    "This page's model: Gemma or Qwen, on transformers or vLLM, which the page serves to pi as an OpenAI-compatible endpoint on 127.0.0.1; "
+                    "every token and the string the model reads show. pi's own models: those of the providers pi is logged in to (Claude, GPT…); only their text shows."),
+        )
+    if st.session_state.pi_source == "page":
+        model_picker(model_menu(), busy)
+        return PiAgent(st.session_state.model_id, found["version"], llm=current_llm())
     models = {f'{m["provider"]}/{m["id"]}': m for m in found["models"]}
     if not models:
         raise pi_harness.PiError(
@@ -298,7 +323,7 @@ def pi_picker(busy: bool) -> PiAgent:
         st.selectbox(tr("模型", "Model"), list(models), key="pi_model", on_change=new_chat, disabled=busy,
                      help=tr("pi 有登入資訊的模型（provider/模型 id）。換模型會開始新的對話。",
                              "The models pi has credentials for (provider/model id). Switching models starts a new conversation."))
-    return PiAgent(st.session_state.pi_model, models[st.session_state.pi_model], found["version"])
+    return PiAgent(st.session_state.pi_model, found["version"], model=models[st.session_state.pi_model])
 
 
 class Slot:
@@ -354,9 +379,10 @@ def init_state():
     st.session_state.setdefault("harness", "simple")  # what runs the loop: this project's harness, or pi
     st.session_state.setdefault("pi_tools", list(pi_harness.DEFAULT_TOOLS))
     st.session_state.setdefault("pi_thinking", "off")
+    st.session_state.setdefault("pi_source", "page")  # the model pi asks: the page's own, or one of pi's
     # The sidebar draws only one harness's settings; Streamlit would forget the other's, whose widgets are not drawn,
     # unless they are set again here.
-    for key in [*DEFAULTS, "model_id", "pi_model", "pi_tools", "pi_thinking"]:
+    for key in [*DEFAULTS, "model_id", "pi_model", "pi_tools", "pi_thinking", "pi_source"]:
         if key in st.session_state:
             st.session_state[key] = st.session_state[key]
     st.session_state.setdefault("runs", [])
@@ -446,7 +472,8 @@ def harness_for(who: "Backend | PiAgent", text: str, attachments: list[media.Att
     history, folder = st.session_state.history, chat_folder()
     if isinstance(who, PiAgent):
         settings, session = pi_settings(who), st.session_state.chat_id
-        return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session)
+        page = pi_harness.PageModel(who.llm, current_settings(who.llm).sampling) if who.llm else None
+        return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session, page)
     settings = current_settings(who)
     return lambda emit: SimpleHarness(who, history, text, settings, emit, attachments, folder)
 
@@ -570,16 +597,21 @@ def model_picker(menu: dict[str, str], busy: bool):
             )
 
 
+def model_caption(llm: Backend) -> str:
+    """The model in memory and what runs it, under the model menu."""
+    info = llm.info
+    if server := info.get("server"):
+        where = tr(f" · Docker（{st.session_state.vllm_device.upper()}）", f" · Docker ({st.session_state.vllm_device.upper()})") if docker_vllm() else ""
+        where += " · MTP" if docker_vllm() and st.session_state.mtp else ""
+        return f"`{llm.model_id}` · {llm.family.name} · {server['engine']} {server.get('version') or ''} · {server['url']}{where}"
+    return (f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · "
+            + tr(f"載入 {info['load_seconds']} s", f"loaded in {info['load_seconds']} s"))
+
+
 def sidebar(llm: Backend, live: bool, busy: bool):
-    info, lang = llm.info, st.session_state.lang
+    lang = st.session_state.lang
     with st.sidebar:
-        if server := info.get("server"):
-            where = tr(f" · Docker（{st.session_state.vllm_device.upper()}）", f" · Docker ({st.session_state.vllm_device.upper()})") if docker_vllm() else ""
-            where += " · MTP" if docker_vllm() and st.session_state.mtp else ""
-            st.caption(f"`{llm.model_id}` · {llm.family.name} · {server['engine']} {server.get('version') or ''} · {server['url']}{where}")
-        else:
-            st.caption(f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · "
-                       + tr(f"載入 {info['load_seconds']} s", f"loaded in {info['load_seconds']} s"))
+        st.caption(model_caption(llm))
 
         st.markdown(tr("##### 迴圈", "##### Loop"))
         st.toggle(tr("使用工具", "Use tools"), key="use_tools", help=tr("關掉就只是聊天機器人：模型看不到任何工具。", "Off, it is just a chatbot: the model sees no tools."))
@@ -594,7 +626,13 @@ def sidebar(llm: Backend, live: bool, busy: bool):
         st.toggle(tr("執行工具前先問我", "Ask me before running a tool"), key="approve_tools",
                   help=tr("由 harness 擋下等你確認，而不是寫在 prompt 裡請模型遵守。",
                           "The harness holds the call until you confirm it, instead of a line in the prompt asking the model to check first."))
+    decoding_controls(llm, live, busy, tr("harness 的迴圈最多跑幾圈（step），跑滿就停。", "How many times (steps) the harness may go around the loop before it stops."))
 
+
+def decoding_controls(llm: Backend, live: bool, busy: bool, steps_help: str):
+    """The decoding settings of the model in memory and the loop's limits, for either harness that runs on it."""
+    info = llm.info
+    with st.sidebar:
         st.markdown(tr("##### 解碼與上限", "##### Decoding and limits"))
         if (info.get("server") or {}).get("refuses_greedy"):
             # vLLM refuses greedy decoding and an unlimited top-k once it was started with --return-sampling-mask, so the
@@ -613,8 +651,7 @@ def sidebar(llm: Backend, live: bool, busy: bool):
             st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
             st.slider("top-k", 0, 128, key="top_k", help=tr("0 = 不限。", "0 = no limit."))
         st.toggle(tr("MTP 推測解碼", "MTP speculative decoding"), key="mtp", on_change=switch_mtp, disabled=busy or not can_mtp(llm), help=mtp_help(llm))
-        st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps",
-                  help=tr("harness 的迴圈最多跑幾圈（step），跑滿就停。", "How many times (steps) the harness may go around the loop before it stops."))
+        st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps", help=steps_help)
         st.slider(tr("每步 token 上限", "Max tokens per step"), 64, 8192, step=64, key="max_new_tokens",
                   help=tr("一次推論最多生成幾個 token。", "The most tokens one inference may generate."))
         st.button(tr("還原成模型建議值", "Reset to the model's defaults"), on_click=reset_settings, args=(info["defaults"],), width="stretch")
@@ -622,27 +659,44 @@ def sidebar(llm: Backend, live: bool, busy: bool):
         st.caption(tr("設定會套用到下一個問題。", "Settings apply to the next question."))
 
 
+PI_STEPS_HELP = {"zh": "pi 自己沒有步數上限；迴圈跑滿這麼多步，網頁就請 pi 中止。",
+                 "en": "pi has no step limit of its own; once the loop has gone around this many times, the page asks pi to abort."}
+
+
 def pi_sidebar(who: PiAgent, live: bool, busy: bool):
-    """pi's settings: its tools, how much its model thinks, asking first, and the step limit the page keeps for it."""
+    """pi's settings: its tools, how much its model thinks, asking first, and the step limit the page keeps for it; on
+    the page's own model, its decoding settings too."""
+    lang = st.session_state.lang
     with st.sidebar:
-        st.caption(f"pi {who.version} · `{who.model_id}` · " + tr("在 provider 那邊跑", "runs at the provider"))
+        if who.llm:
+            st.caption(f"pi {who.version} · " + model_caption(who.llm))
+        else:
+            st.caption(f"pi {who.version} · `{who.model_id}` · " + tr("在 provider 那邊跑", "runs at the provider"))
         st.markdown(tr("##### 迴圈", "##### Loop"))
         st.pills(tr("pi 的工具", "pi's tools"), list(pi_harness.TOOLS), selection_mode="multi", key="pi_tools",
                  help=tr("模型看得到哪些 pi 的工具。全部取消就只是聊天機器人。", "Which of pi's tools the model sees. With none, it is just a chatbot."))
         st.caption(tr("pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱：bash 碰得到你碰得到的一切。",
                       "pi's tools run on this computer, in this conversation's folder, without a sandbox: bash reaches whatever you can."))
-        levels = pi_harness.THINKING if who.model.get("reasoning") else ("off",)
-        if st.session_state.pi_thinking not in levels:
-            st.session_state.pi_thinking = "off"
-        st.segmented_control(tr("思考", "Thinking"), list(levels), key="pi_thinking", required=True,
-                             help=tr("pi 的思考等級：越高，模型回覆前想得越多。模型不會思考時只有 off。",
-                                     "pi's thinking level: the higher, the more the model thinks before it replies. A model that does not think has only off."))
+        if who.llm:
+            st.toggle(tr("思考模式", "Thinking mode"), key="thinking",
+                      help=who.llm.family.thinking_help[lang] + tr("（pi 把它當成思考等級送出，模型端點再換成 chat template 的思考開關。）",
+                                                                    " (pi sends it as its thinking level, which the model endpoint turns into the chat template's thinking switch.)"))
+        else:
+            levels = pi_harness.THINKING if who.model.get("reasoning") else ("off",)
+            if st.session_state.pi_thinking not in levels:
+                st.session_state.pi_thinking = "off"
+            st.segmented_control(tr("思考", "Thinking"), list(levels), key="pi_thinking", required=True,
+                                 help=tr("pi 的思考等級：越高，模型回覆前想得越多。模型不會思考時只有 off。",
+                                         "pi's thinking level: the higher, the more the model thinks before it replies. A model that does not think has only off."))
         st.toggle(tr("執行工具前先問我", "Ask me before running a tool"), key="approve_tools",
-                  help=tr("pi 自己不問；網頁載入一個小 extension（`pi_approve.ts`），每次執行工具前都先等你確認。",
-                          "pi does not ask by itself; the page loads a small extension (`pi_approve.ts`) that waits for you before every tool call."))
+                  help=tr("pi 自己不問；網頁讓 pi 載入的 extension（`pi_extension.ts`）在每次執行工具前都先等你確認。",
+                          "pi does not ask by itself; the extension the page loads into pi (`pi_extension.ts`) waits for you before every tool call."))
+    if who.llm:
+        decoding_controls(who.llm, live, busy, PI_STEPS_HELP[lang])
+        return
+    with st.sidebar:
         st.markdown(tr("##### 上限", "##### Limits"))
-        st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps",
-                  help=tr("pi 自己沒有步數上限；迴圈跑滿這麼多步，網頁就請 pi 中止。", "pi has no step limit of its own; once the loop has gone around this many times, the page asks pi to abort."))
+        st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps", help=PI_STEPS_HELP[lang])
         st.button(tr("新對話", "New chat"), on_click=new_chat, disabled=live, width="stretch")
         st.caption(tr("設定會套用到下一個問題。", "Settings apply to the next question."))
 
@@ -901,7 +955,7 @@ def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_
                 st.html(render.step_html(step, data, lang, live=live_step))
                 for path in render.images([step]):
                     st.image(path, width=320, caption=Path(path).name)
-                if step["context"]:
+                if step["context"] or step["request"]:
                     st.button(tr("看這一步的完整脈絡 →", "See this step's full context →"), key=f"ctx-{index}-{step['n']}", type="tertiary",
                               on_click=show_context, args=(index, step["n"]))
         if data["end"]:
@@ -910,12 +964,11 @@ def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_
 
 def context_panel(index: int | None, data: dict | None):
     lang = st.session_state.lang
-    steps = [s for s in data["steps"] if s["context"]] if data else []
+    steps = [s for s in data["steps"] if s["context"] or s["request"]] if data else []
     if not steps and pi_picked():
-        st.info(tr("pi 不說它送給模型 API 的 prompt 是什麼，所以這裡沒有東西可以顯示；每一步做了什麼在「迴圈」分頁。"
-                   "用內建 harness 的話，這裡會顯示每一步模型實際讀到的完整字串。",
-                   "pi does not say what prompt it sends to the model's API, so there is nothing to show here; what each step did is in the Loop tab. "
-                   "With the built-in harness, this shows the whole string the model read in each step."))
+        st.info(tr("送出問題後，這裡會顯示 pi 每一步送給模型的請求；pi 問的是這個網頁的模型時，還有模型實際讀到的完整字串。",
+                   "Once you send a question, this shows the request pi sends the model in each step, and, when pi asks this page's model, "
+                   "the whole string the model read."))
         return
     if not steps:
         st.info(tr("送出問題後，這裡會顯示每一步模型實際讀到的完整字串。", "Once you send a question, this shows the whole string the model read in each step."))
@@ -927,8 +980,18 @@ def context_panel(index: int | None, data: dict | None):
         tr("步驟", "Step"), [s["n"] for s in steps], key=key, required=True, format_func=lambda n: f"Step {n}"
     )
     step = next((s for s in steps if s["n"] == choice), steps[-1])
-    st.caption(render.context_summary(step, lang))
-    st.html(render.CONTEXT_LEGEND[lang] + render.context_html(step, data["family"], lang))
+    if step["context"]:
+        st.caption(render.context_summary(step, lang))
+        st.html(render.CONTEXT_LEGEND[lang] + render.context_html(step, data["family"], lang))
+    if step["request"] and step["context"]:  # pi asking the page's model: what pi sent, before the template wrote it out
+        with st.expander(tr("pi 送出的請求（JSON），chat template 把它寫成上面那個字串", "The request pi sent (JSON), which the chat template wrote out as the string above")):
+            st.caption(render.request_summary(step, lang))
+            st.html(render.REQUEST_LEGEND[lang] + render.request_html(step))
+    elif step["request"]:
+        st.caption(render.request_summary(step, lang))
+        st.html(render.REQUEST_LEGEND[lang] + render.request_html(step))
+        st.caption(tr("API 那邊怎麼把這個請求寫成模型讀的字串，pi 和 provider 都不說。",
+                      "How the API writes this request out as the string the model reads, neither pi nor the provider says."))
 
 
 def model_panel(llm: Backend, data: dict | None):
@@ -948,15 +1011,24 @@ def model_panel(llm: Backend, data: dict | None):
 
 
 def pi_model_panel(who: PiAgent, data: dict | None):
-    lang = st.session_state.lang
-    st.html(render.pi_model_html(who.model, who.version, lang))
-    settings = data["settings"] if data else {"thinking": st.session_state.pi_thinking, "approve_tools": st.session_state.approve_tools,
-                                              "max_steps": st.session_state.max_steps, "tools": st.session_state.pi_tools}
+    lang, s = st.session_state.lang, st.session_state
+    if who.llm:  # the page's own model, as the built-in harness shows it, with what pi does with it
+        llm = who.llm
+        st.html(render.model_html(llm.info, lang))
+        settings = data["settings"] if data else {**DEFAULTS, **{k: s[k] for k in DEFAULTS}, "tools": s.pi_tools, "page_model": True,
+                                                  "thinking": "medium" if s.thinking else "off"}
+        st.html(render.knobs_html({**settings, "mtp": None} if VLLM_URL else settings, llm.info["defaults"], lang))
+    else:
+        st.html(render.pi_model_html(who.model, who.version, lang))
+        settings = data["settings"] if data else {"thinking": s.pi_thinking, "approve_tools": s.approve_tools, "max_steps": s.max_steps, "tools": s.pi_tools}
     st.html(render.pi_settings_html(settings, lang))
     if data and data["steps"]:
-        st.markdown(tr("##### 每一步的請求", "##### The request in each step"))
+        st.markdown(tr("##### 每一步的推論", "##### Inference in each step") if who.llm else tr("##### 每一步的請求", "##### The request in each step"))
         st.dataframe(render.step_rows(data, lang), hide_index=True, width="stretch")
     st.html(render.pi_tools_html(pi_harness.TOOLS, settings["tools"], lang))
+    if who.llm:
+        st.html(render.special_tokens_html(who.llm.info, lang))
+        st.html(render.folder_html(who.llm.info, lang))
 
 
 def issue_url(error: vllm_backend.UnsupportedModel) -> str:
@@ -1021,7 +1093,11 @@ def agent_page():
         st.stop()
     if isinstance(llm, PiAgent):
         pi_sidebar(llm, own_live, polling)
-        model = lambda: llm  # nothing in memory here to let go
+        if llm.llm:  # the page's own model, held weakly as below
+            backend, model_id, version = weakref.ref(llm.llm), llm.model_id, llm.version
+            model = lambda: PiAgent(model_id, version, llm=b) if (b := backend()) else None
+        else:  # pi's own model: nothing in memory here to let go
+            model = lambda: llm
     else:
         sidebar(llm, own_live, polling)
         # Streamlit keeps the fragment after the run, to run it again on its own; held weakly, the model can still be let go

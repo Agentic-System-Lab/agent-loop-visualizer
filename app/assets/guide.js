@@ -1,8 +1,8 @@
 /* The 運作說明 page (guide.py) inlines this after the page body. The table of contents stays at
    the top of the window as one line; this keeps that line on the section you are reading and
    closes the open list after a jump, a click elsewhere or Escape. Without it the list still works.
-   It has every set of backend tabs show the backend picked last, and every set of model tabs the
-   model, and remembers those picks and the language picked on the 中文 | English switch, for the
+   It has every set of backend tabs show the backend picked last, every set of model tabs the
+   model, and every set of pi's the kind of model pi asks, and remembers those picks and the language picked on the 中文 | English switch, for the
    next visit and index.html to go by. A row of tabs wider than the screen scrolls sideways; this
    fades the side with more tabs and keeps the picked one in view. Without it each set of tabs still
    switches on its own, and its row still scrolls. */
@@ -35,7 +35,7 @@ document.addEventListener("keydown", (e) => {
     toc.querySelector("summary").focus();
   }
 });
-// Tabs, one per backend or one per model: picking one in a set picks the same in every other set of that kind that
+// Tabs, one per backend, per model or per kind of model pi asks: picking one in a set picks the same in every other set of that kind that
 // has it. A key with a dash is a narrower one of the key before it ("vllm-docker" of "vllm", any vLLM server), and the
 // two stand for each other: a set already on a narrower one stays on it when the broader one is picked. A set without
 // the pick stays as it is.
