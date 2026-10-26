@@ -12,9 +12,10 @@ stage to a list. While a run is live, a fragment redraws the page from that list
 every half second. Clicking stop or approve reruns the script but not the thread,
 so the loop keeps going.
 
-The sidebar can also hand the loop to pi (harness/harnesses/pi_harness.py), a coding agent that runs its own and asks a
-model it has credentials for (Claude, GPT…); the page then draws what pi says it does, with no tokens and no prompt,
-and no model loads here.
+The sidebar can also hand the loop to pi (harness/harnesses/pi_harness.py), a coding agent that runs its own, and the
+page draws what pi says it does, with the request pi sends the model. pi asks either the page's own model, which
+harness/harnesses/model_endpoint.py serves it on 127.0.0.1, so every token still shows, or a model it has credentials
+for (Claude, GPT…), of which only the text shows, and then no model loads here.
 
 With VLLM_URL set, a vLLM server runs the model instead of this machine (harness/backends/vllm_backend.py), and the
 model menu lists what that server serves, marking those the page does not support; picking one of those says why
@@ -560,11 +561,12 @@ def harness_picker(busy: bool):
             tr("用什麼跑迴圈", "What runs the loop"), list(names), format_func=names.get, key="harness", required=True,
             on_change=new_chat, disabled=busy,
             help=tr("內建 harness：這個專案自己寫的迴圈（`harness/harnesses/simple_harness.py`），模型在這台電腦或 vLLM 上跑，每個 token 都看得到。"
-                    "pi：把迴圈交給 pi 這個 coding agent，它問你在 pi 裡設定好的模型（Claude、GPT…），網頁畫出它每一步做了什麼；"
-                    "看不到 token 和 prompt。pi 的工具在這台電腦上執行，沒有沙箱。換過去會開始新的對話。",
+                    "pi：把迴圈交給 pi 這個 coding agent，網頁畫出它每一步做了什麼，和它送給模型的請求。pi 可以問這個網頁的模型，每個 token 都看得到；"
+                    "或問你在 pi 裡設定好的模型（Claude、GPT…），只看得到文字。pi 的工具在這台電腦上執行，沒有沙箱。換過去會開始新的對話。",
                     "Built-in harness: this project's own loop (`harness/harnesses/simple_harness.py`), with the model on this computer or on vLLM, and every token in view. "
-                    "pi: hands the loop to pi, a coding agent, which asks a model you set up in pi (Claude, GPT…), and the page draws what it does "
-                    "at each step; the tokens and the prompt stay out of view. pi's tools run on this computer, without a sandbox. Switching starts a new conversation."),
+                    "pi: hands the loop to pi, a coding agent, and the page draws what it does at each step, with the request it sends the model. "
+                    "pi can ask this page's model, with every token in view, or a model you set up in pi (Claude, GPT…), of which only the text shows. "
+                    "pi's tools run on this computer, without a sandbox. Switching starts a new conversation."),
         )
 
 
@@ -943,7 +945,7 @@ def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_
     lang, harness = st.session_state.lang, st.session_state.harness
     st.html(render.diagram_html(data, st.context.theme.type == "dark", lang, model=model_id, harness=harness))
     if data is None:
-        st.html((render.PI_INTRO if harness == "pi" else render.INTRO)[lang])
+        st.html(render.PI_INTRO[st.session_state.pi_source][lang] if harness == "pi" else render.INTRO[lang])
         return
     st.caption(render.run_stats(data, lang))
     # A fixed height makes it scroll; style.css shrinks it to the space left under the diagram.

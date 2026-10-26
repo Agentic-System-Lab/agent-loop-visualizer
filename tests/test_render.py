@@ -1105,7 +1105,7 @@ def test_pis_cards_in_each_language(lang):
              "reasoning": True, "input": ["text", "image"], "contextWindow": 200000, "maxTokens": 64000,
              "cost": {"input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75}}
     pieces = [render.pi_model_html(model, "1.4.0", lang), render.pi_settings_html({"thinking": "high", "approve_tools": True, "max_steps": 6}, lang),
-              render.pi_tools_html(pi_harness.TOOLS, ["read", "bash"], lang), render.PI_INTRO[lang]]
+              render.pi_tools_html(pi_harness.TOOLS, ["read", "bash"], lang), render.PI_INTRO["page"][lang], render.PI_INTRO["pi"][lang]]
     for piece in pieces:
         assert_balanced(piece)
         if lang == "en":

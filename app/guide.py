@@ -1997,13 +1997,14 @@ SECTIONS = [
                 Code("harness/harnesses/simple_harness.py", "def stop(self):", end="def decide(self, call_id"),
             ),
             "pi": (
-                {"zh": "停止按鈕呼叫 `PiHarness.stop()`，它把停止放進 `run()` 讀 pi 紀錄的那個佇列；`run()` 接著送給 pi `abort`，等著的確認一律當成被停止"
-                       "（[[harness/harnesses/pi_harness.py|def _abort(self, reason: str)]]）。pi 停下模型的請求和正在執行的工具；pi 問這個網頁的模型時，端點在下一個 token 前就停。"
+                {"zh": "停止按鈕呼叫 `PiHarness.stop()`，它把停止放進 `run()` 讀 pi 紀錄的那個佇列；`run()` 接著送給 pi `abort`，等著的確認一律當成被停止，"
+                       "還在等自己那一步的請求也叫醒（[[harness/harnesses/pi_harness.py|def _abort(self, reason: str)]]）。pi 停下模型的請求和正在執行的工具；"
+                       "pi 問這個網頁的模型時，端點在下一個 token 前就停，不屬於任何一步的請求則直接拒絕，不再 prefill。"
                        "pi 超過 `STOP_GRACE`（10 秒）還沒停下，就直接結束它。",
-                 "en": "The stop button calls `PiHarness.stop()`, which puts the stop in the queue `run()` reads pi's records from; `run()` then sends pi `abort`, and "
-                       "takes every confirmation still waiting as stopped ([[harness/harnesses/pi_harness.py|def _abort(self, reason: str)]]). pi stops the request to the "
-                       "model and the tool that runs; on this page's model, the endpoint stops before the next token. A pi that has not settled after `STOP_GRACE` "
-                       "(10 s) is killed."},
+                 "en": "The stop button calls `PiHarness.stop()`, which puts the stop in the queue `run()` reads pi's records from; `run()` then sends pi `abort`, "
+                       "takes every confirmation still waiting as stopped, and wakes a request still waiting for its step ([[harness/harnesses/pi_harness.py|def _abort(self, reason: str)]]). "
+                       "pi stops the request to the model and the tool that runs; on this page's model, the endpoint stops before the next token, and turns away a request "
+                       "that belongs to no step instead of prefilling it. A pi that has not settled after `STOP_GRACE` (10 s) is killed."},
                 Code("harness/harnesses/pi_harness.py", "def _abort(self, reason: str):"),
             ),
         }),

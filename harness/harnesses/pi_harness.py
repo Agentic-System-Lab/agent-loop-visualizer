@@ -331,6 +331,7 @@ class PiHarness:
             self._unserved.wait_for(lambda: self._waiting is not None or self._aborting is not None, timeout=model_endpoint.WAIT_FOR_STEP)
             step, self._waiting = self._waiting, None
             return step
+
     def _message(self) -> tuple[str, list[dict]]:
         """The question, with a line for the model on the files attached (in English, as all the model reads from the
         page is), and the images it reads inline."""
@@ -383,6 +384,8 @@ class PiHarness:
         self._pending.clear()
         self._pi.send({"type": "abort"})
         self._kill_at = time.monotonic() + STOP_GRACE
+        with self._unserved:  # a request waiting for its step learns now, not after WAIT_FOR_STEP, that none will open
+            self._unserved.notify_all()
 
     def _stop_reason(self) -> str:
         if self._aborting:

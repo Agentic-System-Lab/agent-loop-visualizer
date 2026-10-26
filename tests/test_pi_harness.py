@@ -273,6 +273,50 @@ def test_stop_stops_the_pages_model_before_its_next_token(fake):
     assert not of(events, "token")
 
 
+def late_turn_starts(monkeypatch):
+    """Make the page read each turn's start after the first 0.3 s late, so the request pi sends for it gets to the
+    endpoint first and waits for its step."""
+    turn_start = pi_harness.PiHarness._turn_start
+
+    def late(self):
+        if self._step:
+            time.sleep(0.3)
+        turn_start(self)
+
+    monkeypatch.setattr(pi_harness.PiHarness, "_turn_start", late)
+
+
+def assert_the_endpoint_is_free():
+    """The endpoint serves the next question's first request at once: no request of the turn that ended still holds the model."""
+    lock = model_endpoint.endpoint()._lock
+    assert lock.acquire(timeout=2)
+    lock.release()
+
+
+def test_the_step_limit_on_the_pages_model_does_not_keep_the_request_past_it_waiting(fake, monkeypatch):
+    # The abort has to tell the request of the turn past the limit that its step will not open, or it waits WAIT_FOR_STEP holding the model.
+    late_turn_starts(monkeypatch)
+    llm, *started = on_page_model(fake, [tool_call("bash", command="date"), "It is 2 pm.<turn|>"], max_steps=1)
+    began = time.monotonic()
+    events = finish(*started)
+    assert time.monotonic() - began < model_endpoint.WAIT_FOR_STEP / 2
+    assert_the_endpoint_is_free()
+    assert [e["step"] for e in of(events, "step_start")] == [1] and end(events)["stop_reason"] == "max_steps"
+    assert len(llm.renders) == 1 and len(llm.prompts) == 1  # the request past the limit is turned away, not run undrawn
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_ask_first_holds_a_call_of_the_pages_model_and_the_model_reads_the_answer(fake, approved):
+    llm, run, events, thread = on_page_model(fake, [tool_call("bash", command="date"), "It is 2 pm.<turn|>"], approve_tools=True, lang="zh")
+    request = wait_for(events, "approval_request")
+    assert request["name"] == "bash" and request["arguments"] == {"command": "date"} and not of(events, "tool_start")
+    run.decide(request["call_id"], approved)
+    finish(run, events, thread)
+    assert bool(of(events, "tool_start")) is approved and of(events, "tool_result")[0]["ok"] is approved
+    assert llm.renders[1]["messages"][-1]["content"] == (TIME["result"] if approved else "使用者拒絕執行這個工具呼叫")
+    assert end(events)["stop_reason"] == "no_tool_call"
+
+
 # ---------- asking first ----------
 
 def asking(fake, lang="en"):
@@ -520,3 +564,23 @@ def test_the_real_pi_asks_the_pages_model_through_the_endpoint(real_pi, tmp_path
     assert "pi" in llm.renders[0]["messages"][0]["content"] and llm.renders[0]["thinking"] is (thinking != "off")
     assert [r["step"] for r in of(events, "request")] == [1, 2]
     assert not real_pi.requests  # the scripted provider's model was never asked
+
+
+def test_the_real_pi_on_the_pages_model_asks_first_and_keeps_the_step_limit(real_pi, tmp_path, monkeypatch):
+    late_turn_starts(monkeypatch)
+    llm = FakeLLM([tool_call("bash", command="echo hi"), "It says hi.<turn|>"])
+    events = []
+    run = pi_harness.PiHarness(pi_harness.PiSettings(model_endpoint.PROVIDER, llm.model_id, approve_tools=True, max_steps=1, lang="en"), [], "Run echo hi",
+                               events.append, folder=tmp_path / "chat", session="chat1", page=pi_harness.PageModel(llm, Sampling()))
+    thread = threading.Thread(target=run.run, daemon=True)
+    thread.start()
+    request = wait_for(events, "approval_request", timeout=60)
+    assert request["name"] == "bash" and not of(events, "tool_start")
+    decided = time.monotonic()
+    run.decide(request["call_id"], True)
+    thread.join(60)
+    assert time.monotonic() - decided < model_endpoint.WAIT_FOR_STEP / 2
+    assert_the_endpoint_is_free()
+    assert end(events)["stop_reason"] == "max_steps", [e for e in events if e["type"] == "error"]
+    assert of(events, "tool_result")[0]["result"].strip() == "hi" and [e["step"] for e in of(events, "step_start")] == [1]
+    assert len(llm.renders) == 1  # the request past the limit is turned away

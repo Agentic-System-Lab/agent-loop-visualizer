@@ -1245,6 +1245,13 @@ def test_with_pi_the_sidebar_has_its_models_and_settings_and_no_decoding(at, fak
     assert len(models) == 1  # the model loaded before is not loaded again, nor another
 
 
+@pytest.mark.parametrize("source, shows, does_not", [("page", "滑過 token 可以看候選", "沒有機率"), ("pi", "沒有機率", "滑過 token")])
+def test_pis_intro_says_what_shows_of_the_model_pi_asks(at, fake_pi, source, shows, does_not):
+    pick_pi(at, source)
+    html = page_html(at)
+    assert "pi 的 agent 迴圈" in html and "請求" in html and shows in html and does_not not in html
+
+
 def test_a_question_to_pi_draws_its_loop(at, fake_pi):
     fake_pi.say({"say": [{"thinking": "Use date."}, TIME]}, {"say": [{"text": "下午兩點。"}]})
     pick_pi(at)

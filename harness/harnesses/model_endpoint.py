@@ -203,6 +203,9 @@ def _handler(ep: Endpoint):
         def _complete(self, body: dict, serving: Serving):
             llm, family = serving.llm, serving.llm.family
             step = serving.step()  # pi starts its turn before it sends the request; this waits until the page has drawn it
+            if step is None and serving.stopped():  # a turn pi is aborted at (past Max steps, or after Stop): not worth a prefill
+                self._json(503, {"error": {"message": "The turn is being stopped."}})
+                return
             emit = (lambda kind, **data: serving.emit(kind, step=step, **data)) if step else (lambda kind, **data: None)
             tools = body.get("tools") or None
             schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in tools or []}

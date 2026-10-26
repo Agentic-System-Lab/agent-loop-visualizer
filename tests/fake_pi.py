@@ -25,6 +25,7 @@ import queue
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 ARGS = sys.argv[1:]
@@ -190,7 +191,12 @@ def ask_endpoint(messages: list[dict]) -> dict:
     request = urllib.request.Request(ENDPOINT + "/chat/completions", json.dumps({k: v for k, v in body.items() if v is not None}).encode(),
                                      {"Content-Type": "application/json", "Authorization": f"Bearer {os.environ['AGENT_LOOP_TOKEN']}"})
     text, reasoning, calls, finish, usage = "", "", [], None, {}
-    with urllib.request.urlopen(request, timeout=30) as response:
+    try:
+        response = urllib.request.urlopen(request, timeout=30)
+    except urllib.error.HTTPError as e:  # pi's provider ends the message in the error, unless pi was aborted meanwhile
+        check()
+        return assistant([], "error", error=f"{e.code} {e.read().decode()}")
+    with response:
         for line in response:
             check()
             line = line.decode().strip()

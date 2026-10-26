@@ -1803,6 +1803,8 @@ harness/harnesses/pi_harness.py: def _abort(self, reason: str):
         self._pending.clear()
         self._pi.send({"type": "abort"})
         self._kill_at = time.monotonic() + STOP_GRACE
+        with self._unserved:  # a request waiting for its step learns now, not after WAIT_FOR_STEP, that none will open
+            self._unserved.notify_all()
 
 == events ==
 

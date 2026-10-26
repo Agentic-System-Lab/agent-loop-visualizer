@@ -168,13 +168,40 @@ INTRO = {
 """,
 }
 
-# The same cycle, as pi runs it (harnesses/pi_harness.py).
+# The same cycle, as pi runs it (harnesses/pi_harness.py): on this page's model ("page"), or on one of pi's ("pi").
 PI_INTRO = {
-    "zh": """
+    "page": {
+        "zh": """
+<div class="intro">
+  <p class="intro-lede">送出問題後，這裡會一步一步畫出 pi 的 agent 迴圈。迴圈由 pi 跑，模型是這個網頁的：</p>
+  <dl class="intro-list">
+    <div style="--stage: var(--c-context)"><dt>脈絡</dt><dd>pi 把它的 system prompt、工具和對話組成一個請求，送到這個網頁在 127.0.0.1 上的模型端點；端點用 chat template 把請求接成一長串 token。請求和那串 token 都在「脈絡」分頁。</dd></div>
+    <div style="--stage: var(--c-model)"><dt>模型</dt><dd>一次推論，每個 token 一邊生成一邊傳回 pi。每個 token 都是從機率分布抽出來的：顏色越深，代表被選中的 token 機率越低。滑過 token 可以看候選。</dd></div>
+    <div style="--stage: var(--c-harness)"><dt>Harness</dt><dd>端點解析模型寫出的工具呼叫，交給 pi；pi 檢查參數，打開「執行工具前先問我」時，先問你。</dd></div>
+    <div style="--stage: var(--c-env)"><dt>環境</dt><dd>pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱。結果接回對話，開始下一步。</dd></div>
+    <div style="--stage: var(--c-stop)"><dt>停止</dt><dd>模型不再呼叫工具、達到步數或 token 上限，或是你按下停止。</dd></div>
+  </dl>
+</div>
+""",
+        "en": """
+<div class="intro">
+  <p class="intro-lede">Send a question, and pi's agent loop is drawn here step by step. pi runs the loop, on this page's model:</p>
+  <dl class="intro-list">
+    <div style="--stage: var(--c-context)"><dt>Context</dt><dd>pi joins its system prompt, its tools and the conversation into one request to this page's model endpoint on 127.0.0.1, whose chat template joins the request into one long run of tokens. Both the request and those tokens are in the Context tab.</dd></div>
+    <div style="--stage: var(--c-model)"><dt>Model</dt><dd>One inference, each token going back to pi as it comes. Every token is drawn from a probability distribution: the darker a token, the less likely it was. Hover over a token to see the candidates.</dd></div>
+    <div style="--stage: var(--c-harness)"><dt>Harness</dt><dd>The endpoint parses the tool calls the model wrote and hands them to pi, which checks their arguments; with Ask me before running a tool on, it asks you first.</dd></div>
+    <div style="--stage: var(--c-env)"><dt>Environment</dt><dd>pi's tools run on this computer, in this conversation's folder, without a sandbox. Their results go back into the conversation, and the next step begins.</dd></div>
+    <div style="--stage: var(--c-stop)"><dt>Stop</dt><dd>The model calls no more tools, a step or token limit is reached, or you press stop.</dd></div>
+  </dl>
+</div>
+""",
+    },
+    "pi": {
+        "zh": """
 <div class="intro">
   <p class="intro-lede">送出問題後，這裡會一步一步畫出 pi 的 agent 迴圈。迴圈由 pi 跑，網頁只畫它說它做了什麼：</p>
   <dl class="intro-list">
-    <div style="--stage: var(--c-context)"><dt>脈絡</dt><dd>pi 把它的 system prompt、工具和對話組成一個請求，送到模型的 API。請求裡寫了什麼，pi 不說，所以「脈絡」分頁是空的。</dd></div>
+    <div style="--stage: var(--c-context)"><dt>脈絡</dt><dd>pi 把它的 system prompt、工具和對話組成一個請求，送到模型的 API。這個請求在「脈絡」分頁；API 那邊怎麼把它寫成模型讀的字串，pi 和 provider 都不說。</dd></div>
     <div style="--stage: var(--c-model)"><dt>模型</dt><dd>一次 API 請求。回覆是一段一段傳回來的文字，不是 token，所以沒有機率；token 數是 provider 報的。</dd></div>
     <div style="--stage: var(--c-harness)"><dt>Harness</dt><dd>pi 讀出回覆裡的工具呼叫、檢查參數；打開「執行工具前先問我」時，先問你。</dd></div>
     <div style="--stage: var(--c-env)"><dt>環境</dt><dd>pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱。結果接回對話，開始下一步。</dd></div>
@@ -182,11 +209,11 @@ PI_INTRO = {
   </dl>
 </div>
 """,
-    "en": """
+        "en": """
 <div class="intro">
   <p class="intro-lede">Send a question, and pi's agent loop is drawn here step by step. pi runs the loop; the page draws what pi says it does:</p>
   <dl class="intro-list">
-    <div style="--stage: var(--c-context)"><dt>Context</dt><dd>pi joins its system prompt, its tools and the conversation into one request to the model's API. pi does not say what the request holds, so the Context tab stays empty.</dd></div>
+    <div style="--stage: var(--c-context)"><dt>Context</dt><dd>pi joins its system prompt, its tools and the conversation into one request to the model's API. That request is in the Context tab; how the API writes it out as the string the model reads, neither pi nor the provider says.</dd></div>
     <div style="--stage: var(--c-model)"><dt>Model</dt><dd>One request to the API. The reply streams back as text, not tokens, so there are no probabilities; the token counts are the provider's.</dd></div>
     <div style="--stage: var(--c-harness)"><dt>Harness</dt><dd>pi reads the tool calls in the reply and checks their arguments; with Ask me before running a tool on, it asks you first.</dd></div>
     <div style="--stage: var(--c-env)"><dt>Environment</dt><dd>pi's tools run on this computer, in this conversation's folder, without a sandbox. Their results go back into the conversation, and the next step begins.</dd></div>
@@ -194,6 +221,7 @@ PI_INTRO = {
   </dl>
 </div>
 """,
+    },
 }
 
 CONTEXT_LEGEND = {
@@ -1488,10 +1516,10 @@ def pi_model_html(model: dict, version: str, lang: str) -> str:
         lang,
         f"pi {version} 跑迴圈，透過 {model['provider']} 的 API 問這個模型；模型在 provider 的伺服器上跑，不在這台電腦上。"
         "模型清單和登入資訊是 pi 自己的（`pi` 再輸入 `/login`，或環境裡的 API key）。"
-        "API 傳回來的是文字，不是 token，所以這裡沒有 token 的機率、特殊 token 和模型資料夾；pi 也不說它送出的 prompt 是什麼。",
+        "API 傳回來的是文字，不是 token，所以這裡沒有 token 的機率、特殊 token 和模型資料夾；pi 送出的請求（system prompt、工具和對話）在「脈絡」分頁。",
         f"pi {version} runs the loop and asks this model through {model['provider']}'s API; the model runs on the provider's servers, "
         "not on this computer. The models and the credentials are pi's own (`pi`, then `/login`, or an API key in the environment). "
-        "An API sends back text, not tokens, so there are no token probabilities, special tokens or model folder here; nor does pi say which prompt it sends.",
+        "An API sends back text, not tokens, so there are no token probabilities, special tokens or model folder here; the request pi sends (its system prompt, its tools and the conversation) is in the Context tab.",
     )
     return (
         f'<div class="card"><h4>{esc(name)} <small>{esc(where)}</small></h4><p class="card-sub">{prose_html(about)}</p>'
@@ -1541,8 +1569,8 @@ def pi_tools_html(tools: dict, offered: list[str], lang: str) -> str:
     return (
         f'<div class="card"><h4>{pick(lang, "動作空間：pi 的工具", "Action space: the tools pi has")}</h4><p class="card-sub">'
         + pick(lang, "pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱：bash 碰得到你碰得到的一切。想先看過每個呼叫，就打開「執行工具前先問我」。"
-                     "工具的 schema 和說明是 pi 寫給模型的，網頁看不到。",
+                     "工具的 schema 和說明是 pi 寫給模型的，在「脈絡」分頁 pi 送出的請求裡。",
                "pi's tools run on this computer, in this conversation's folder, without a sandbox: bash reaches whatever you can. To see each call first, "
-               "turn on Ask me before running a tool. The tools' schemas and descriptions are pi's, for the model, and the page does not see them.")
+               "turn on Ask me before running a tool. The tools' schemas and descriptions are pi's, for the model; they are in the request pi sends, in the Context tab.")
         + f'</p><ul class="tool-list">{"".join(items)}</ul></div>'
     )
