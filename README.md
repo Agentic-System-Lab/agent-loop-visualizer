@@ -45,6 +45,7 @@ You need:
 - A network connection: to download the models the first time, and for the Wikipedia tools
 - Optional: [Docker](https://docs.docker.com/get-started/get-docker/) (Docker Desktop, OrbStack or Colima), only to let the model write code or to run it on vLLM (Docker)
 - Optional: [pi](https://pi.dev) and Node.js 22.19 or newer, only to hand the loop to pi ([pi as the harness](#pi-as-the-harness))
+- Optional: [just](https://github.com/casey/just#installation) (`brew install just`), only to run this README's commands by name ([below](#the-commands-by-name))
 
 ```bash
 uv sync
@@ -66,6 +67,23 @@ To run the model on vLLM instead, pick vLLM (Docker) under What runs the model i
 > A 401 while downloading, though the model is public? Most likely the Hugging Face token saved on your machine has expired. Log in again (`uv run hf auth login`), or add `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` to send no token.
 
 > Cloned before `agent/` was called `harness/`? Git ignores the `__pycache__` folders Python wrote there, so a pull leaves them behind, in what looks like an empty `harness/`. Nothing imports it; `git clean -fdX harness` removes it, and only what git ignores in it.
+
+### The commands by name
+
+The `justfile` gives the commands in this README names, for [just](https://github.com/casey/just): `just` lists them, and `just <name>` runs one from the project's folder, wherever you are in it. Each runs the command this README gives, so none of them needs just. The environment reaches them as it reaches those commands, and what follows a name goes to the command:
+
+```bash
+just sync                            # uv sync
+just download                        # every model and drafter in REVISIONS at its pinned commit, into models/ (or AGENT_LOOP_MODELS): about 12 GB
+just download Qwen/Qwen3.5-0.8B      # only the ones named
+just run                             # the app; MODEL_ID=Qwen/Qwen3.5-0.8B just run loads Qwen first, VLLM_URL=http://localhost:8000 just run asks that server
+just sandbox                         # the sandbox image for Let the model write code
+just check                           # what checks.yml runs on a pull request: ruff check, mypy, pytest, and How it works with pygments alone
+just test -k render                  # pytest; just lint --fix, just types, and the tests that need models, vLLM or pi under Tests below
+just vllm-up                         # vLLM in Docker by hand, on the CPU (just vllm-up gpu on NVIDIA GPUs); just vllm-down stops it
+```
+
+`just download` reads the commits from `REVISIONS` in `agent/model_families/__init__.py`, so it downloads what the `hf download` lines above do, and keeps doing so when a model moves to a newer commit.
 
 ## Experiments to try
 
@@ -89,6 +107,7 @@ The project has two parts. `agent/` runs a turn: the harness that runs the agent
 
 ```
 streamlit_app.py       where Streamlit starts: it runs app/page.py's main() on every rerun
+justfile               this README's commands by name, for just
 app/                   what a person sees, built on the agent
   page.py              layout, session state, model menu, language switch, background thread; redraws every 0.5 s while a run is live
   render.py            turns the event list into HTML: the loop diagram, step cards, token heat and popovers, the context view
@@ -124,7 +143,7 @@ models/                the downloaded models (git ignores it; AGENT_LOOP_MODELS 
 
 The agent runs in a background thread and appends an event at every stage; the UI only draws the event list. So when you press Stop or Allow and Streamlit reruns the script, the loop in the background is not interrupted. The page reaches the loop only through a `Harness` (`harnesses/harness.py`): `run()`, `stop()`, `decide()` and the events it sends. `SimpleHarness` is this project's own, and `PiHarness` hands the loop to pi ([pi as the harness](#pi-as-the-harness)).
 
-How it works is a static page: `uv run python -m app.guide _site` writes `_site/en/index.html` and `_site/zh/index.html` (styles and a small script inlined, so they open straight in a browser), and `_site/index.html`, which sends a reader to the language they last picked on the page's switch, or else their browser's. On a push to main, `.github/workflows/pages.yml` runs `tests/test_guide.py`, then does the same and publishes it to GitHub Pages; if the tests fail, the page already up stays as it was.
+How it works is a static page: `uv run python -m app.guide _site` (`just guide`) writes `_site/en/index.html` and `_site/zh/index.html` (styles and a small script inlined, so they open straight in a browser), and `_site/index.html`, which sends a reader to the language they last picked on the page's switch, or else their browser's. On a push to main, `.github/workflows/pages.yml` runs `tests/test_guide.py`, then does the same and publishes it to GitHub Pages; if the tests fail, the page already up stays as it was.
 
 The events of one run, in order: `run_start`, then for each step `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`, with a tool call also `tool_call` → (`approval_request` → `approval`) → (`tool_start`, when the tool runs) → `tool_result`, and finally `run_end`, after an `error` if something failed: its `message` is the exception's, and a backend's error (a vLLM server's, say) also comes in both languages (`text`), so the page shows the one it is in. `context` carries the prompt as the model reads it, with each attachment expanded into its tokens, and how many tokens each kind of media took (`media_tokens`). `token` carries the token and, when the backend knows them, its probability, its rank, the top 5 candidates and what MTP's drafter guessed (`backend.TOKEN_DETAILS`): `simple_backend.py` knows them all, and the page leaves out whatever a backend does not report rather than showing a number nobody measured. A backend that learns which tokens were MTP's guesses only when the step ends (a vLLM server) says so in `model_end`'s MTP counts (`kept_at`, `turned_down_at`), and the page marks those tokens then. `tool_result` carries the observation the model reads and, apart from it, the images the tool made for you (`images`: the paths of `run_python`'s charts), which the model never reads. `run_start` says which harness ran the turn (`harness`: `simple` or `pi`). A step pi runs begins with `request`, the request pi sent the model, as JSON. When pi asks the page's model, the model endpoint sends that step's `context`, `prefill`, `token` and `model_end` as the built-in harness does; when pi asks a provider's model, there is no family and none of those four but `delta`, a piece of the model's output and its channel (thinking, reply, tool call) as it streams, and a `model_end` with the token counts the provider reported (`usage`).
 
@@ -236,6 +255,8 @@ docker compose -f docker-compose/compose.yaml -f docker-compose/compose.gpu.yaml
 VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 ```
 
+With just, `just vllm-up` and `just vllm-up gpu` run the two `docker compose` lines, and `just vllm-down` stops the server.
+
 - **Where it runs.** Where Docker has the nvidia runtime, `compose.gpu.yaml` goes on top and vLLM's own CUDA image (`vllm/vllm-openai:v0.32.0`) runs on the GPUs; elsewhere, a Mac included, `compose.yaml` runs vLLM's CPU image inside Docker's Linux VM. `AGENT_LOOP_VLLM_DEVICE=cpu` or `gpu` decides instead, and `VLLM_PORT` moves the port (8000). On the GPU the KV cache is 2 GiB, as on the CPU (`--kv-cache-memory-bytes`, `VLLM_KV_CACHE_MEMORY_BYTES`), rather than 92% of the GPU's memory, and vLLM wants only 30% of that memory free to start (`--gpu-memory-utilization`, `VLLM_GPU_MEMORY_UTILIZATION`): at its default 0.92 it refuses on a small card beside the page's own CUDA context, and on a GPU that shares the machine's memory, such as a DGX Spark's.
 - **MTP.** On a GPU the server decodes speculatively by default: Gemma 4 with its drafter, Qwen3.5 with the MTP layer in its own checkpoint (`model_families.VLLM_SPECULATIVE`, handed to Compose as `VLLM_SPECULATIVE_CONFIG`), and each step underlines the guesses it kept. The sidebar's MTP switch turns it off or back on, which starts the server again the other way, and every tab follows. vLLM 0.32's CPU image can decode neither model speculatively, so on a CPU the switch is disabled and says why. Started by hand, the GPU file runs without it.
 - **What the server reads.** It never downloads: `models/` is mounted read-only with `HF_HUB_OFFLINE=1`, so it loads exactly the commit in `REVISIONS`, as the page does. It listens on 127.0.0.1 only, like the page. It is started with `--enable-scale-out`, so the page sees every token's rank and the server takes images, sound and video, and keeps vLLM's default `raw_logprobs`, so the popover shows the model's own probabilities and the top 5. vLLM's compile cache is kept in a Docker volume, so only the first start of a model compiles.
@@ -317,13 +338,15 @@ RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real         
 RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real                                  # starts the real pi (on the PATH, or PI_COMMAND) against a scripted model on 127.0.0.1, and against the model endpoint
 ```
 
+With [just](#the-commands-by-name), these are `just test`, `just lint`, `just types`, `just test-models`, `just test-vllm` (another server's address after it, if not localhost:8000), `just test-vllm-docker` and `just test-pi`; what follows the name goes to the command (`just test-models -k Qwen`). `just check` runs the first three and then How it works' tests and build with pygments alone, as `checks.yml` does.
+
 Most tests use the fake model in `tests/fakes.py`: it replays scripted output one token at a time and is a `Backend` (`backend.py`) like `SimpleBackend`, so the harness and the page run from start to finish. In pi's place they start `tests/fake_pi.py`, which speaks pi 1.4's RPC protocol from a script, so they need neither Node nor a model.
 
 Every file format the page accepts has a test: `tests/samples.py` makes a small file of each one from the examples' files (the receipt in every image format, the recording in every audio format, the rolling ball in every video container, the sales data in every data format). `test_media.py` fails if `media.py` accepts a format without a sample, and `test_real_model.py` asks both models about each one. The tests that need Docker run only when Docker and the sandbox image are there.
 
 On every pull request and every push to main, `.github/workflows/checks.yml` runs `ruff check`, `mypy` and `uv run pytest` on Ubuntu; the tests that need the models, the sandbox image, a vLLM server or pi skip there. Beside them it runs `tests/test_guide.py` and builds How it works with pygments alone, as `pages.yml` does on main, so a pull request that has the page's code import torch or the rest of the app fails before it is merged, not when the page is published.
 
-How it works quotes code, and `tests/guide_excerpts.txt` keeps everything it quotes, without line numbers. When a change touches quoted code, `test_guide.py` fails and names the sections that quote it: reread them, fix what they say if it is no longer true, then rewrite the file with `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py`.
+How it works quotes code, and `tests/guide_excerpts.txt` keeps everything it quotes, without line numbers. When a change touches quoted code, `test_guide.py` fails and names the sections that quote it: reread them, fix what they say if it is no longer true, then rewrite the file with `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py` (`just guide-snapshot`).
 
 | File | What it tests |
 |---|---|
@@ -371,7 +394,7 @@ How it works quotes code, and `tests/guide_excerpts.txt` keeps everything it quo
 - On a vLLM server (`VLLM_URL`) greedy output may differ from `generate()`'s, and what the page shows depends on the server's flags (see Running the model on a vLLM server): without `--enable-scale-out` the model reads text only, and a token's popover has either the model's own probabilities and the top 5 (the default) or, with `--logprobs-mode processed_logprobs` (which `--return-sampling-mask` needs), the sampling probability and how many candidates were left, never both; which of the top 5 were cut never shows outside greedy decoding, and a server with sampling masks takes no greedy decoding or unlimited top-k. MTP's guesses are underlined only once the step is done, only when the server's counts account for every token, and without what a turned-down guess was. With media, each step asks the server for the expansion first, a second request that reads the prompt. The page cannot see which revision the server loaded, so start it with the `--revision` there.
 - `vllm_backend.py` follows the protocols of vLLM 0.32, read from its source, and is tested against a fake server that speaks them, with the real tokenizers and in the real page; `/inference/v1/generate` and its sampling masks and per-step counts are marked experimental in vLLM and may change. Its tests against a real server (`VLLM_TEST_URL`) have been run on one GPU only, a DGX Spark's GB10.
 - vLLM in Docker runs on the CPU on a Mac, and slowly: Gemma 4 E2B decodes about 4.6 tok/s, needs Docker to have about 20 GB of memory or more, and its first load spends about 10 minutes running its media encoders to see which kinds the server takes. `compose.gpu.yaml` has been run on one NVIDIA GPU only, a DGX Spark's GB10. The CPU image patches vLLM 0.32.0 (`docker-compose/vllm-cpu/patch_vllm.py`); a newer vLLM may need neither fix, and the build stops if the code it patches is not the one it was written for.
-- The app stops vLLM's container when it quits with Ctrl+C or a SIGTERM. Stopped any other way (its terminal closed, `kill -9`), it leaves the container running and holding the model; `docker compose -p agent-loop-vllm down` stops it.
+- The app stops vLLM's container when it quits with Ctrl+C or a SIGTERM. Stopped any other way (its terminal closed, `kill -9`), it leaves the container running and holding the model; `docker compose -p agent-loop-vllm down` (`just vllm-down`) stops it.
 - With pi on its own models, the page sees only what pi reports: no tokens, probabilities or special tokens, and not the string the model reads, only the request pi sends. The token counts are the provider's, tok/s is measured as the reply arrives (the network included), and the cost is at the prices in pi's catalog, an estimate. pi's own models are a provider's: they cost money, and the conversation goes to that provider.
 - With pi on the page's model, a tool call the family cannot parse is not sent to pi, and pi's turn ends there: unlike the built-in harness, nothing tells the model what it wrote wrong. pi's system prompt and tool schemas are written for large models; Gemma 4 E2B and Qwen3.5 0.8B follow them less well than the built-in harness's prompt. pi sends images alone of the media, so audio and video attached for pi are plain files in its folder. A request that comes outside every step (pi compacting a long conversation, say) waits up to 10 seconds for one, then is answered without being drawn.
 - pi's tools run on this computer, without a sandbox; with bash on, the model can do whatever you can. Ask me before running a tool shows each call first.

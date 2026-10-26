@@ -45,6 +45,7 @@
 - 網路：第一次下載模型，以及 Wikipedia 工具
 - 選用：[Docker](https://docs.docker.com/get-started/get-docker/)（Docker Desktop、OrbStack 或 Colima），只有讓模型寫程式、或用 vLLM (Docker) 跑模型時才需要
 - 選用：[pi](https://pi.dev) 和 Node.js 22.19 以上，只有要把迴圈交給 pi 時才需要（「[pi 當 harness](#pi-當-harness)」）
+- 選用：[just](https://github.com/casey/just#installation)（`brew install just`），只有想用名字跑這份 README 的指令時才需要（見[下面](#用-just-跑這些指令)）
 
 ```bash
 uv sync
@@ -66,6 +67,23 @@ docker build -t agent-loop-sandbox agent/sandbox    # 選用：「讓模型寫�
 > 下載時出現 401，可是模型明明是公開的？多半是本機存的 Hugging Face token 過期了。重新登入（`uv run hf auth login`），或加上 `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` 不送 token。
 
 > 在 `agent/` 還叫 `harness/` 的時候就 clone 了？Python 在那裡寫的 `__pycache__` 資料夾 git 會忽略，所以 pull 之後它們還留著，看起來像一個空的 `harness/`。沒有程式會 import 它；`git clean -fdX harness` 會刪掉它，而且只刪其中 git 忽略的檔案。
+
+### 用 just 跑這些指令
+
+`justfile` 替這份 README 的指令取了名字，給 [just](https://github.com/casey/just) 用：`just` 會列出全部，`just <名字>` 會在專案資料夾裡跑其中一個，不管你在專案的哪一層。每個名字跑的就是這份 README 寫的指令，所以沒有 just 也都跑得了。環境變數照樣傳給指令，名字後面接的參數也會交給指令：
+
+```bash
+just sync                            # uv sync
+just download                        # REVISIONS 裡的每個模型和草稿模型，照固定的 commit 下載到 models/（或 AGENT_LOOP_MODELS）：約 12 GB
+just download Qwen/Qwen3.5-0.8B      # 只下載指定的
+just run                             # 啟動 app；MODEL_ID=Qwen/Qwen3.5-0.8B just run 先載入 Qwen，VLLM_URL=http://localhost:8000 just run 改問那台伺服器
+just sandbox                         # 「讓模型寫程式」用的沙箱 image
+just check                           # checks.yml 在 pull request 上跑的：ruff check、mypy、pytest，以及只裝 pygments 產生運作說明
+just test -k render                  # pytest；just lint --fix、just types，以及需要模型、vLLM 或 pi 的測試，見下面「測試」
+just vllm-up                         # 自己在 Docker 裡啟動 vLLM，在 CPU 上（NVIDIA GPU 用 just vllm-up gpu）；just vllm-down 停掉它
+```
+
+`just download` 從 `agent/model_families/__init__.py` 的 `REVISIONS` 讀 commit，所以下載的和上面那幾行 `hf download` 一樣，模型換到較新的 commit 之後也會跟著換。
 
 ## 可以試試看的實驗
 
@@ -89,6 +107,7 @@ docker build -t agent-loop-sandbox agent/sandbox    # 選用：「讓模型寫�
 
 ```
 streamlit_app.py       Streamlit 從這裡開始：每次重跑都執行 app/page.py 的 main()
+justfile               替這份 README 的指令取的名字，給 just 用
 app/                   你看到的東西，站在 agent 上面
   page.py              版面、session state、模型選單、語言切換、背景 thread；執行中每 0.5 秒重畫一次
   render.py            把事件列表轉成 HTML：迴圈圖、step 卡片、token 熱度與浮窗、脈絡檢視
@@ -124,7 +143,7 @@ models/                下載的模型（git 會忽略它；AGENT_LOOP_MODELS �
 
 agent 在背景 thread 執行，每走到一個階段就 append 一個事件；UI 只負責把事件列表畫出來。所以按「停止」或「允許」時 Streamlit 重跑 script，背景的迴圈不會被打斷。網頁只透過 `Harness`（`harnesses/harness.py`）跑迴圈：`run()`、`stop()`、`decide()`，以及它送出的事件。`SimpleHarness` 是這個專案自己的，`PiHarness` 則把迴圈交給 pi（「[pi 當 harness](#pi-當-harness)」）。
 
-「運作說明」是一個靜態頁：`uv run python -m app.guide _site` 會寫出 `_site/zh/index.html` 和 `_site/en/index.html`（樣式和一小段 script 都內嵌在裡面，可以直接用瀏覽器打開），以及 `_site/index.html`：它把讀者送到上次在頁面右上角選過的語言，沒選過就照瀏覽器的語言。推上 main 時，`.github/workflows/pages.yml` 先跑 `tests/test_guide.py`，再做同一件事並發佈到 GitHub Pages；測試沒過的話，網站上維持原來那一版。
+「運作說明」是一個靜態頁：`uv run python -m app.guide _site`（`just guide`）會寫出 `_site/zh/index.html` 和 `_site/en/index.html`（樣式和一小段 script 都內嵌在裡面，可以直接用瀏覽器打開），以及 `_site/index.html`：它把讀者送到上次在頁面右上角選過的語言，沒選過就照瀏覽器的語言。推上 main 時，`.github/workflows/pages.yml` 先跑 `tests/test_guide.py`，再做同一件事並發佈到 GitHub Pages；測試沒過的話，網站上維持原來那一版。
 
 一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→（真的執行工具時的 `tool_start`）→ `tool_result`，最後是 `run_end`；出錯時它前面還有一個 `error`：`message` 是例外的訊息，backend 的錯誤（例如 vLLM 伺服器的）另外帶著兩種語言的版本（`text`），畫面顯示目前語言的那一個。`context` 帶的是模型實際讀到的 prompt（每個附件都展開成它的 token），以及每種媒體佔了幾個 token（`media_tokens`）。`token` 帶著這個 token，以及 backend 知道的話，它的機率、排名、前 5 名候選和 MTP 草稿模型猜了什麼（`backend.TOKEN_DETAILS`）：`simple_backend.py` 全都知道；backend 沒有回報的，畫面就不畫，不會拿沒量過的數字來填。等這一步結束才知道哪些 token 是 MTP 猜中的 backend（vLLM 伺服器），把它們放在 `model_end` 的 MTP 統計裡（`kept_at`、`turned_down_at`），畫面到那時才標出來。`tool_result` 帶著模型讀的觀察，另外還有工具做給你看的圖（`images`：`run_python` 畫的圖的路徑），模型讀不到。`run_start` 說這一輪是哪個 harness 跑的（`harness`：`simple` 或 `pi`）。pi 跑的 step 先有 `request`，也就是 pi 送給模型的請求，寫成 JSON。pi 問這個網頁的模型時，那一步的 `context`、`prefill`、`token` 和 `model_end` 由模型端點送出，和內建 harness 一樣；pi 問 provider 的模型時，沒有 family，也沒有這四個，改送 `delta`，模型邊寫邊傳回來的一段輸出和它的 channel（思考、回覆、工具呼叫），`model_end` 帶的則是 provider 報的 token 數（`usage`）。
 
@@ -236,6 +255,8 @@ docker compose -f docker-compose/compose.yaml -f docker-compose/compose.gpu.yaml
 VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 ```
 
+有 just 的話，`just vllm-up` 和 `just vllm-up gpu` 跑的就是那兩行 `docker compose`，`just vllm-down` 會停掉伺服器。
+
 - **在哪裡跑。** Docker 有 nvidia runtime 時，再疊上 `compose.gpu.yaml`，用 vLLM 官方的 CUDA image（`vllm/vllm-openai:v0.32.0`）在 GPU 上跑；其他情況（Mac 也是）由 `compose.yaml` 在 Docker 的 Linux 虛擬機裡跑 vLLM 的 CPU image。`AGENT_LOOP_VLLM_DEVICE=cpu` 或 `gpu` 可以直接指定，`VLLM_PORT` 可以換埠號（8000）。在 GPU 上 KV cache 和 CPU 上一樣是 2 GiB（`--kv-cache-memory-bytes`、`VLLM_KV_CACHE_MEMORY_BYTES`），不是 GPU 記憶體的 92%；vLLM 啟動時也只要求 30% 的記憶體是空的（`--gpu-memory-utilization`、`VLLM_GPU_MEMORY_UTILIZATION`）：照它預設的 0.92，小張的顯示卡旁邊還有網頁自己的 CUDA context 時會拒絕啟動，和整台電腦共用記憶體的 GPU（例如 DGX Spark）也是。
 - **MTP。** 在 GPU 上，伺服器預設會推測解碼：Gemma 4 用它的草稿模型，Qwen3.5 用它自己 checkpoint 裡的 MTP 層（`model_families.VLLM_SPECULATIVE`，用 `VLLM_SPECULATIVE_CONFIG` 交給 Compose），每一步收下的猜測都會加上底線。側欄的 MTP 開關可以關掉或再打開，會用另一種方式重新啟動伺服器，每個分頁也都會跟著。vLLM 0.32 的 CPU 版 image 兩個模型都不能推測解碼，所以在 CPU 上開關不能按，也會說明原因。手動啟動 GPU 版時不開。
 - **伺服器讀什麼。** 它自己不下載：`models/` 唯讀掛進去、設了 `HF_HUB_OFFLINE=1`，所以載入的正是 `REVISIONS` 裡的那個 commit，和網頁一樣。它跟網頁一樣只聽 127.0.0.1。啟動時加了 `--enable-scale-out`，所以看得到每個 token 的排名，伺服器也收圖片、聲音和影片；`--logprobs-mode` 維持 vLLM 預設的 `raw_logprobs`，浮窗顯示的是模型自己的機率和前 5 名。vLLM 編譯的結果存在一個 Docker volume，所以一個模型只有第一次啟動要編譯。
@@ -317,13 +338,15 @@ RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real         
 RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real                                  # 啟動真的 pi（PATH 上的，或 PI_COMMAND），對上 127.0.0.1 上照劇本回答的模型，以及模型端點
 ```
 
+有 [just](#用-just-跑這些指令) 的話，這些就是 `just test`、`just lint`、`just types`、`just test-models`、`just test-vllm`（伺服器不在 localhost:8000 時，後面接它的位址）、`just test-vllm-docker` 和 `just test-pi`；名字後面接的參數會交給指令（`just test-models -k Qwen`）。`just check` 先跑前三個，再像 `checks.yml` 那樣只裝 pygments 跑運作說明的測試、產生運作說明。
+
 大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，和 `SimpleBackend` 一樣是一個 `Backend`（`backend.py`），所以 harness 和網頁可以從頭跑到尾。需要 pi 的地方，測試啟動的是 `tests/fake_pi.py`，它照劇本說 pi 1.4 的 RPC 協定，所以不需要 Node，也不需要模型。
 
 網頁收的每一種檔案格式都有測試：`tests/samples.py` 用範例的檔案做出每種格式的小檔案（收據的每種圖片格式、錄音的每種聲音格式、滾動的球的每種影片格式、銷售資料的每種資料格式）。`media.py` 多收了一種格式卻沒有對應的範例檔，`test_media.py` 就會失敗；`test_real_model.py` 拿每一種格式問兩個模型。需要 Docker 的測試只在 Docker 和沙箱 image 都在時才跑。
 
 每個 pull request 和每次推上 main，`.github/workflows/checks.yml` 都會在 Ubuntu 上跑 `ruff check`、`mypy` 和 `uv run pytest`；需要模型、沙箱 image、vLLM 伺服器或 pi 的測試在那裡會跳過。同時它也像 `pages.yml` 在 main 上那樣，只裝 pygments 跑 `tests/test_guide.py` 並產生運作說明，所以 pull request 讓這個頁面的程式 import 了 torch 或 app 其他的套件，合併前就會失敗，不會等到發佈頁面時才發現。
 
-運作說明會引用程式碼，`tests/guide_excerpts.txt` 存著它引用的每一段程式，不含行號。改到被引用的程式時，`test_guide.py` 會失敗，並列出引用它的段落：重讀那幾段，把不再正確的說明改掉，再用 `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py` 重寫這個檔案。
+運作說明會引用程式碼，`tests/guide_excerpts.txt` 存著它引用的每一段程式，不含行號。改到被引用的程式時，`test_guide.py` 會失敗，並列出引用它的段落：重讀那幾段，把不再正確的說明改掉，再用 `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py`（`just guide-snapshot`）重寫這個檔案。
 
 | 檔案 | 測什麼 |
 |---|---|
@@ -371,7 +394,7 @@ RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real                   
 - 在 vLLM 伺服器上（`VLLM_URL`）greedy 的輸出可能和 `generate()` 不同，畫面看得到多少要看伺服器加了哪些參數（見「在 vLLM 伺服器上跑模型」）：沒加 `--enable-scale-out` 時模型只讀文字，token 浮窗要嘛有模型自己的機率和前 5 名（預設），要嘛在 `--logprobs-mode processed_logprobs` 下（`--return-sampling-mask` 一定要它）有取樣時的機率和剩下幾個候選，兩者不會同時有；前 5 名哪些被剃掉，除了 greedy 解碼都看不到；開了 sampling mask 的伺服器不接受 greedy 和不限的 top-k。MTP 猜中的 token 要等這一步結束、而且伺服器的統計對得上每個 token 才有底線，被退回的猜測原本是什麼也看不到。有媒體時，每一步都先問伺服器怎麼展開，多一個讀 prompt 的請求。網頁看不到伺服器載入的是哪個 revision，所以啟動時要照那一節加上 `--revision`。
 - `vllm_backend.py` 照 vLLM 0.32 原始碼裡的協定寫，測試用的是說這些協定的假伺服器、真的 tokenizer 和真的網頁；`/inference/v1/generate`、它的 sampling mask 和每一步的統計在 vLLM 裡標示為實驗性功能，之後可能會改。對真伺服器的測試（`VLLM_TEST_URL`）只在一種 GPU 上跑過：DGX Spark 的 GB10。
 - 在 Mac 上，Docker 裡的 vLLM 是用 CPU 跑，而且慢：Gemma 4 E2B 解碼約 4.6 tok/s，Docker 要有大約 20 GB 以上的記憶體，第一次載入還要花大約 10 分鐘跑它的媒體編碼器，看伺服器收哪些媒體。`compose.gpu.yaml` 只在一種 NVIDIA GPU 上跑過：DGX Spark 的 GB10。CPU 版的 image 修改了 vLLM 0.32.0（`docker-compose/vllm-cpu/patch_vllm.py`）；新版的 vLLM 可能兩個修正都不需要，要修改的程式和寫它時不一樣的話，建 image 時會停下來。
-- 用 Ctrl+C 或 SIGTERM 結束程式時，會停掉 vLLM 的容器。用別的方式結束（關掉終端機、`kill -9`）的話，容器會繼續跑、佔著模型，要用 `docker compose -p agent-loop-vllm down` 停掉。
+- 用 Ctrl+C 或 SIGTERM 結束程式時，會停掉 vLLM 的容器。用別的方式結束（關掉終端機、`kill -9`）的話，容器會繼續跑、佔著模型，要用 `docker compose -p agent-loop-vllm down`（`just vllm-down`）停掉。
 - pi 問它自己的模型時，網頁只看得到 pi 回報的東西：沒有 token、機率和特殊 token，也看不到模型讀到的字串，只有 pi 送出的請求。token 數是 provider 報的，tok/s 是回覆傳回來時量的（含網路），費用是照 pi 目錄裡的價格估的。pi 自己的模型是 provider 的：要花錢，對話也會送到那個 provider。
 - pi 問這個網頁的模型時，family 解析不出來的工具呼叫不會送給 pi，pi 的這一輪就停在那裡：不像內建 harness，沒有人告訴模型哪裡寫錯。pi 的 system prompt 和工具 schema 是寫給大模型的，Gemma 4 E2B 和 Qwen3.5 0.8B 照著做的程度比不上內建 harness 的 prompt。pi 只送圖片這一種媒體，所以給 pi 的聲音和影片只是它資料夾裡的一般檔案。不屬於任何一步的請求（例如 pi 壓縮很長的對話）最多等 10 秒，之後照樣回答，但不畫出來。
 - pi 的工具在這台電腦上執行，沒有沙箱；打開 bash 的話，你做得到的事模型都做得到。打開「執行工具前先問我」，每個呼叫都會先給你看。

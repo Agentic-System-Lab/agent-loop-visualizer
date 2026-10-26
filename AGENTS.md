@@ -32,6 +32,10 @@ UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the
 uv run --isolated --no-project --with pygments --with pytest pytest tests/test_guide.py   # the guide's tests as the Pages build runs them: pygments and pytest alone, not .venv
 ```
 
+The justfile gives these commands names for [just](https://github.com/casey/just) (`just` lists them, `just check` runs
+what checks.yml runs, `just download` the models at their `REVISIONS`). Each recipe is the command above, so nothing needs
+just; a change to a command here changes its recipe and the READMEs' "The commands by name" (用 just 跑這些指令) too.
+
 Ruff lints and mypy checks types (both set up in pyproject.toml), and .github/workflows/checks.yml runs them and
 `uv run pytest` on every pull request and every push to main, and in a job of its own tests and builds the guide with
 pygments alone, as the Pages workflow does. No formatter is configured: match the surrounding code by hand and don't
@@ -44,6 +48,7 @@ other way round.
 
 ```
 streamlit_app.py         where Streamlit starts: imports app.page and calls main() on every rerun
+justfile                 the commands above by name, for just
 app/                     the Streamlit app
   page.py                layout, session state, model menu, background thread; redraws every 0.5 s while a run is live
   render.py              pure functions from the event list to HTML: loop diagram, step cards, token heat and popovers, context
