@@ -111,7 +111,9 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   and each must match exactly one line. Before renaming, moving or rewriting a line, grep app/guide.py for it; if a reference breaks,
   tests/test_guide.py fails. Fix the reference, and when the behavior changed, the prose around it too. A file that is not Python
   (docker-compose/compose.yaml) is quoted line by line, through the line with `end`. Where a part of a section differs by what
-  runs the model, or by the model, it goes in `Tabs`, one tab per backend or per model (`TAB_KINDS`), not in one paragraph about both.
+  runs the model, by the model, or by the harness, it goes in `Tabs`, one tab per backend, per model or per harness (`TAB_KINDS`:
+  `pi-page` and `pi-provider` are kinds of `pi`, as `vllm-docker` is of `vllm`), not in one paragraph about both. Tabs do not nest, so
+  what the built-in harness and pi on this page's model share (the chat template, the parsers, the backends) stays outside the harness tabs.
 - **The guide's text is reread whenever the code it quotes changes.** tests/guide_excerpts.txt holds
   every excerpt and the line behind every chip, without line numbers. When an edit changes any of
   them, tests/test_guide.py fails and names the sections. Reread each one in both languages, fix
