@@ -2,6 +2,8 @@
    guide.stylesheet() puts the palette from style.css and dark.css in front of these rules. */
 
 :root { --page: #f4f0e6; color-scheme: light dark; }  /* the page backgrounds in .streamlit/config.toml */
+/* GitHub's mark (Octicons' mark-github), which .g-gh draws in the color of the text around it. */
+:root { --gh: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z'/%3E%3C/svg%3E"); }
 @media (prefers-color-scheme: dark) { :root { --page: #14181d; } }
 
 body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "Source Sans 3", var(--sans); -webkit-text-size-adjust: 100%; }
@@ -80,11 +82,20 @@ body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "So
 
 /* A part told once per backend: a row of tabs, then the panel of the one picked. The tabs are radio buttons, so they
    switch with no script; guide.js has every set follow the reader's pick. The rule that hides the other panels needs
-   :has(), and where it is missing every panel shows, one after another. */
+   :has(), and where it is missing every panel shows, one after another.
+   The row stays one line and scrolls sideways where it is wider than the screen. A scrolling box clips what sticks out
+   of it, so the line under the tabs is a shadow inside it, which the picked tab's underline covers; guide.js fades the
+   side that has more tabs (data-more) and scrolls a set to the tab it picks. */
 .g-tabs { margin: 6px 0 18px; }
-.g-tab-bar { display: flex; flex-wrap: wrap; gap: 0 4px; margin: 0 0 14px; border-bottom: 1px solid var(--line); }
+.g-tab-bar {
+  --fade: 28px; display: flex; gap: 0 4px; margin: 0 0 14px; overflow-x: auto; overscroll-behavior-x: contain;
+  scrollbar-width: thin; box-shadow: inset 0 -1px 0 var(--line);
+}
+.g-tab-bar[data-more="right"] { mask-image: linear-gradient(to right, #000 calc(100% - var(--fade)), transparent); }
+.g-tab-bar[data-more="left"] { mask-image: linear-gradient(to left, #000 calc(100% - var(--fade)), transparent); }
+.g-tab-bar[data-more="both"] { mask-image: linear-gradient(to right, transparent, #000 var(--fade), #000 calc(100% - var(--fade)), transparent); }
 .g-tab-bar label {
-  position: relative; display: inline-flex; align-items: baseline; gap: 7px; margin-bottom: -1px; padding: 8px 12px 7px;
+  position: relative; flex: none; display: inline-flex; align-items: baseline; gap: 7px; padding: 8px 12px 7px; white-space: nowrap;
   border-bottom: 2px solid transparent; color: var(--muted); font-size: 14.5px; font-weight: 600; cursor: pointer;
 }
 .g-tab-bar label:hover { color: var(--ink); }
@@ -106,12 +117,22 @@ body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "So
   font-weight: 600; white-space: nowrap; cursor: help;
 }
 .g-xref { color: var(--stage); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+/* The icon after a chip or an excerpt's lines, which opens them on GitHub. It is an inline box drawn by its padding, not
+   an inline-block: a line may break before an inline-block, even right after a chip, and leave the icon on its own. Its
+   one character, a word joiner, has no width and allows no break on either side, and has the browser count the icon
+   in when it fits the chip on a line; with nothing in it, a chip that just fits pushes its icon past the edge. */
+.g-gh { margin-left: 2px; padding: 3px; border-radius: 5px; color: var(--muted); text-decoration: none; }
+.g-gh::before { content: "\2060"; padding: 0 7px; background: currentColor; -webkit-mask: var(--gh) center / 13px no-repeat; mask: var(--gh) center / 13px no-repeat; }
+.g-gh:hover { color: var(--stage, var(--ink)); background: var(--sunk); }
+.g-gh:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
 
 /* A source excerpt with its real line numbers. */
 .src { margin: 4px 0 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
 .src figcaption { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--sunk); font-size: 13px; }
 .src figcaption b { font: 700 13px var(--mono); color: var(--ink); }
 .src-lines { font: 600 12px var(--mono); color: var(--stage); }
+.src figcaption .g-gh { margin-left: -8px; padding: 2px 3px; line-height: 1; align-self: center; }  /* beside the lines, not a gap away */
+.src figcaption .g-gh:hover { background: var(--surface); }
 .src-cap { flex-basis: 100%; color: var(--ink-2); line-height: 1.6; }
 .src pre { margin: 0; padding: 10px 0; overflow-x: auto; font: 12.5px/1.7 var(--mono); color: var(--ink); white-space: pre; background: none; border: 0; }
 .src .ln { display: inline-block; width: 3.6em; padding-right: 14px; text-align: right; color: var(--muted); opacity: .7; user-select: none; }
@@ -138,6 +159,7 @@ body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "So
   .src pre { font-size: 11.5px; }
   /* A chip between full-width brackets, （harness/…:123）, cannot move to the next line on its own; let it break instead. */
   .guide code.ref { white-space: normal; }
-  .g-tab-bar small { display: none; }  /* the class names; the labels alone fit on one line */
+  .g-table code.ref { white-space: nowrap; }  /* the table scrolls sideways anyway */
+  .g-tab-bar small { display: none; }  /* the class names; without them more of the row fits on the screen */
   .g-panel { padding-left: 10px; }
 }

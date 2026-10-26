@@ -3,7 +3,9 @@
    closes the open list after a jump, a click elsewhere or Escape. Without it the list still works.
    It has every set of backend tabs show the backend picked last, and every set of model tabs the
    model, and remembers those picks and the language picked on the 中文 | English switch, for the
-   next visit and index.html to go by. Without it each set of tabs still switches on its own. */
+   next visit and index.html to go by. A row of tabs wider than the screen scrolls sideways; this
+   fades the side with more tabs and keeps the picked one in view. Without it each set of tabs still
+   switches on its own, and its row still scrolls. */
 
 const toc = document.querySelector(".g-toc details");
 const now = toc.querySelector(".g-toc-now");
@@ -40,6 +42,26 @@ document.addEventListener("keydown", (e) => {
 const tabSets = [...document.querySelectorAll(".g-tabs")];
 const related = (a, b) => a === b || a.startsWith(b + "-") || b.startsWith(a + "-");
 
+// guide.css fades a row's side that has more tabs past the edge (data-more); a set scrolls to the tab picked, clear of
+// that fade, sideways only, so the page itself stays where it is.
+function edges(bar) {
+  const left = bar.scrollLeft > 1, right = bar.scrollLeft + bar.clientWidth < bar.scrollWidth - 1;
+  if (left || right) bar.dataset.more = left && right ? "both" : left ? "left" : "right";
+  else delete bar.dataset.more;
+}
+
+function reveal(set) {
+  const bar = set.querySelector(".g-tab-bar");
+  const tab = bar.querySelector("input:checked")?.parentElement;
+  if (tab) {
+    const b = bar.getBoundingClientRect(), t = tab.getBoundingClientRect();
+    const fade = parseFloat(getComputedStyle(bar).getPropertyValue("--fade")) || 0;
+    if (t.left - fade < b.left) bar.scrollLeft -= b.left - t.left + fade;
+    else if (t.right + fade > b.right) bar.scrollLeft += t.right + fade - b.right;
+  }
+  edges(bar);
+}
+
 function showTab(kind, key) {
   for (const set of tabSets) {
     if (set.dataset.kind !== kind) continue;
@@ -47,7 +69,10 @@ function showTab(kind, key) {
     const current = tabs.find((t) => t.checked);
     const next = tabs.find((t) => t.value === key)
       || (current && related(current.value, key) ? current : tabs.find((t) => related(t.value, key)));
-    if (next) next.checked = true;
+    if (next) {
+      next.checked = true;
+      reveal(set);
+    }
   }
 }
 
@@ -56,6 +81,9 @@ for (const kind of new Set(tabSets.map((set) => set.dataset.kind))) {
   try { picked[kind] = localStorage.getItem("tab-" + kind); } catch (err) {}
   if (picked[kind]) showTab(kind, picked[kind]);
 }
+tabSets.forEach(reveal);
+document.fonts?.ready.then(() => tabSets.forEach(reveal));  // the page's font changes how wide the tabs are
+for (const bar of document.querySelectorAll(".g-tab-bar")) bar.addEventListener("scroll", () => edges(bar), { passive: true });
 if (Object.values(picked).some(Boolean)) {
   document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView();  // the tabs above it may have changed height
 }
@@ -77,7 +105,12 @@ document.addEventListener("change", (e) => {
 });
 
 addEventListener("scroll", update, { passive: true });
-addEventListener("resize", update);
+addEventListener("resize", () => {
+  update();
+  // Only the fades: on a phone, scrolling the page resizes the window as the address bar comes and goes, and a row
+  // the reader scrolled stays where they left it.
+  document.querySelectorAll(".g-tab-bar").forEach(edges);
+});
 update();
 
 // The two pages have the same sections, so switching keeps the reader on the one they were reading.

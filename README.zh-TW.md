@@ -17,7 +17,7 @@
 
 左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，或是跑在一台會把每個 token 的 log 機率傳回來的 vLLM 伺服器上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到（用 vLLM 時，看得到多少要看伺服器開了哪些參數）。不同模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
 
-[運作說明](https://cyyeh.github.io/agent-loop-visualizer/zh/)把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段。兩個模型、或 transformers 和 vLLM 做法不一樣的步驟，分成頁籤各自說明，選了一個，整頁同一類的頁籤都跟著換。它放在 GitHub Pages 上，app 上方的「運作說明」會在新分頁打開它，語言和網頁當下的語言一樣。
+[運作說明](https://cyyeh.github.io/agent-loop-visualizer/zh/)把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段，點一下就能在 GitHub 上看到那幾行。兩個模型、或 transformers 和 vLLM 做法不一樣的步驟，分成頁籤各自說明，選了一個，整頁同一類的頁籤都跟著換。它放在 GitHub Pages 上，app 上方的「運作說明」會在新分頁打開它，語言和網頁當下的語言一樣。
 
 ## 畫面上看得到什麼
 
@@ -30,7 +30,7 @@
 | 環境 | 工具實際回傳的結果與耗時；`run_python` 的程式碼寫在上面，印出來的東西或 traceback 寫在下面 | §2 環境與可觀察的狀態 |
 | 停止 | 停止原因和停止 token。Gemma 回答完停在 `<turn\|>`（相當於 end_turn）、要工具時停在 `<\|tool_response>`（相當於 tool_use）；Qwen 兩種都停在 `<\|im_end\|>`。另外還有步數上限、token 上限、使用者中斷 | §5 什麼時候停 |
 | 模型分頁 | 參數量拆解、層數與層的種類、注意力頭數、脈絡上限、模型讀得懂什麼（文字、圖片、聲音、影片）、MTP 草稿模型、解碼設定的說明、每一步的 prefill 時間與 tok/s（開 MTP 時加上草稿收下幾個、解碼 forward 幾次），tokenizer 全部特殊 token 的 id 與用途（Gemma 24 個、Qwen 33 個），以及 `models/` 裡這個模型資料夾的每個檔案：大小、用途、在這個模型裡裝了什麼、關鍵欄位的值 | §1、§7 Agent 是系統 |
-| 運作說明頁 | 一輪對話的 18 個階段（包括圖片怎麼變成 token、MTP 怎麼猜、怎麼驗證，以及模型可以交給誰跑），每段附上做這件事的程式碼片段和行號，有中文和英文兩版。放在 GitHub Pages，行號在產生頁面時從原始碼查出來；每次推上 main 都會重新產生，程式改了會跟著更新 | 全部 |
+| 運作說明頁 | 一輪對話的 18 個階段（包括圖片怎麼變成 token、MTP 怎麼猜、怎麼驗證，以及模型可以交給誰跑），每段附上做這件事的程式碼片段和行號，點了會在 GitHub 上打開那幾行，有中文和英文兩版。放在 GitHub Pages，行號在產生頁面時從原始碼查出來，連結指向那個 commit；每次推上 main 都會重新產生，程式改了會跟著更新 | 全部 |
 
 ## 快速開始
 
@@ -303,7 +303,7 @@ RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real         
 | `test_vllm_backend.py` | vLLM backend 對上一個假伺服器，它說的是 vLLM 0.32 的串流格式：`/v1/completions` 收到 render 好的 prompt 的 token id、側欄的每個設定（其他取樣設定都設成不起作用）、停止 token，以及放得進伺服器脈絡的 `max_tokens`；每個 token 的機率和前 5 名，排名只在前 5 名裡才有；加了 `--enable-scale-out` 時走 `/inference/v1/generate`，每個 token 都有排名，雖然選中的 token 排在清單第一個，前 5 名仍照排名；兩條路上同分第一的 token 都是 #1，雖然 vLLM 的排名把同分的也算進去；有 sampling mask 時（vLLM 只在 processed log 機率下送），有剩下的候選和取樣時的機率，沒有模型自己的機率，temperature 0 和 top-k 0 在每條路上都照 vLLM 的做法被拒絕，有 mask 但沒加 `--enable-scale-out` 的伺服器，網頁載入時也會發現，而還沒準備好的伺服器不算這種拒絕；載入時用一個 token 判斷伺服器的 `--logprobs-mode`，沒有 mask 的 processed log 機率在前幾名有被剃掉時看得到剩下幾個，logits 只有排名；greedy 是只剩一個、一定抽中的候選；伺服器收哪幾種媒體、每個檔案跟著佔位 token 送過去、脈絡分頁顯示伺服器的展開、生成時展開得不一樣就是錯誤、不收的種類成為一般檔案；兩條路上都有 MTP 的統計，每一步的統計對得上時才標出猜中的 token，收下的只算到停止 token 為止；停止 token、token 上限、按停止就關掉串流；連不上伺服器、它沒有提供的模型、用它自己的資料夾、或用網頁（或它的 transformers）不認得的家族的模型、或沒有 config.json 的模型啟動的伺服器、沒有或出錯的 `/inference/v1/generate`、它的拒絕和錯誤、伺服器從 logits 算出的排名在列出的機率打平時仍照列出的機率，兩種語言都有，跑到一半的錯誤用頁面的語言顯示；伺服器提供的模型屬於哪個家族，只讀它的 config.json 就知道（這台電腦上的資料夾就地讀，沒有 config.json 的 repo 不屬於任何家族，連不上 Hub 或只在伺服器上的資料夾就說不出來），不支援的模型的錯誤帶著模型 id 和 `model_type`，給網頁的 GitHub issue 用；暖機，以及第一個 token 之前就結束的一步；模型卡片上的規格、伺服器、每種 logprobs 模式下數字代表什麼、sampling mask 和它不收的媒體；一整輪呼叫工具再回答、一輪附上圖片的問題，每個時刻都畫得出來；用真的 tokenizer 和 chat template（在 `models/` 裡時），伺服器拿到的就是脈絡分頁上的 prompt；設了 `VLLM_TEST_URL` 時問真的伺服器，伺服器加了哪些參數就測哪些 |
 | `test_vllm_docker.py` | 在 Docker 裡啟動 vLLM，Docker 在 `subprocess` 這一層換成假的：先照固定的 commit 下載權重，再用模型、它的 revision 和 `models/` 以 `docker compose up` 跑 `docker-compose/compose.yaml`，Docker 有 nvidia runtime（或 `AGENT_LOOP_VLLM_DEVICE` 指定）時再疊上 `compose.gpu.yaml`；模型已經在跑的伺服器不會再啟動一次，換模型會換掉它；沒有 Docker、Docker 沒在執行、沒有 Compose、`docker compose up` 失敗、容器因為記憶體不夠被停掉、容器結束（列出記錄裡的例外，原因在前）和伺服器一直沒回應，都用兩種語言說明；Compose 還在忙時頁面重跑，也會停掉它；`docker compose down`；程式要求的模型在啟動失敗後還記著，直到停掉為止；結束程式時停掉它啟動的伺服器（沒有的話不碰 Docker）；在 GPU 上 MTP 用 Gemma 照固定 commit 的草稿模型（先下載）或 Qwen 自己的 MTP 層，在 CPU 上或沒要求時都不開，切換時重新啟動伺服器。compose 檔：只聽 127.0.0.1、`models/` 唯讀又離線、預設是固定 commit 的 Qwen3.5、GPU 版是同一個 vLLM、除了只給 CPU 的那個以外參數都一樣，再加上和 CPU 一樣大的 KV cache、偏低的 `--gpu-memory-utilization`，以及手動啟動時不開的推測解碼（有設定時統計才設成 detailed，沒有設定時 vLLM 不收），Docker Compose 也把網頁給的設定原封不動交給 vLLM，Docker Compose 讀得懂兩個檔、掛載的是相對的 `AGENT_LOOP_MODELS` 指的資料夾（有裝的話）；設了 `RUN_VLLM_DOCKER_TESTS=1` 時，Docker 裡真的伺服器透過 `VLLMBackend` 回答，Docker 有 GPU 時先開 MTP、再不開各一次 |
 | `test_media.py` | 網頁收的每一種格式都有範例檔、被當成正確的種類（聲音對 Qwen 是一般檔案）、解碼得出來；存檔的名字不重複也不含奇怪字元；問題的 part 和寫出文字檔欄位名稱的說明；照片轉正、聲音改成模型的取樣率、影片畫格平均取、畫格率跟著調整；每種聲音和影片播放時的類型，以及 MKV 影片改顯示的畫格 |
-| `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到、事件表指向真的送出事件的那一行、HTML 標籤成對；每段引用的程式和 `tests/guide_excerpts.txt` 一致，改到那段程式才會變，只是換了行號不會；中英文每一段指向同樣的程式和段落，英文版沒有留下中文；每組頁籤都是已知 backend 或模型的 radio button、各有一個面板，沒有 script 也切換得了，`compose.yaml` 的片段停在該停的那一行；產生的靜態頁有亮色和暗色兩套配色與迴圈圖、寫出對應的 commit，根目錄的頁面會送到正確的語言 |
+| `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到，並連到 GitHub 上頁面那個 commit 的那幾行、事件表指向真的送出事件的那一行、HTML 標籤成對；每段引用的程式和 `tests/guide_excerpts.txt` 一致，改到那段程式才會變，只是換了行號不會；中英文每一段指向同樣的程式和段落，英文版沒有留下中文；每組頁籤都是已知 backend 或模型的 radio button、各有一個面板，沒有 script 也切換得了，`compose.yaml` 的片段停在該停的那一行；產生的靜態頁有亮色和暗色兩套配色與迴圈圖、寫出對應的 commit，根目錄的頁面會送到正確的語言 |
 | `test_real_model.py` | 預設跳過。每個模型：載入的模型是一個 `Backend`；greedy 解碼和 `model.generate()` 一致，純文字、附上圖片、影片和（Gemma）錄音都一樣，之後再問純文字也一樣；真的模型能呼叫計算機並回答；每一種圖片格式都讀得出收據的總計、每一種聲音格式都寫得出錄音的內容（Gemma；Qwen 收到的是一般檔案）、每一種影片格式都看得出球往哪邊滾、每一種資料格式都能用 `run_python` 打開，也寫得出在沙箱裡跑得動的程式（有 Docker 時）；Gemma 開 MTP 時 greedy 輸出和不開一模一樣（附上圖片也是），而且草稿真的有被收下；在 CUDA 上，暖機過的模型放掉之後，GPU 記憶體會全部還回去 |
 
 ## 已知限制
