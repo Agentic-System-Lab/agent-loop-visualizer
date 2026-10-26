@@ -158,7 +158,7 @@ def test_added_from_marks_where_the_new_context_starts():
     assert ctx2["prompt"][ctx2["added_from"]:].startswith("response:calculator")
 
 
-def test_text_before_a_tool_call_is_shown_but_kept_out_of_history():
+def test_gemma_shows_text_before_a_tool_call_but_keeps_it_out_of_history():
     _, events, _ = record_run(["我來算一下。" + tool_call("calculator", expression="6*7"), ANSWER])
     assert of_type(events, "parsed")[0]["content"] == "我來算一下。"  # the step card shows it
     assert end_of(events)["messages"][1]["content"] == ""

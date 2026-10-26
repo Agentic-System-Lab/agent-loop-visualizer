@@ -29,7 +29,7 @@ def test_tool_call_is_parsed_and_removed_from_content():
     }]
 
 
-def test_text_around_a_tool_call_stays_as_content():
+def test_text_before_a_tool_call_stays_as_content():
     raw = f"我來算一下。<|tool_call>call:calculator{{expression:{S}1+1{S}}}<tool_call|><|tool_response>"
     out = parse_output(raw)
     assert out["content"] == "我來算一下。"

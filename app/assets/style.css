@@ -19,7 +19,7 @@
   --sans: "Source Sans", "Source Sans Pro", -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
 }
 
-/* ---------- agent page layout: only the boxes scroll (streamlit_app.BOX_HEIGHT) ---------- */
+/* ---------- agent page layout: only the boxes scroll (page.BOX_HEIGHT) ---------- */
 
 /* Streamlit gives each box a fixed height (in a wrapper that does not grow or shrink); these rules
    stretch a box over the height left in its parent instead. The loop tab's step timeline always

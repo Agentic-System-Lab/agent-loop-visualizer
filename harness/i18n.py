@@ -2,7 +2,7 @@
 
 Every word a person sees is written in both, side by side where it is used: a string in code is
 pick(lang, "中文", "English"), and text kept as data is a {"zh": ..., "en": ...} dict. The page starts
-in the browser's language (from_locale) and the switch at its top right changes it.
+in the language last picked on the switch at its top right (kept in a cookie), or else in the browser's (from_locale).
 
 What the model reads in a run (tool errors, refusals) is written in the language the run started in;
 the system prompt is the same in both, so the model behaves the same whichever language the page is in.

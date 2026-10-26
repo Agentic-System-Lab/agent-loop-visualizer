@@ -2,11 +2,12 @@
 
 Each file is saved in the conversation's folder, which the run_python tool's sandbox sees, read-only,
 as /data (tools.py). An image, a sound clip or a video that the model reads goes into the user's message
-as a part of its own; the chat template writes a placeholder token there, and SimpleBackend.encode() (simple_backend.py)
-has the model's processor replace it with the tokens the file takes, from what load() decodes here. Any
-other file reaches the model only as a line in the message saying where run_python finds it.
+as a part of its own; the chat template writes a placeholder token there, and the backend's encode() replaces it with
+the tokens the file takes, from what load_image(), load_audio() and load_video() decode here: SimpleBackend through the
+model's processor, VLLMBackend by asking the server. Any other file reaches the model only as a line in the message
+saying where run_python finds it.
 
-Which kinds a model reads comes from the checkpoint (SimpleBackend.modalities); this module only knows the
+Which kinds a model reads comes from the checkpoint and the backend (Backend.modalities); this module only knows the
 file extensions of each kind.
 """
 

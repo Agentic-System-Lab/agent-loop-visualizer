@@ -28,9 +28,10 @@ takes; a kind it does not take is a plain file for run_python, and the Model tab
 vLLM runs the model its own way (batches, its own kernels, a KV cache that keeps what one step's prompt shares
 with the last), so greedy decoding need not match transformers' generate() token for token, and prefill is the
 time to the first token, the network included. Speculative decoding is set when the server starts
-(--speculative-config), not in the sidebar. With --per-request-spec-decode-metrics summary (which vLLM takes only
-with --speculative-config), each step says how many guesses were kept; with `detailed`, it says how many in each
-verify step, from which the page underlines the guesses once the step is done (drafted_tokens).
+(--speculative-config), not per request: by whoever started a server at VLLM_URL, and for vLLM (Docker) by the
+sidebar's MTP switch, which starts the server again (vllm_docker.py). With --per-request-spec-decode-metrics summary
+(which vLLM takes only with --speculative-config), each step says how many guesses were kept; with `detailed`, it says
+how many in each verify step, from which the page underlines the guesses once the step is done (drafted_tokens).
 """
 
 import base64

@@ -1,8 +1,8 @@
 """Checks that a piece of HTML closes every tag it opens, in order.
 
 test_render.py and test_guide.py both use it. It lives here rather than in test_render.py, which
-imports torch through the harness's backends, so that test_guide.py runs with pygments and pytest alone,
-as the Pages workflow runs it before building the guide.
+imports PyAV, NumPy, Pillow and httpx through the harness (media.py, tools.py), so that test_guide.py runs
+with pygments and pytest alone, as the Pages workflow runs it before building the guide.
 """
 
 from html.parser import HTMLParser

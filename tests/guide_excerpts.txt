@@ -262,6 +262,9 @@ app/page.py: @st.cache_resource(max_entries=1 … def release_model():
 [[app/page.py|if not st.session_state.get("engine_picked"):]]
     if not st.session_state.get("engine_picked"):
 
+[[app/page.py|st.session_state.model_id = on_vllm["model"] if on_vllm else default_model()]]
+    st.session_state.model_id = on_vllm["model"] if on_vllm else default_model()
+
 app/page.py: def current_llm() -> Backend:
     def current_llm() -> Backend:
         model_id = st.session_state.model_id
@@ -1103,7 +1106,7 @@ harness/agent.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
             if format_errors >= MAX_FORMAT_ERRORS:
                 stop_reason = "format_errors"
                 break
-    except Exception as e:  # surface model or tool crashes in the UI instead of a silent hang
+    except Exception as e:  # surface a crash of the backend or the harness in the UI instead of a silent hang; a tool's becomes an observation
         # A backend's error says what went wrong in both languages (vllm_backend.ServerError), and the page shows
         # the one it is in; other errors are Python's own, in English.
         both = getattr(e, "text", None)

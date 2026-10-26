@@ -13,7 +13,7 @@ page shows, the architecture, the tests and the known limits; read the parts you
 ## Commands
 
 ```bash
-uv sync                                                    # Python 3.12, pinned by uv.lock; uv >= 0.13.4 (required-version in pyproject.toml)
+uv sync                                                    # Python 3.12 (.python-version), packages pinned by uv.lock; uv >= 0.13.4 (required-version in pyproject.toml)
 uv run pytest                                              # ~40 s; loads no weights, touches no network
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen, ~4 min; -k Qwen for one
 docker build -t agent-loop-sandbox harness/sandbox         # optional: run_python's sandbox; its tests skip without it; bump SANDBOX_VERSION with the Dockerfile
@@ -107,7 +107,8 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   `uv run --no-project --with pygments python -m app.guide _site`, and guide.py imports app.render and
   harness.i18n, and render imports harness.families. Keep those (and the packages' `__init__.py`) free of torch,
   transformers, streamlit and httpx. Before building, it runs tests/test_guide.py with pygments and pytest alone,
-  so that file imports only app.guide, harness.i18n and tests/html_check.py (not test_render.py, which imports torch).
+  so that file imports only app.guide, harness.i18n and tests/html_check.py (not test_render.py, which imports the
+  harness and with it PyAV, NumPy, Pillow and httpx).
 - **Every word a person sees exists in both languages, side by side.** In code it is
   `pick(lang, "中文", "English")`; in data (special-token notes, stop reasons, tool environments,
   guide paragraphs, the guide's event table) it is a `{"zh": ..., "en": ...}` dict. Never add a
@@ -132,7 +133,7 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
 - The app listens on localhost only (`.streamlit/config.toml`) because it runs a model on the user's
   machine. Keep it that way. With `VLLM_URL` the prompts go to that server; the page itself stays local. The vLLM
   server in Docker publishes its port on 127.0.0.1 only (docker-compose/compose.yaml) and reads models/ read-only and
-  offline, so it loads the commit in `REVISIONS`. The same file keeps `runner.postScriptGC` off: a full garbage
+  offline, so it loads the commit in `REVISIONS`. `.streamlit/config.toml` also keeps `runner.postScriptGC` off: a full garbage
   collection after every script run held the GIL long enough for the agent's thread to read a vLLM step's tokens all
   at once, at thousands of tok/s; and `runner.fastReruns` off: a rerun in a new thread beside the one loading a model let
   that load finish after the model was let go, beside vLLM (tests/test_app.py checks both). `simple_backend.empty_cache()`

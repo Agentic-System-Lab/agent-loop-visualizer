@@ -189,7 +189,7 @@ class Run:
                 if format_errors >= MAX_FORMAT_ERRORS:
                     stop_reason = "format_errors"
                     break
-        except Exception as e:  # surface model or tool crashes in the UI instead of a silent hang
+        except Exception as e:  # surface a crash of the backend or the harness in the UI instead of a silent hang; a tool's becomes an observation
             # A backend's error says what went wrong in both languages (vllm_backend.ServerError), and the page shows
             # the one it is in; other errors are Python's own, in English.
             both = getattr(e, "text", None)
