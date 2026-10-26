@@ -46,8 +46,8 @@ import os
 import time
 import wave
 from collections import Counter
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
-from typing import Callable, Iterator
 
 import av
 import httpx
@@ -57,7 +57,7 @@ from huggingface_hub.errors import RemoteEntryNotFoundError
 from PIL import Image
 from transformers import AutoConfig, AutoProcessor, GenerationConfig
 
-from agent import model_families, media
+from agent import media, model_families
 from agent.model_backends.backend import Encoded, Sampling
 from agent.model_backends.simple_backend import MODELS_DIR, TOP_N, describe_folder
 
@@ -286,7 +286,8 @@ def drafted_tokens(accepted: list[int], drafted: list[int], n_tokens: int) -> di
     from the prefill; after it, each verify step gives the guesses it kept and then one token of the model's own,
     which replaces the next guess when it kept fewer than were drafted. vLLM does not count a step without guesses,
     so when the steps do not account for every token, nobody can tell which tokens were guessed: None."""
-    kept, turned_down, at = [], [], 1
+    kept: list[int] = []
+    turned_down, at = [], 1
     for n_kept, n_drafted in zip(accepted, drafted):
         kept += range(at, at + n_kept)
         if n_kept < n_drafted:
@@ -353,8 +354,8 @@ class VLLMBackend:
         self.context_length = card.get("max_model_len") or text_cfg.max_position_embeddings  # the server's limit (--max-model-len)
         self.audio_rate = getattr(getattr(self.processor, "feature_extractor", None), "sampling_rate", AUDIO_RATE)
         self.media_token_ids = {kind: getattr(config, f"{kind}_token_id", None) for kind in media.MEDIA}
-        self.drafter_id = None  # speculative decoding is the server's (--speculative-config): nothing to switch here
-        self.drafter = None
+        self.drafter_id: str | None = None  # speculative decoding is the server's (--speculative-config): nothing to switch here
+        self.drafter: object | None = None
         # What the server does beyond /v1/completions, and so which of the checkpoint's media the model reads here.
         readable = checkpoint_modalities(config, self.processor)
         hi = self.encode(self.render([{"role": "user", "content": "Hi"}], None, False), []).ids
@@ -622,7 +623,7 @@ class VLLMBackend:
         except httpx.HTTPError as e:
             raise _unreachable(self.client, e) from e
 
-    def _stream(self, body: dict, s: Sampling, end: dict) -> Iterator[tuple[int, dict]]:
+    def _stream(self, body: dict, s: Sampling, end: dict) -> Generator[tuple[int, dict], None, None]:
         """Each token /v1/completions sends, with what it says about the token. `end` gets the finish reason and, from a
         server started with --per-request-spec-decode-metrics summary or detailed, the speculative decoding counts."""
         for chunk in self._lines("/v1/completions", body):
@@ -649,7 +650,7 @@ class VLLMBackend:
         rank = 1 + sum(v > logprob for _, v in top) if any(i == token_id for i, _ in top) else None
         return self._token_details(token_id, logprob, listed, rank, None, s)
 
-    def _stream_generate(self, prompt: Encoded, s: Sampling, end: dict) -> Iterator[tuple[int, dict]]:
+    def _stream_generate(self, prompt: Encoded, s: Sampling, end: dict) -> Generator[tuple[int, dict], None, None]:
         """Each token /inference/v1/generate sends for the step, with what it says about the token, and `end` as in
         _stream. With media, the server's first chunk has the prompt as it expanded it, which must be the one encode()
         was told and the Context tab shows."""
@@ -708,7 +709,7 @@ class VLLMBackend:
         depends on the server's --logprobs-mode. Only the model's own log probabilities are p, logprob and the top 5.
         Processed ones are the distribution the token was drawn from, so the token's is its sampling probability, and
         the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
-        details = {"rank": rank} if rank else {}
+        details: dict = {"rank": rank} if rank else {}
         if self.logprobs_mode == "raw_logprobs":
             # Equally likely tokens go lowest id first, as in SimpleBackend.
             ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))

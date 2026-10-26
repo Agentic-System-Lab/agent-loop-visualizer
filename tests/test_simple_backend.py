@@ -1,10 +1,12 @@
 """The hand-written decoding loop, run against a tiny scripted model and tokenizer."""
 
+import ast
 import inspect
 import json
 import logging
 import os
 import runpy
+import textwrap
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +17,7 @@ import torch
 from agent import model_families
 from agent.model_backends import simple_backend
 from agent.model_backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend
-from agent.model_backends.simple_backend import SimpleBackend, Sampling
+from agent.model_backends.simple_backend import Sampling, SimpleBackend
 from agent.model_families import GEMMA4, FileNote
 
 VOCAB = [
@@ -181,10 +183,12 @@ def test_simple_backend_has_every_method_of_a_backend_with_its_parameters():
 
 
 def test_simple_backend_sets_every_attribute_of_a_backend_when_it_loads():
-    # Loading needs real weights (test_real_model.py checks a loaded model), so look for where __init__ sets each one.
-    init = inspect.getsource(SimpleBackend.__init__)
-    for name in Backend.__annotations__:
-        assert f"self.{name} = " in init, name
+    # Loading needs real weights (test_real_model.py checks a loaded model), so look for where __init__ sets each one,
+    # with a type or without, alone or among other targets.
+    init = ast.parse(textwrap.dedent(inspect.getsource(SimpleBackend.__init__)))
+    assigned = {node.attr for node in ast.walk(init) if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store)
+                and isinstance(node.value, ast.Name) and node.value.id == "self"}
+    assert set(Backend.__annotations__) <= assigned, set(Backend.__annotations__) - assigned
 
 
 # ---------- _sample ----------

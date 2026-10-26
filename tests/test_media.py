@@ -106,7 +106,7 @@ def test_the_sample_recording_decodes():
     assert 5.5 < len(samples) / 16000 < 6.2
 
 
-def write_video(path: Path, frames: int, size=(64, 48), fps=10):
+def write_video(path: Path, frames: int, size: tuple[int, int] = (64, 48), fps=10):
     with av.open(str(path), "w") as container:
         stream = container.add_stream("libx264", rate=Fraction(fps))
         stream.width, stream.height, stream.pix_fmt = *size, "yuv420p"

@@ -64,7 +64,7 @@ agent/harnesses/pi_harness.py: def _on(self, rec: dict) -> bool:
     TOOLS = {
 
 [[agent/i18n.py|def pick(]]
-    def pick(lang: str, zh: str, en: str) -> str:
+    def pick(lang: str, zh: T, en: T) -> T:
 
 [[app/render.py|def build(events: list[dict])]]
     def build(events: list[dict]) -> dict:
@@ -316,7 +316,7 @@ agent/model_families/__init__.py: class FileNote:
     def _sampling_defaults(self) -> dict:
 
 [[app/page.py|key="model_id", on_change=switch_model]]
-    st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy, help=about)
+    st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.__getitem__, key="model_id", on_change=switch_model, disabled=busy, help=about)
 
 app/page.py: @st.cache_resource(max_entries=1 … def release_model():
     @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
@@ -384,7 +384,7 @@ app/page.py: def current_llm() -> Backend:
     if not slot.lock.acquire(blocking=False):
 
 app/page.py: def start_run(
-    def start_run(who: "Backend | PiAgent", text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
+    def start_run(who: "Backend | PiAgent", text: str, uploads: Sequence[tuple[str, bytes]] = ()) -> bool:
         """Ask the question in a new run, with `uploads` (file name, contents) saved in the conversation's folder first."""
         slot = generation_slot()
         if not slot.lock.acquire(blocking=False):
@@ -421,8 +421,8 @@ app/page.py: def harness_for(
             settings, session = pi_settings(who), st.session_state.chat_id
             page = pi_harness.PageModel(who.llm, current_settings(who.llm).sampling) if who.llm else None
             return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session, page)
-        settings = current_settings(who)
-        return lambda emit: SimpleHarness(who, history, text, settings, emit, attachments, folder)
+        run_settings = current_settings(who)
+        return lambda emit: SimpleHarness(who, history, text, run_settings, emit, attachments, folder)
 
 app/page.py: class LiveRun:
     class LiveRun:
@@ -462,7 +462,7 @@ app/page.py: class LiveRun:
 
 agent/harnesses/simple_harness.py: def __init__(self, llm: Backend, history
     def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
-                 attachments: list[media.Attachment] = (), files: Path | None = None):
+                 attachments: Sequence[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.llm = llm
         self.settings = settings
@@ -674,7 +674,7 @@ agent/model_backends/simple_backend.py: def encode(self, prompt
             ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids
             return Encoded(prompt, ids, ids.shape[-1])
         files = {kind: [p["path"] for p in parts if p["type"] == kind] for kind in media.MEDIA}
-        inputs = {}
+        inputs: dict = {}
         if files["image"]:
             inputs["images"] = [media.load_image(path) for path in files["image"]]
         if files["audio"]:
@@ -708,7 +708,7 @@ agent/model_backends/simple_backend.py: def _encoded_media(
         for kind in ("image", "video"):
             encoder = getattr(base, f"get_{kind}_features", None)
             args = {k: inputs[k] for k in inspect.signature(encoder).parameters if k in inputs} if encoder else {}
-            if any(k.startswith("pixel_values") for k in args):
+            if encoder and any(k.startswith("pixel_values") for k in args):
                 encoded[kind] = encoder(**args, return_dict=True)
         if not encoded:
             return inputs
@@ -745,6 +745,7 @@ agent/harnesses/simple_harness.py: done = None … self.emit("model_end"
             done = ev
         else:
             self.emit(kind, step=step, **ev)
+    assert done is not None  # generate() always ends with done
     raw = done.pop("raw")
     self.emit("model_end", step=step, raw=raw, **done)
 
@@ -814,7 +815,7 @@ agent/model_backends/simple_backend.py: def generate(self, prompt … yield {"ty
 
 agent/model_backends/simple_backend.py: decode_start = time.perf_counter() … **details,
     decode_start = time.perf_counter()
-    tokens = self._drafted(out, sampling, mtp) if drafting else self._one_at_a_time(out, sampling)
+    tokens = self._drafted(out, sampling, mtp) if mtp is not None else self._one_at_a_time(out, sampling)
     for token_id, details in tokens:
         if should_stop():
             finish = "user_stopped"
@@ -949,7 +950,7 @@ agent/model_backends/simple_backend.py: def _sample(self, logits
             kept = int(((cand_probs.cumsum(-1) - cand_probs) < s.top_p).sum())
             cand_ids, cand_probs = cand_ids[:kept], cand_probs[:kept] / cand_probs[:kept].sum()
             weights = cand_probs
-            at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+            at: torch.Tensor | list = (cand_ids == draft).nonzero().flatten() if draft is not None else []
             if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
                 pick = int(at[0])
             else:
@@ -1016,7 +1017,7 @@ agent/model_backends/vllm_backend.py: def _token_details(
         depends on the server's --logprobs-mode. Only the model's own log probabilities are p, logprob and the top 5.
         Processed ones are the distribution the token was drawn from, so the token's is its sampling probability, and
         the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
-        details = {"rank": rank} if rank else {}
+        details: dict = {"rank": rank} if rank else {}
         if self.logprobs_mode == "raw_logprobs":
             # Equally likely tokens go lowest id first, as in SimpleBackend.
             ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
@@ -1079,7 +1080,7 @@ agent/model_backends/simple_backend.py: def _draft(
         comes in through its input, the embedding of the last guess next to the drafter's last hidden state."""
         embed = self.model.get_input_embeddings()
         positions = torch.tensor([[position]], device=self.device)
-        guesses = []
+        guesses: list[int] = []
         while len(guesses) < self.draft_tokens and token_id not in self.eos_ids:
             x = torch.cat([embed(torch.tensor([[token_id]], device=self.device)), hidden], -1)
             out = self.drafter(inputs_embeds=x, position_ids=positions, shared_kv_states=shared)
@@ -1121,8 +1122,8 @@ agent/model_backends/simple_backend.py: def _drafted(
             shared = {k: (key[:, :, : key.shape[2] - dropped], value[:, :, : value.shape[2] - dropped])
                       for k, (key, value) in out.shared_kv_states.items()}
 
-agent/model_backends/simple_backend.py: at = (cand_ids == draft) … pick = int(torch.multinomial(weights, 1))
-    at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+agent/model_backends/simple_backend.py: at: torch.Tensor | list = (cand_ids == draft) … pick = int(torch.multinomial(weights, 1))
+    at: torch.Tensor | list = (cand_ids == draft).nonzero().flatten() if draft is not None else []
     if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
         pick = int(at[0])
     else:
@@ -1147,7 +1148,8 @@ agent/model_backends/vllm_backend.py: def drafted_tokens(
         from the prefill; after it, each verify step gives the guesses it kept and then one token of the model's own,
         which replaces the next guess when it kept fewer than were drafted. vLLM does not count a step without guesses,
         so when the steps do not account for every token, nobody can tell which tokens were guessed: None."""
-        kept, turned_down, at = [], [], 1
+        kept: list[int] = []
+        turned_down, at = [], 1
         for n_kept, n_drafted in zip(accepted, drafted):
             kept += range(at, at + n_kept)
             if n_kept < n_drafted:
@@ -1696,7 +1698,7 @@ app/page.py: @st.fragment(run_every= … viz_panel(llm)
 
 app/render.py: def build(events: list[dict])
     def build(events: list[dict]) -> dict:
-        data = {"model": None, "family": None, "harness": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+        data: dict = {"model": None, "family": None, "harness": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
         for ev in events:
             kind = ev["type"]
             data["last"], data["t"] = kind, ev["t"]
@@ -1799,9 +1801,9 @@ agent/harnesses/pi_harness.py: def _abort(self, reason: str):
         for call_id, (dialog, _) in list(self._pending.items()):
             timed_out = reason == "approval_timeout"
             self.emit("approval", step=self._calls[call_id]["step"], call_id=call_id, approved=False, timed_out=timed_out, stopped=not timed_out)
-            self._pi.send({"type": "extension_ui_response", "id": dialog, "cancelled": True})
+            self.pi.send({"type": "extension_ui_response", "id": dialog, "cancelled": True})
         self._pending.clear()
-        self._pi.send({"type": "abort"})
+        self.pi.send({"type": "abort"})
         self._kill_at = time.monotonic() + STOP_GRACE
         with self._unserved:  # a request waiting for its step learns now, not after WAIT_FOR_STEP, that none will open
             self._unserved.notify_all()

@@ -43,7 +43,7 @@ if ENDPOINT:  # what pi_extension.ts registers
                         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]
 SYSTEM = "You are an expert coding assistant operating inside pi, a coding agent harness."
 inbox: queue.Queue = queue.Queue()
-model = MODELS[0] if MODELS else None
+model: dict | None = MODELS[0] if MODELS else None
 thinking = "off"
 
 
@@ -156,6 +156,7 @@ def tools() -> list[dict]:
 
 def report(messages: list[dict]):
     """What pi_extension.ts does before each request: the request, to the page."""
+    assert model  # set_model came first
     if "--extension" in ARGS:
         payload = {"model": model["id"], "messages": messages, "tools": tools(), "stream": True}
         out({"type": "extension_ui_request", "id": f"notify-{time.monotonic_ns()}", "method": "notify",
@@ -186,11 +187,14 @@ def run_tool(call: dict, item: dict) -> str:
 def ask_endpoint(messages: list[dict]) -> dict:
     """One turn's request to the page's model, as pi's openai-completions provider makes it; the assistant message the
     stream adds up to, streamed on as pi streams it."""
+    assert model and ENDPOINT  # set_model came first, with the page's model
     body = {"model": model["id"], "messages": messages, "tools": tools() or None, "stream": True, "stream_options": {"include_usage": True},
             "max_tokens": model["maxTokens"], "chat_template_kwargs": {"enable_thinking": thinking != "off"}}
     request = urllib.request.Request(ENDPOINT + "/chat/completions", json.dumps({k: v for k, v in body.items() if v is not None}).encode(),
                                      {"Content-Type": "application/json", "Authorization": f"Bearer {os.environ['AGENT_LOOP_TOKEN']}"})
-    text, reasoning, calls, finish, usage = "", "", [], None, {}
+    text, reasoning, finish = "", "", None
+    calls: list[dict] = []
+    usage: dict = {}
     try:
         response = urllib.request.urlopen(request, timeout=30)
     except urllib.error.HTTPError as e:  # pi's provider ends the message in the error, unless pi was aborted meanwhile
@@ -215,7 +219,7 @@ def ask_endpoint(messages: list[dict]) -> dict:
                 calls += delta.get("tool_calls") or []
     content = ([{"type": "thinking", "thinking": reasoning}] if reasoning else []) + ([{"type": "text", "text": text}] if text else [])
     content += [{"type": "toolCall", "id": c["id"], "name": c["function"]["name"], "arguments": json.loads(c["function"]["arguments"])} for c in calls]
-    stop = {"tool_calls": "toolUse", "length": "length", "stop": "stop"}.get(finish, "error")
+    stop = {"tool_calls": "toolUse", "length": "length", "stop": "stop"}.get(finish or "", "error")
     usage = {"input": usage.get("prompt_tokens", 0), "output": usage.get("completion_tokens", 0), "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0}}
     return assistant(content, stop, usage, None if stop != "error" else f"Provider finish_reason: {finish}")
 
@@ -224,7 +228,7 @@ def run_on_endpoint(prompt: dict):
     """A run on the page's model: turns until a reply calls no tool, each a real request to the endpoint."""
     user = [{"type": "text", "text": prompt["message"]}] + [{"type": "image_url", "image_url": {"url": f"data:{i['mimeType']};base64,{i['data']}"}}
                                                              for i in prompt.get("images", [])]
-    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
     results = SCRIPT.get("results", {})
     for n in range(20):
         if n:
@@ -252,6 +256,7 @@ def run(prompt: dict):
     out({"type": "turn_start"})
     out({"type": "message_start", "message": {"role": "user", "content": [{"type": "text", "text": prompt["message"]}]}})
     out({"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": prompt["message"]}]}})
+    assert model  # set_model came first
     aborted, calls = False, 0
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt["message"]}]
     try:

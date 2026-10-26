@@ -16,7 +16,7 @@ both: its request, and the context and tokens of the model endpoint (harnesses/m
 import base64
 import html
 import json
-import re
+from collections.abc import Sequence
 
 from agent import model_families
 from agent.i18n import pick
@@ -379,7 +379,7 @@ def media_line(counts: dict, lang: str) -> str:
 # ---------- events -> steps ----------
 
 def build(events: list[dict]) -> dict:
-    data = {"model": None, "family": None, "harness": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+    data: dict = {"model": None, "family": None, "harness": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
     for ev in events:
         kind = ev["type"]
         data["last"], data["t"] = kind, ev["t"]
@@ -438,7 +438,7 @@ def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:
     kept, turned_down = set(mtp.get("kept_at", ())), set(mtp.get("turned_down_at", ()))
     if not kept and not turned_down:
         return tokens
-    marks = {**{i: {"piece": None, "accepted": False} for i in turned_down}, **{i: {"accepted": True} for i in kept}}
+    marks: dict[int, dict] = {**{i: {"piece": None, "accepted": False} for i in turned_down}, **{i: {"accepted": True} for i in kept}}
     return [{**t, "draft": {"piece": t["piece"], **marks[t["index"]]}} if t["index"] in marks and "draft" not in t else t for t in tokens]
 
 
@@ -564,7 +564,7 @@ PI_DIAGRAM = {
 
 def loop_state(data: dict | None, lang: str) -> dict:
     """Which node and edge are active, what each node's caption says, and the step counter."""
-    state = {"active": None, "edge": None, "visited": set(), "waiting": False, "captions": {},
+    state: dict = {"active": None, "edge": None, "visited": set(), "waiting": False, "captions": {},
              "counter": pick(lang, "等待問題", "waiting for a question"), "ended": False}
     if not data or not data["last"]:
         return state
@@ -689,16 +689,16 @@ def diagram_html(data: dict | None, dark: bool, lang: str, counter: str | None =
     for key, x, y, words in NODES:
         title, caption = words[lang]
         caption = words_for[key][lang] if key in words_for else caption
-        cls = ["node"]
+        classes = ["node"]
         if key in st["visited"]:
-            cls.append("visited")
+            classes.append("visited")
         if key == st["active"]:
-            cls.append("on")
+            classes.append("on")
             if st["waiting"]:
-                cls.append("waiting")
+                classes.append("waiting")
         cx = x + 80
         nodes.append(
-            f'<g class="{" ".join(cls)}" style="--stage: {pal[key]}">'
+            f'<g class="{" ".join(classes)}" style="--stage: {pal[key]}">'
             f'<rect x="{x}" y="{y}" width="160" height="64" rx="10"/>'
             f'<text class="title" x="{cx}" y="{y + 26}">{title}</text>'
             f'<text class="caption" x="{cx}" y="{y + 47}">{esc(st["captions"].get(key, caption))}</text></g>'
@@ -812,7 +812,7 @@ def known(item: dict, key: str) -> bool:
     return item.get(key) is not None
 
 
-def reported(tokens: list[dict], key: str) -> bool:
+def reported(tokens: Sequence[dict], key: str) -> bool:
     """Whether the backend reports `key` for its tokens: some token has it, or there are no tokens yet to tell."""
     return not tokens or any(known(t, key) for t in tokens)
 
@@ -840,7 +840,7 @@ def tokens_html(tokens: list[dict], with_tips: bool, family: model_families.Fami
     return f'<div class="tokens">{"".join(out)}</div>'
 
 
-def token_legend(s: dict, live: bool, lang: str, tokens: list[dict] = ()) -> str:
+def token_legend(s: dict, live: bool, lang: str, tokens: Sequence[dict] = ()) -> str:
     """How to read the tokens. The heat scale and the candidates are mentioned only if the backend reports them
     for `tokens` (the run's tokens so far)."""
     if s.get("temperature", 1) <= 0:
@@ -1419,7 +1419,7 @@ def files_html(folder: dict, notes: dict, family: model_families.Family, lang: s
     present = {file_kind(f["name"]) or f["name"] for f in folder["files"]}
     rows = [(f["name"], f) for f in folder["files"]] + [(name, None) for name in notes if name not in present]
     order = list(MODEL_FILES)
-    rows.sort(key=lambda row: (order.index(file_kind(row[0])) if file_kind(row[0]) else len(order), row[0]))
+    rows.sort(key=lambda row: (order.index(kind) if (kind := file_kind(row[0])) else len(order), row[0]))
     out, said = [], set()
     for name, file in rows:
         kind = file_kind(name)

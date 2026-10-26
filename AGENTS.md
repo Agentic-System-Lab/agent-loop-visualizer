@@ -17,6 +17,8 @@ page shows, the architecture, the tests and the known limits; read the parts you
 ```bash
 uv sync                                                    # Python 3.12 (.python-version), packages pinned by uv.lock; uv >= 0.13.4 (required-version in pyproject.toml)
 uv run pytest                                              # ~40 s; loads no weights, touches no network
+uv run ruff check                                          # lint, the order of imports included; --fix sorts them
+uv run mypy                                                # types: agent/ and app/ inside every function, tests/ where annotated
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # real Gemma (with its MTP drafter) and Qwen, ~4 min; -k Qwen for one
 docker build -t agent-loop-sandbox agent/sandbox           # optional: run_python's sandbox; its tests skip without it; bump SANDBOX_VERSION with the Dockerfile
 uv run streamlit run streamlit_app.py                      # http://localhost:8501; MODEL_ID=Qwen/Qwen3.5-0.8B starts on Qwen
@@ -24,13 +26,15 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py   # the mod
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # vllm_backend.py against that real server
 docker compose -f docker-compose/compose.yaml up -d        # the vLLM server the sidebar's vLLM (Docker) starts, by hand (+ -f docker-compose/compose.gpu.yaml on NVIDIA GPUs)
 RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real   # starts that server with Qwen3.5 and asks it through VLLMBackend, ~2 min
-RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real   # the real pi (on the PATH, or PI_COMMAND; pi 1.4 needs Node 22.19+) against a scripted model on 127.0.0.1
+RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real   # the real pi (on the PATH, or PI_COMMAND; pi 1.4 needs Node 22.19+, which .nvmrc picks with nvm) against a scripted model on 127.0.0.1
 uv run python -m app.guide _site                           # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
 ```
 
-No linter or formatter is configured. Match the surrounding code by hand and don't reformat lines you
-are not changing.
+Ruff lints and mypy checks types (both set up in pyproject.toml), and .github/workflows/checks.yml runs them and
+`uv run pytest` on every push and pull request. No formatter is configured: match the surrounding code by hand and
+don't reformat lines you are not changing. Fix what the two report rather than silencing it; an ignore needs a reason
+beside it.
 
 ## Layout
 
@@ -72,8 +76,9 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
 ## Rules that keep it working
 
 - **The agent never knows the app.** Nothing in `agent/` imports `app/`, Streamlit or anything that draws; it
-  reports what happens only as events. `agent/__init__.py`, `agent/model_families/`, `agent/i18n.py` and
-  `app/__init__.py` import nothing heavy, because the guide's build loads them with pygments alone.
+  reports what happens only as events (tests/test_layout.py checks the imports). `agent/__init__.py`,
+  `agent/model_families/`, `agent/i18n.py` and `app/__init__.py` import nothing heavy, because the guide's build
+  loads them with pygments alone.
 - **app/page.py is imported once, not run as a script.** streamlit_app.py imports it and calls `main()` on every
   rerun, so everything a rerun does is inside functions, and what the module reads from the environment (`VLLM_URL`,
   `MODEL_ID`, `AGENT_LOOP_UPLOADS`) is read once per process. Tests change those on the module (`page.VLLM_URL`,

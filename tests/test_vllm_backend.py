@@ -25,16 +25,16 @@ from huggingface_hub.errors import LocalEntryNotFoundError, RemoteEntryNotFoundE
 from huggingface_hub.utils import validate_repo_id
 from transformers import AutoProcessor
 
-from app import render
-from fakes import MEDIA_TOKENS, PLACEHOLDERS, FakeLLM, fake_folder, pieces, qwen_tool_call, tool_call
-from agent import model_families, media
+from agent import media, model_families
+from agent.harnesses.simple_harness import RunSettings, SimpleHarness
+from agent.i18n import LANGS, pick
 from agent.model_backends import vllm_backend
 from agent.model_backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
 from agent.model_backends.simple_backend import MODELS_DIR
 from agent.model_backends.vllm_backend import GENERATE, UNREPORTED, ServerError, UnsupportedModel, VLLMBackend
 from agent.model_families import GEMMA4, QWEN3_5
-from agent.harnesses.simple_harness import RunSettings, SimpleHarness
-from agent.i18n import LANGS, pick
+from app import render
+from fakes import MEDIA_TOKENS, PLACEHOLDERS, FakeLLM, fake_folder, pieces, qwen_tool_call, tool_call
 from html_check import assert_balanced
 from test_render import render_everything
 
@@ -184,7 +184,7 @@ class Server:
             choice = {"index": 0, "token_ids": [prompt[-1]], "finish_reason": "length", "stop_reason": None}
             if self.masks:
                 choice["sampling_mask"] = [self.kept(prompt[-1], 0.9, body["sampling_params"]["top_k"])]
-            reply = {"request_id": "generate-tokens-1", "choices": [choice]}
+            reply: dict = {"request_id": "generate-tokens-1", "choices": [choice]}
             if body.get("return_token_ids"):
                 reply["prompt_token_ids"] = prompt
             return httpx.Response(200, json=reply)
@@ -262,7 +262,7 @@ class Server:
                       "logprobs": {"content": [self.entry(i, p, params) for i, p in zip(chunk_ids, probs)]}}
             if self.masks:
                 choice["sampling_mask"] = [self.kept(i, p, params["top_k"]) for i, p in zip(chunk_ids, probs)]
-            chunk = {"request_id": "generate-tokens-1", "output_mode": "tokens", "choices": [choice]}
+            chunk: dict = {"request_id": "generate-tokens-1", "output_mode": "tokens", "choices": [choice]}
             if n == 0 and body.get("return_token_ids"):
                 chunk.update(prompt_token_ids=prompt, mm_placeholders={})
             lines.append(sse(chunk))
@@ -1150,7 +1150,8 @@ def downloaded(model_id: str) -> str | None:
     """The model's folder in models/ when its tokenizer and chat template are there."""
     revision = model_families.REVISIONS.get(model_id)
     files = [try_to_load_from_cache(model_id, f, cache_dir=MODELS_DIR, revision=revision) for f in ("config.json", "tokenizer.json", "chat_template.jinja")]
-    return os.path.dirname(files[0]) if all(isinstance(f, str) for f in files) else None
+    paths = [f for f in files if isinstance(f, str)]
+    return os.path.dirname(paths[0]) if len(paths) == len(files) else None
 
 
 REAL_REPLIES = {

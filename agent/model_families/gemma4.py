@@ -8,8 +8,8 @@ so the arguments are not JSON and need their own small parser.
 import json
 import re
 
-from agent.model_families import Family, FileNote
 from agent.i18n import pick
+from agent.model_families import Family, FileNote
 
 STR = '<|"|>'
 THOUGHT_OPEN = "<|channel>thought\n"
@@ -138,7 +138,7 @@ class _Parser:
 
     def obj(self) -> dict:
         self.pos += 1
-        out = {}
+        out: dict = {}
         self.skip_ws()
         if self.peek() == "}":
             self.pos += 1
@@ -157,7 +157,7 @@ class _Parser:
 
     def arr(self) -> list:
         self.pos += 1
-        out = []
+        out: list = []
         self.skip_ws()
         if self.peek() == "]":
             self.pos += 1

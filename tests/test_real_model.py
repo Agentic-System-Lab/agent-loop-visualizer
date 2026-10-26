@@ -14,13 +14,13 @@ import pytest
 import torch
 
 import samples
-from app import render
-from agent import model_families, media, tools
-from agent.model_backends.backend import Backend
-from agent.model_backends.simple_backend import SimpleBackend, Sampling
+from agent import media, model_families, tools
 from agent.harnesses import model_endpoint, pi_harness
 from agent.harnesses.simple_harness import SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
+from agent.model_backends.backend import Backend
+from agent.model_backends.simple_backend import Sampling, SimpleBackend
 from agent.tools import TOOLS
+from app import render
 from html_check import assert_balanced
 from test_render import render_everything
 

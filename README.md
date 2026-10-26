@@ -65,6 +65,8 @@ To run the model on vLLM instead, pick vLLM (Docker) under What runs the model i
 
 > A 401 while downloading, though the model is public? Most likely the Hugging Face token saved on your machine has expired. Log in again (`uv run hf auth login`), or add `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` to send no token.
 
+> Cloned before `agent/` was called `harness/`? Git ignores the `__pycache__` folders Python wrote there, so a pull leaves them behind, in what looks like an empty `harness/`. Nothing imports it; `git clean -fdX harness` removes it, and only what git ignores in it.
+
 ## Experiments to try
 
 1. **Just a chatbot**: switch off Use tools in the sidebar and ask "What time is it in Taipei right now?". The model sees no tools, so it can only guess or admit it does not know. Switch tools back on, ask again, and compare the two in the Context tab.
@@ -83,7 +85,7 @@ To run the model on vLLM instead, pick vLLM (Docker) under What runs the model i
 
 ## Architecture
 
-The project has two parts. `agent/` runs a turn: the harness that runs the agent loop, the tools, the model's family and what runs the model. `app/` is what you see: the page, the HTML it draws from the agent's events, and How it works. They depend one way: `app/` builds on `agent/`, and nothing in `agent/` imports `app/` or Streamlit, so the loop runs, and is tested, without a page.
+The project has two parts. `agent/` runs a turn: the harness that runs the agent loop, the tools, the model's family and what runs the model. `app/` is what you see: the page, the HTML it draws from the agent's events, and How it works. They depend one way: `app/` builds on `agent/`, and nothing in `agent/` imports `app/` or Streamlit (`test_layout.py` checks), so the loop runs, and is tested, without a page.
 
 ```
 streamlit_app.py       where Streamlit starts: it runs app/page.py's main() on every rerun
@@ -249,6 +251,7 @@ The page can also hand the loop to [pi](https://pi.dev), a coding agent with a l
 - **pi's own models**: one pi has credentials for (Claude, GPT, Gemini, or any compatible endpoint in its `models.json`); no model loads here. An API sends back text, not tokens, so there are no token probabilities, candidates or special tokens, and how the API writes the request out for the model nobody says: a step shows pi's request, the text as it streams, the token counts the provider reported (with how many came from the cache) and the cost at pi's prices.
 
 ```bash
+nvm use                                          # with nvm: Node 22, from .nvmrc; install pi under it, since nvm keeps global packages per version
 npm install -g @earendil-works/pi-coding-agent   # pi 1.4 needs Node.js 22.19 or newer
 pi                                               # then /login, once; or set an API key such as ANTHROPIC_API_KEY before starting the app
 PI_COMMAND=/path/to/pi uv run streamlit run streamlit_app.py   # if pi is not on the PATH (any command works, npx included)
@@ -306,6 +309,8 @@ Qwen stops at `<|im_end|>` both after an answer and for a tool, so the harness d
 
 ```bash
 uv run pytest                                          # about 40 s; loads no weights and touches no network
+uv run ruff check                                      # lint: likely bugs, unused imports and the order of imports (--fix sorts them)
+uv run mypy                                            # types: agent/ and app/ inside every function, tests/ where annotated
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # loads the real Gemma (with its MTP drafter) and Qwen, about 4 minutes; add -k Qwen for one
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # asks a running vLLM server
 RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real                        # starts vLLM in Docker with Qwen3.5 and asks it
@@ -315,6 +320,8 @@ RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real                   
 Most tests use the fake model in `tests/fakes.py`: it replays scripted output one token at a time and is a `Backend` (`backend.py`) like `SimpleBackend`, so the harness and the page run from start to finish. In pi's place they start `tests/fake_pi.py`, which speaks pi 1.4's RPC protocol from a script, so they need neither Node nor a model.
 
 Every file format the page accepts has a test: `tests/samples.py` makes a small file of each one from the examples' files (the receipt in every image format, the recording in every audio format, the rolling ball in every video container, the sales data in every data format). `test_media.py` fails if `media.py` accepts a format without a sample, and `test_real_model.py` asks both models about each one. The tests that need Docker run only when Docker and the sandbox image are there.
+
+On every push and pull request, `.github/workflows/checks.yml` runs `ruff check`, `mypy` and `uv run pytest` on Ubuntu; the tests that need the models, the sandbox image, a vLLM server or pi skip there.
 
 How it works quotes code, and `tests/guide_excerpts.txt` keeps everything it quotes, without line numbers. When a change touches quoted code, `test_guide.py` fails and names the sections that quote it: reread them, fix what they say if it is no longer true, then rewrite the file with `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py`.
 
@@ -335,6 +342,7 @@ How it works quotes code, and `tests/guide_excerpts.txt` keeps everything it quo
 | `test_vllm_docker.py` | Starting vLLM in Docker, with Docker faked at the level of `subprocess`: the weights downloaded at their pinned commit before `docker compose up` runs `docker-compose/compose.yaml` with the model, its revision and `models/`, and `compose.gpu.yaml` on top where Docker has the nvidia runtime (or `AGENT_LOOP_VLLM_DEVICE` says so); a server already up for the model not started again, another model replacing it; no Docker, Docker not running, no Compose, `docker compose up` failing, a container killed for memory, one that exits (the exceptions in its log, cause first) and one that never answers, each said in both languages; a rerun while Compose is busy stopping it too; `docker compose down`; the model the app asked for kept through a failed start until it is stopped, and quitting the app stopping the server it started (and leaving Docker alone without one); on the GPU, MTP with Gemma's drafter at its pinned commit (downloaded first) or Qwen's own MTP layer, never on the CPU or unasked, and switching it starting the server again. The compose files: on 127.0.0.1 only, `models/` read-only and offline, Qwen3.5 at its pinned commit by default, the GPU file the same vLLM with the same flags but the CPU-only one, plus a KV cache of the CPU's size, a low `--gpu-memory-utilization`, and speculative decoding off by hand, its counts in detail only with a config (vLLM refuses them without one), Docker Compose handing vLLM the page's config as it is, and Docker Compose reading both (when installed) and mounting the folder a relative `AGENT_LOOP_MODELS` names; with `RUN_VLLM_DOCKER_TESTS=1`, the real server in Docker answering through `VLLMBackend`, with MTP and then without where Docker has a GPU |
 | `test_media.py` | Every format the page accepts has a sample and is read as what it is (sound is a file for Qwen) and decodes; names saved distinct and plain; the question's parts and the note naming a text file's columns; photos turned upright, sound at the model's rate, a video's frames evenly spaced at their own rate; the type each clip plays back as, and the frames shown for an MKV video |
 | `test_guide.py` | Every excerpt and line number on How it works resolves and links to its lines on GitHub at the page's commit, the event table points at the line that really sends each event, HTML tags pair up; the code each section quotes matches `tests/guide_excerpts.txt`, which an edit to that code changes and a line merely moving does not; each paragraph points at the same code and sections in both languages, with no Chinese left in the English one; every set of tabs is radio buttons of known backends or models, one panel each, that switch without a script, and an excerpt of `compose.yaml` ends where it says; the built pages have light and dark palettes and loop diagrams and name their commit, and the root page sends readers to the right language |
+| `test_layout.py` | No file in `agent/` imports `app` or Streamlit, at the top or inside a function, read from each file's syntax tree: the agent never knows the app |
 | `test_real_model.py` | Skipped by default. For each model: the loaded model is a `Backend`; greedy decoding matches `model.generate()`, with text and with an image, a video and (Gemma) a recording, and a text prompt after them too; the real model calls the calculator and answers; it reads the receipt's total in every image format, transcribes the recording in every audio format (Gemma; Qwen gets it as a file), tells which way the ball rolls in every video container, opens every data format with `run_python`, and writes code that runs in the sandbox (with Docker); for Gemma with MTP, greedy output is exactly the same as without it, with an image too, and the drafter's guesses really are kept; on CUDA, a warmed-up model let go hands all its GPU memory back; with pi installed, the real pi asks the model through the model endpoint, calls bash and answers, every token drawn |
 
 ## Known limitations

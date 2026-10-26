@@ -27,7 +27,7 @@ def fake_folder(repo: str, sizes: dict[str, int], fields: dict[str, dict]) -> di
         "files": [{"name": name, "bytes": n, "fields": fields.get(name, {})} for name, n in sizes.items()],
     }
 
-INFO = {
+INFO: dict = {
     "model_id": "fake/gemma-test",
     "architecture": "FakeForTests",
     "device": "cpu",
@@ -63,12 +63,12 @@ INFO = {
         "generation_config.json": {"eos_token_id": [1, 106, 50], "top_k": 64},
     }),
 }
-DRAFTER = {
+DRAFTER: dict = {
     "model_id": "fake/gemma-test-assistant", "parameters": 77_700_000, "layers": 4, "hidden_size": 256,
     "draft_tokens": 6, "load_seconds": 0.1,
     "folder": fake_folder("fake--gemma-test-assistant", {"config.json": 2315, "model.safetensors": 157_565_344}, {"config.json": {"num_centroids": 2048}}),
 }
-QWEN_INFO = {
+QWEN_INFO: dict = {
     **INFO,
     "model_id": "fake/qwen-test",
     "parameters": 853_000_000,
@@ -154,7 +154,7 @@ class FakeLLM:
         self.tokenizer = FakeTokenizer(self.family)
         self.context_length = info["context_length"]
         self.drafter_id = model_families.DRAFTERS.get(self.model_id)
-        self.drafter = None
+        self.drafter: object | None = None
         self.info = {**info, "model_id": self.model_id, "drafter_id": self.drafter_id}
         self.renders: list[dict] = []
         self.encodes: list[list[dict]] = []  # the media handed to each encode()
@@ -331,8 +331,8 @@ def qwen_tool_call(name: str, **args) -> str:
 def record_run(outputs: list, user: str = "台北現在幾點？", history: list | None = None, sampling=None, family=None,
                attachments=(), files=None, **settings):
     """Run the harness to the end on the calling thread; return the run, its events and the fake model."""
-    from agent.model_backends.backend import Sampling
     from agent.harnesses.simple_harness import RunSettings, SimpleHarness
+    from agent.model_backends.backend import Sampling
 
     fake = FakeLLM(list(outputs), family=family)
     if sampling and sampling.mtp:  # a model with a drafter, already loaded

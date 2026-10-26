@@ -144,11 +144,11 @@ def load_video(path: str) -> tuple[np.ndarray, dict]:
         total = total or MAX_FRAMES  # nothing to go by: the first frames, then
         keep = set(np.linspace(0, total - 1, min(total, MAX_FRAMES)).round().astype(int).tolist())
         scale = min(1.0, MAX_SIDE / max(stream.width, stream.height))
-        size = {"width": max(2, round(stream.width * scale)), "height": max(2, round(stream.height * scale))}
+        width, height = max(2, round(stream.width * scale)), max(2, round(stream.height * scale))
         frames = []
         for i, frame in enumerate(container.decode(video=0)):
             if i in keep:
-                frames.append(frame.to_ndarray(format="rgb24", **size))
+                frames.append(frame.to_ndarray(format="rgb24", width=width, height=height))
             if i >= max(keep):
                 break
     if not frames:

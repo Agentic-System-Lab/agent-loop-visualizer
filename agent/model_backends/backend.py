@@ -17,8 +17,9 @@ never shows a number nobody measured.
 Nothing here imports torch, so a backend can be written, and the interface read, without it.
 """
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Callable, Iterator, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from agent import model_families
 
@@ -37,7 +38,7 @@ class Encoded:
     """A prompt as the model reads it (Backend.encode)."""
 
     text: str  # the prompt, with each placeholder of an image, clip or video expanded into the tokens it takes
-    ids: object  # its token ids, in the form the backend's generate() takes (SimpleBackend: a tensor of shape (1, n_tokens))
+    ids: Any  # its token ids, in the form the backend's generate() takes (SimpleBackend: a tensor of shape (1, n_tokens))
     n_tokens: int
     # what generate() needs to read the media: the processor's inputs for the encoders (SimpleBackend), or the files
     # and the server's expansion of the ids (VLLMBackend)

@@ -12,25 +12,26 @@ from pathlib import Path
 
 import pytest
 
-from app import render
-from fake_pi import FakePi
-from fakes import DRAFTER, INFO, MEDIA_TOKENS, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
 from agent import model_families
-from agent.model_backends.backend import TOKEN_DETAILS, Sampling
-from agent.model_families import GEMMA4, QWEN3_5
 from agent.harnesses import model_endpoint, pi_harness, simple_harness
 from agent.harnesses.simple_harness import RunSettings, SimpleHarness
 from agent.i18n import LANGS
 from agent.media import Attachment
+from agent.model_backends.backend import TOKEN_DETAILS, Sampling
+from agent.model_families import GEMMA4, QWEN3_5
 from agent.tools import TOOLS, ToolResult
+from app import render
+from fake_pi import FakePi
+from fakes import DRAFTER, INFO, MEDIA_TOKENS, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
 from html_check import assert_balanced
 
 ANSWER = "現在是下午三點。<turn|>"
 
 
 def svg_of(diagram: str) -> str:
-    src = re.search(r'src="data:image/svg\+xml;base64,([^"]+)"', diagram).group(1)
-    return base64.b64decode(src).decode()
+    src = re.search(r'src="data:image/svg\+xml;base64,([^"]+)"', diagram)
+    assert src, diagram
+    return base64.b64decode(src.group(1)).decode()
 
 
 def approved_run_events():
@@ -68,7 +69,7 @@ def pi_page_events(outputs: list, text: str = "現在幾點？", **settings) -> 
     """A turn pi (its stand-in) runs on the page's own model (a FakeLLM) through model_endpoint, as its events."""
     with pytest.MonkeyPatch.context() as mp, tempfile.TemporaryDirectory() as folder:
         FakePi(mp, Path(folder)).say(results={"bash": BASH["result"]})
-        llm, events = FakeLLM(list(outputs)), []
+        llm, events = FakeLLM(list(outputs)), list[dict]()
         pi_harness.PiHarness(pi_harness.PiSettings(model_endpoint.PROVIDER, llm.model_id, **settings), [], text, events.append,
                              folder=Path(folder) / "chat", session="c", page=pi_harness.PageModel(llm, Sampling())).run()
     return events
@@ -78,7 +79,7 @@ def pi_events(*turns, approve: bool | None = None, text: str = "現在幾點？"
     """A turn run by pi (its stand-in, tests/fake_pi.py), as its events; with `approve`, the user answers the first call so."""
     with pytest.MonkeyPatch.context() as mp, tempfile.TemporaryDirectory() as folder:
         FakePi(mp, Path(folder)).say(*turns)
-        events = []
+        events: list[dict] = []
         run = pi_harness.PiHarness(pi_harness.PiSettings("fake", "fake-model", approve_tools=approve is not None, **settings), [], text, events.append,
                        folder=Path(folder) / "chat", session="c")
         thread = threading.Thread(target=run.run, daemon=True)
@@ -889,7 +890,7 @@ def test_every_explained_token_becomes_a_chip_with_a_tip(piece):
     assert GEMMA4.special_re.fullmatch(piece)
     html = render.special_html(f"x{piece}y", GEMMA4, lang="zh")
     name, _ = GEMMA4.special_tokens[piece]["zh"]
-    assert html == f"x{render.chip(piece, GEMMA4, lang="zh")}y"
+    assert html == f"x{render.chip(piece, GEMMA4, lang='zh')}y"
     assert f'<span class="sp-tip"><b>{render.esc(name)}</b>' in html
     assert_balanced(html)
 

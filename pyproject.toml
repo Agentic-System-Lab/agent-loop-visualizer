@@ -17,14 +17,50 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy>=2.4.0",
     "openpyxl>=3.1",
     "pytest>=9.1.1",
+    "ruff>=0.17.2",
+    "types-openpyxl>=3.1.5.20261017",
+    "types-pygments>=2.21.0.20260819",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "tests"]
 markers = ["model: loads the real model weights; set RUN_MODEL_TESTS=1 to run"]
+
+# Lint only: there is no formatter, so `ruff check` never rewrites a line it has nothing to say about, and no rule
+# checks line length. line-length only tells the import sorter when to wrap, and the code keeps an import on one line.
+# The tests' own modules (fakes, samples, fake_pi, html_check) are imported from tests/ like the packages are from
+# the project's folder, so both are src and sort with agent and app.
+[tool.ruff]
+src = [".", "tests"]
+line-length = 140
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+# zip() pairs sequences built to the same length (a step's calls and their ids, topk's values and indices), so strict=
+# would say nothing those lines do not already; and a lambda given a name is how the code picks one of several
+# callables (app/page.py's model) or keeps a one-line check beside the asserts that use it.
+ignore = ["B905", "E731"]
+
+[tool.mypy]
+files = ["agent", "app", "tests", "streamlit_app.py"]
+mypy_path = "tests"
+python_version = "3.11"
+warn_unused_ignores = true
+
+# The app's and the agent's code is checked inside functions without annotations too; the tests' only where annotated.
+[[tool.mypy.overrides]]
+module = ["agent.*", "app.*"]
+check_untyped_defs = true
+
+# agent/sandbox/agent_loop_figures.py runs inside the sandbox image, where matplotlib is; the project never installs it.
+[[tool.mypy.overrides]]
+module = ["matplotlib.*"]
+ignore_missing_imports = true
 
 # The fixed versions after eMudhra's emSign CA certificates were compromised and removed from the CA bundles
 # (https://discuss.python.org/t/109576): older ones still trust them. uv refuses to run below required-version,

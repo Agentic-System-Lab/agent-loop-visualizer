@@ -39,15 +39,16 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import IO
 
 from agent import media
-from agent.model_backends.backend import Backend, Sampling
 from agent.harnesses import model_endpoint
 from agent.harnesses.simple_harness import APPROVAL_TIMEOUT, common_prefix
 from agent.i18n import pick
+from agent.model_backends.backend import Backend, Sampling
 
 # How to start pi: the `pi` on the PATH, unless PI_COMMAND says otherwise (a path, or "npx -y @earendil-works/pi-coding-agent").
 PI_COMMAND = shlex.split(os.environ.get("PI_COMMAND", "pi"))
@@ -107,31 +108,33 @@ class Process:
             )
         except (FileNotFoundError, PermissionError):
             raise not_found() from None
+        assert self.proc.stdin and self.proc.stdout and self.proc.stderr  # pipes, as asked
+        self.stdin = self.proc.stdin
         self.inbox = inbox
         self.backlog: collections.deque = collections.deque()  # what came while request() waited for its response
         self.stderr: collections.deque = collections.deque(maxlen=20)
         self._lock = threading.Lock()
-        threading.Thread(target=self._read, daemon=True).start()
-        threading.Thread(target=self._read_stderr, daemon=True).start()
+        threading.Thread(target=self._read, args=(self.proc.stdout,), daemon=True).start()
+        threading.Thread(target=self._read_stderr, args=(self.proc.stderr,), daemon=True).start()
 
-    def _read(self):
+    def _read(self, stdout: IO[bytes]):
         # A binary pipe splits lines on LF alone, as RPC's framing asks: a JSON string may hold U+2028.
-        for line in self.proc.stdout:
+        for line in stdout:
             try:
                 self.inbox.put(("record", json.loads(line)))
             except json.JSONDecodeError:
                 continue
         self.inbox.put(("exit", None))
 
-    def _read_stderr(self):
-        for line in self.proc.stderr:
+    def _read_stderr(self, stderr: IO[bytes]):
+        for line in stderr:
             self.stderr.append(line.decode(errors="replace").rstrip())
 
     def send(self, command: dict):
         with self._lock:
             try:
-                self.proc.stdin.write(json.dumps(command, ensure_ascii=False).encode() + b"\n")
-                self.proc.stdin.flush()
+                self.stdin.write(json.dumps(command, ensure_ascii=False).encode() + b"\n")
+                self.stdin.flush()
             except (OSError, ValueError):  # pi has exited, which its stdout says too
                 pass
 
@@ -163,7 +166,7 @@ class Process:
         """Close stdin, which asks pi to shut down, and kill it if it has not within `grace` seconds."""
         with self._lock:
             try:
-                self.proc.stdin.close()
+                self.stdin.close()
             except OSError:
                 pass
         try:
@@ -220,7 +223,7 @@ class PiHarness:
     """One turn, run by pi (harness.Harness)."""
 
     def __init__(self, settings: PiSettings, history: list[dict], text: str, emit: Callable[[dict], None],
-                 attachments: list[media.Attachment] = (), folder: Path | None = None, session: str = "chat", page: PageModel | None = None):
+                 attachments: Sequence[media.Attachment] = (), folder: Path | None = None, session: str = "chat", page: PageModel | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.settings = settings
         self.page = page  # the page's own model, when pi asks it rather than a provider's
@@ -248,6 +251,12 @@ class PiHarness:
         self._unserved = threading.Condition()  # a step opened whose request the endpoint has not taken yet
         self._waiting: int | None = None
         self._request_text = ""  # the last request pi sent, as JSON, to mark what the next one adds
+
+    @property
+    def pi(self) -> Process:
+        """The pi run() started, which everything after it talks to."""
+        assert self._pi is not None
+        return self._pi
 
     # --- controls called from the web server ---
 
@@ -343,14 +352,14 @@ class PiHarness:
 
     def _stopped_meanwhile(self) -> bool:
         """Whether Stop was pressed while pi started, before the question went to it."""
-        if any(kind == "stop" for kind, _ in self._pi.backlog):
+        if any(kind == "stop" for kind, _ in self.pi.backlog):
             self._aborting = "user_stopped"
         return self._aborting is not None
 
     def _loop(self):
         while True:
-            if self._pi.backlog:
-                kind, value = self._pi.backlog.popleft()
+            if self.pi.backlog:
+                kind, value = self.pi.backlog.popleft()
             else:
                 try:
                     kind, value = self._inbox.get(timeout=0.5)
@@ -359,7 +368,7 @@ class PiHarness:
             now = time.monotonic()
             if kind == "exit":
                 if not self._error and not self._aborting:
-                    raise self._pi.exited()
+                    raise self.pi.exited()
                 return
             if kind == "stop":
                 self._abort("user_stopped")
@@ -380,9 +389,9 @@ class PiHarness:
         for call_id, (dialog, _) in list(self._pending.items()):
             timed_out = reason == "approval_timeout"
             self.emit("approval", step=self._calls[call_id]["step"], call_id=call_id, approved=False, timed_out=timed_out, stopped=not timed_out)
-            self._pi.send({"type": "extension_ui_response", "id": dialog, "cancelled": True})
+            self.pi.send({"type": "extension_ui_response", "id": dialog, "cancelled": True})
         self._pending.clear()
-        self._pi.send({"type": "abort"})
+        self.pi.send({"type": "abort"})
         self._kill_at = time.monotonic() + STOP_GRACE
         with self._unserved:  # a request waiting for its step learns now, not after WAIT_FOR_STEP, that none will open
             self._unserved.notify_all()
@@ -452,7 +461,7 @@ class PiHarness:
     def _message_end(self, message: dict):
         now = time.perf_counter()
         usage = message.get("usage") or {}
-        reason = message.get("stopReason")
+        reason = message.get("stopReason") or ""
         if reason == "error" and not self._aborting:
             self._error = message.get("errorMessage") or reason
         finish = "user_stopped" if self._aborting else {"length": "max_new_tokens", "aborted": "user_stopped", "error": "error"}.get(reason, "end_turn")
@@ -504,13 +513,13 @@ class PiHarness:
         elif method == "confirm" and rec.get("title") == APPROVE_TITLE:
             call_id = json.loads(rec.get("message") or "{}").get("toolCallId")
             if self._aborting or call_id not in self._calls:
-                self._pi.send({"type": "extension_ui_response", "id": rec["id"], "cancelled": True})
+                self.pi.send({"type": "extension_ui_response", "id": rec["id"], "cancelled": True})
                 return
             self._pending[call_id] = (rec["id"], time.monotonic() + APPROVAL_TIMEOUT)
             call = self._calls[call_id]
             self.emit("approval_request", step=call["step"], call_id=call_id, name=call["name"], arguments=call["arguments"])
         elif method in DIALOGS:  # no other extension is loaded, so nothing else should ask; an answer keeps pi from waiting
-            self._pi.send({"type": "extension_ui_response", "id": rec["id"], "cancelled": True})
+            self.pi.send({"type": "extension_ui_response", "id": rec["id"], "cancelled": True})
 
     def _request(self, payload):
         """The request pi is sending the model, as JSON, the part that is new since its last request marked: the lines
@@ -525,7 +534,7 @@ class PiHarness:
             added_from, added_to = text.rfind("\n", 0, start) + 1, len(text) - end
             line_end = text.find("\n", added_to)
             added_to = len(text) if line_end < 0 else line_end
-        messages = next((payload[k] for k in ("messages", "input", "contents") if isinstance(payload, dict) and isinstance(payload.get(k), list)), [])
+        messages: list = next((payload[k] for k in ("messages", "input", "contents") if isinstance(payload, dict) and isinstance(payload.get(k), list)), [])
         roles = [m.get("role") for m in messages if isinstance(m, dict) and m.get("role")]
         self.emit("request", step=self._step, text=text, added_from=added_from, added_to=added_to,
                   roles={role: roles.count(role) for role in dict.fromkeys(roles)})
@@ -538,7 +547,7 @@ class PiHarness:
         self.emit("approval", step=call["step"], call_id=call_id, approved=approved, timed_out=False, stopped=False)
         if approved:
             self.emit("tool_start", step=call["step"], call_id=call_id, name=call["name"], environment=environment_of(call["name"]))
-        self._pi.send({"type": "extension_ui_response", "id": dialog, "confirmed": approved})
+        self.pi.send({"type": "extension_ui_response", "id": dialog, "confirmed": approved})
 
 
 def without_media(value):

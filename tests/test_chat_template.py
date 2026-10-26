@@ -10,13 +10,13 @@ from pathlib import Path
 import pytest
 from huggingface_hub import try_to_load_from_cache
 
-from app import render
-from fakes import FakeLLM, gemma_call, qwen_call
-from agent import model_families, media
+from agent import media, model_families
+from agent.harnesses.simple_harness import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
 from agent.model_backends import simple_backend
 from agent.model_backends.simple_backend import MODELS_DIR, SimpleBackend
-from agent.harnesses.simple_harness import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
 from agent.tools import TOOLS
+from app import render
+from fakes import FakeLLM, gemma_call, qwen_call
 from html_check import assert_balanced
 
 SAMPLES = Path(__file__).resolve().parent.parent / "app" / "assets" / "examples"

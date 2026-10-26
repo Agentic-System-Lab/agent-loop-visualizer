@@ -14,9 +14,9 @@ notes on its control tokens and on the files of its checkpoints) and add its Fam
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Callable
 
 # The models in the page's model menu: Hugging Face id -> label. A label is the same in both of the page's
 # languages: Streamlit's selectbox sends its label back, and one that changed with the language would become the value.

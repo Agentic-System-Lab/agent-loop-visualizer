@@ -23,14 +23,14 @@ import secrets
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable
 
 from agent import media
-from agent.model_backends.backend import Backend, Sampling
 from agent.harnesses.simple_harness import common_prefix
+from agent.model_backends.backend import Backend, Sampling
 
 PROVIDER = "agent-loop"  # what pi calls the endpoint, as pi_extension.ts registers it
 WAIT_FOR_STEP = 10  # seconds a request waits for the turn it belongs to before it is served undrawn
@@ -121,7 +121,8 @@ def user_content(content, folder: Path) -> str | list[dict]:
 def conversation(body: dict, llm: Backend, folder: Path) -> list[dict]:
     """The request's messages as SimpleHarness keeps its own (Hugging Face's format, which the chat templates take):
     the arguments of a tool call as a dict, the thinking under the family's key, a tool result with its tool's name."""
-    family, names, out = llm.family, {}, []
+    family, names = llm.family, {}
+    out: list[dict] = []
     for m in body.get("messages", []):
         role = m.get("role")
         if role in ("system", "developer"):
@@ -142,7 +143,7 @@ def conversation(body: dict, llm: Backend, folder: Path) -> list[dict]:
                 names[c.get("id")] = fn.get("name", "")
                 calls.append({"id": c.get("id"), "type": "function", "function": {"name": fn.get("name", ""), "arguments": args}})
             # Some templates cannot keep text in front of a tool call (see Family.text_with_calls).
-            message = {"role": "assistant", "content": text_of(m.get("content")) if family.text_with_calls or not calls else ""}
+            message: dict = {"role": "assistant", "content": text_of(m.get("content")) if family.text_with_calls or not calls else ""}
             if calls:
                 message["tool_calls"] = calls
             if thinking := m.get("reasoning_content") or m.get("reasoning"):
@@ -260,6 +261,7 @@ def _handler(ep: Endpoint):
             except Exception as e:  # what runs the model failed (a vLLM server, say): a stream cannot say so but by its finish reason, which pi shows
                 send(finish=f"error: {type(e).__name__}: {e}")
                 return
+            assert done is not None  # generate() always ends with done
             raw = done.pop("raw")
             emit("model_end", raw=raw, **done)
             if gone:

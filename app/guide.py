@@ -41,8 +41,8 @@ from pygments import highlight
 from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_for_filename
 
-from app import render
 from agent.i18n import LANGS, pick
+from app import render
 
 ROOT = Path(__file__).resolve().parent.parent  # the project's folder, which the files the guide quotes are named from
 ASSETS = Path(__file__).parent / "assets"
@@ -149,12 +149,13 @@ def find_line(file: str, text: str) -> int:
 def statement_end(tree: ast.Module, line: int) -> int:
     """Last line of the outermost statement that starts on `line`; failing that, of the innermost
     statement around it (the line is the middle of a call or a dict); failing that, the line."""
-    statements = [n for n in ast.walk(tree) if isinstance(n, ast.stmt)]
-    starting = [n for n in statements if n.lineno == line]
+    # ast.parse gives every statement an end_lineno; typeshed allows None, for nodes made by hand.
+    ends = {n: n.end_lineno or n.lineno for n in ast.walk(tree) if isinstance(n, ast.stmt)}
+    starting = [ends[n] for n in ends if n.lineno == line]
     if starting:
-        return max(n.end_lineno for n in starting)
-    around = [n for n in statements if n.lineno <= line <= n.end_lineno and not hasattr(n, "body")]
-    return min(around, key=lambda n: n.end_lineno - n.lineno).end_lineno if around else line
+        return max(starting)
+    around = [n for n in ends if n.lineno <= line <= ends[n] and not hasattr(n, "body")]
+    return ends[min(around, key=lambda n: ends[n] - n.lineno)] if around else line
 
 
 def span(code: Code) -> tuple[int, int]:
@@ -379,9 +380,10 @@ def page_html(commit: str, lang: str) -> str:
 
 def stylesheet() -> str:
     """The palette from style.css, dark.css's for a reader in dark mode, then the page's own rules."""
-    palette = re.search(r"^:root \{.*?^\}", (ASSETS / "style.css").read_text(encoding="utf-8"), re.S | re.M).group()
+    palette = re.search(r"^:root \{.*?^\}", (ASSETS / "style.css").read_text(encoding="utf-8"), re.S | re.M)
+    assert palette, "style.css has no :root palette"
     dark = (ASSETS / "dark.css").read_text(encoding="utf-8")
-    return f"{palette}\n@media (prefers-color-scheme: dark) {{\n{dark}}}\n{(ASSETS / 'guide.css').read_text(encoding='utf-8')}"
+    return f"{palette.group()}\n@media (prefers-color-scheme: dark) {{\n{dark}}}\n{(ASSETS / 'guide.css').read_text(encoding='utf-8')}"
 
 
 def document_html(commit: str, lang: str) -> str:
@@ -1464,7 +1466,7 @@ SECTIONS = [
                        "so when two tokens are almost equally likely it may now and then pick the other). When sampling, a guess is kept with its "
                        "probability p after temperature, top-k and top-p; if it is not kept, it is taken out of the candidates and the token is drawn "
                        "from the rest. Every token still comes out with probability p: the drafter decides how many forward passes it takes, not what gets written."},
-                Code("agent/model_backends/simple_backend.py", "at = (cand_ids == draft)", end="pick = int(torch.multinomial(weights, 1))"),
+                Code("agent/model_backends/simple_backend.py", "at: torch.Tensor | list = (cand_ids == draft)", end="pick = int(torch.multinomial(weights, 1))"),
                 {"zh": "畫面上：", "en": "On the page:"},
                 (
                     {"zh": "step 卡片裡被收下的猜測有底線；一串底線加上後面那個沒有底線的 token，就是主模型同一次 forward 的產出。",

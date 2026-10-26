@@ -2,10 +2,10 @@
 
 import pytest
 
-from fakes import qwen_call, qwen_tool_call, record_run
 from agent.model_families import QWEN3_5
 from agent.model_families.qwen3_5 import convert, parse_output
 from agent.tools import TOOLS
+from fakes import qwen_call, qwen_tool_call, record_run
 
 SCHEMAS = {t.name: t.parameters for t in TOOLS.values()}
 TYPED = {"f": {"properties": {

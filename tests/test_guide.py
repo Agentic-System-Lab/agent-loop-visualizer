@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
+from agent.i18n import LANGS
 from app import guide
 from app.guide import Code, Tabs, span, statement_end
-from agent.i18n import LANGS
 from html_check import assert_balanced
 
 CODES = [item for sec in guide.SECTIONS for item in guide.parts(sec.body) if isinstance(item, Code)]
@@ -234,10 +234,10 @@ def test_every_file_and_line_on_the_page_links_to_it_on_github(lang):
     assert len(chips) == html.count('<code class="ref"') > 50  # every chip, in the text and in the event table
     excerpts = re.findall(rf'<figcaption><b>([\w./-]+)</b><span class="src-lines">[^<]+</span>{link}', html)
     assert len(excerpts) == html.count('<figure class="src">') == len(CODES)
-    for file, line, linked, lo, hi, title, label in chips:
+    for file, line, linked, lo, hi, _title, label in chips:
         assert (linked, lo, hi) == (file, line, "")
         assert file in label and line in label
-    for code, (file, linked, lo, hi, title, label) in zip(CODES, excerpts):
+    for code, (file, linked, lo, hi, _title, _label) in zip(CODES, excerpts):
         assert file == linked == code.file and (int(lo), int(hi or lo)) == span(code)
     for *_, title, label in chips + excerpts:
         assert "GitHub" in title and "GitHub" in label

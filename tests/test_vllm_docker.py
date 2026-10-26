@@ -17,7 +17,7 @@ import re
 import runpy
 import shutil
 import subprocess
-from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -39,11 +39,11 @@ class FakeDocker:
     `compose` (the Compose plugin), `runtimes`, `up` (exit code and lines of `docker compose up`), `state` (the
     container's, once up), `log`, and `answers_after` (how many looks before the server answers)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.installed, self.daemon, self.compose = True, True, True
-        self.runtimes = {"io.containerd.runc.v2": {}, "runc": {}}
+        self.runtimes: dict = {"io.containerd.runc.v2": {}, "runc": {}}
         self.up = (0, [" Container agent-loop-vllm-vllm-1  Started"])
-        self.state = {"Running": True, "OOMKilled": False, "ExitCode": 0}
+        self.state: dict = {"Running": True, "OOMKilled": False, "ExitCode": 0}
         self.log = "(APIServer pid=1) INFO 10-25 14:28:31 [model.py:2152] Using max model len 131072\n"
         self.answers_after = 2
         self.commands: list[list[str]] = []
@@ -106,14 +106,14 @@ class FakeDocker:
 
     def serves(self, address: str, model_id: str) -> bool:
         self.looks += 1
-        return self.state.get("Running") and self.served == model_id and self.looks > self.answers_after
+        return bool(self.state.get("Running")) and self.served == model_id and self.looks > self.answers_after
 
     def compose_calls(self, what: str) -> list[list[str]]:
         return [c for c in self.commands if c[1] == "compose" and what in c]
 
     def models_up(self) -> list[str]:
         """The model of each `docker compose up`, in order."""
-        return [env["VLLM_MODEL"] for c, env in zip(self.commands, self.envs) if c[1] == "compose" and "up" in c]
+        return [(env or {})["VLLM_MODEL"] for c, env in zip(self.commands, self.envs) if c[1] == "compose" and "up" in c]
 
 
 @pytest.fixture
@@ -356,7 +356,7 @@ class ComposeLoader(yaml.SafeLoader):
 
 
 ComposeLoader.add_constructor("!reset", lambda loader, node: None)
-ComposeLoader.add_constructor("!override", lambda loader, node: loader.construct_sequence(node) if isinstance(node, yaml.SequenceNode) else loader.construct_mapping(node))
+ComposeLoader.add_constructor("!override", lambda loader, node: loader.construct_sequence(node) if isinstance(node, yaml.SequenceNode) else loader.construct_mapping(cast(yaml.MappingNode, node)))
 
 
 def service(name: str) -> dict:

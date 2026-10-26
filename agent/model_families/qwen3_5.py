@@ -17,8 +17,8 @@ qwen3_coder parser does). Thinking sits between <think> and </think>.
 import json
 import re
 
-from agent.model_families import Family, FileNote
 from agent.i18n import pick
+from agent.model_families import Family, FileNote
 
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
 CALL_OPEN = "<tool_call>"

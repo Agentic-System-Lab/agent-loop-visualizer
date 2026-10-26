@@ -24,8 +24,8 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import httpx
 from huggingface_hub import snapshot_download
@@ -85,6 +85,7 @@ def _stream(args: list[str], env: dict, on_line: Callable[[str], None]) -> tuple
         process = subprocess.Popen(["docker", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     except FileNotFoundError as e:
         raise _not_installed() from e
+    assert process.stdout is not None  # a pipe, as asked
     tail: deque[str] = deque(maxlen=LOG_LINES)
     try:
         for line in process.stdout:
@@ -116,7 +117,7 @@ def _env(model_id: str, config: dict | None = None) -> dict:
 def speculative(model_id: str, where: str) -> dict | None:
     """The --speculative-config of model_id on `where` (model_families.VLLM_SPECULATIVE, a drafter at its pinned commit), or
     None: on the CPU, where vLLM 0.32's image runs neither model's MTP, and for a model without one."""
-    config = model_families.VLLM_SPECULATIVE.get(model_id)
+    config: dict | None = model_families.VLLM_SPECULATIVE.get(model_id)
     if where != "gpu" or not config:
         return None
     if drafter := config.get("model"):

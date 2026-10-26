@@ -20,13 +20,13 @@ import json
 import threading
 import time
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from agent import media
-from agent.model_backends.backend import Backend, Sampling
 from agent.i18n import pick
+from agent.model_backends.backend import Backend, Sampling
 from agent.tools import TOOLS, ToolError, ToolResult
 
 MAX_RESULT_CHARS = 2000
@@ -65,7 +65,7 @@ def common_prefix(a: str, b: str) -> int:
 
 class SimpleHarness:
     def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
-                 attachments: list[media.Attachment] = (), files: Path | None = None):
+                 attachments: Sequence[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.llm = llm
         self.settings = settings
@@ -138,6 +138,7 @@ class SimpleHarness:
                         done = ev
                     else:
                         self.emit(kind, step=step, **ev)
+                assert done is not None  # generate() always ends with done
                 raw = done.pop("raw")
                 self.emit("model_end", step=step, raw=raw, **done)
 
@@ -229,6 +230,7 @@ class SimpleHarness:
         )
         if errors:
             return self._observe(step, cid, call["name"], {"error": "; ".join(errors)}, ok=False, ms=0)
+        assert tool is not None  # a call to no tool has an error
 
         if self.settings.approve_tools:
             self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)

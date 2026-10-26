@@ -27,14 +27,15 @@ import os
 import threading
 import time
 from collections import Counter
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any
 
 import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoProcessor
 
-from agent import model_families, media
+from agent import media, model_families
 from agent.model_backends.backend import Encoded, Sampling
 
 TOP_N = 5
@@ -137,7 +138,7 @@ class SimpleBackend:
             # Loading weights onto MPS from several threads can hang (seen with Qwen3.5); one thread is fast enough.
             os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
         self.drafter_id = model_families.DRAFTERS.get(model_id)
-        self.drafter = None  # loaded the first time MTP is switched on
+        self.drafter: Any = None  # loaded the first time MTP is switched on
         self._drafter_lock = threading.Lock()
         start = time.perf_counter()
         # config.json alone says which family the model belongs to; an unsupported one fails before the weights download.
@@ -260,7 +261,7 @@ class SimpleBackend:
             ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids
             return Encoded(prompt, ids, ids.shape[-1])
         files = {kind: [p["path"] for p in parts if p["type"] == kind] for kind in media.MEDIA}
-        inputs = {}
+        inputs: dict = {}
         if files["image"]:
             inputs["images"] = [media.load_image(path) for path in files["image"]]
         if files["audio"]:
@@ -301,7 +302,7 @@ class SimpleBackend:
             yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
 
             decode_start = time.perf_counter()
-            tokens = self._drafted(out, sampling, mtp) if drafting else self._one_at_a_time(out, sampling)
+            tokens = self._drafted(out, sampling, mtp) if mtp is not None else self._one_at_a_time(out, sampling)
             for token_id, details in tokens:
                 if should_stop():
                     finish = "user_stopped"
@@ -367,7 +368,7 @@ class SimpleBackend:
         for kind in ("image", "video"):
             encoder = getattr(base, f"get_{kind}_features", None)
             args = {k: inputs[k] for k in inspect.signature(encoder).parameters if k in inputs} if encoder else {}
-            if any(k.startswith("pixel_values") for k in args):
+            if encoder and any(k.startswith("pixel_values") for k in args):
                 encoded[kind] = encoder(**args, return_dict=True)
         if not encoded:
             return inputs
@@ -420,7 +421,7 @@ class SimpleBackend:
         comes in through its input, the embedding of the last guess next to the drafter's last hidden state."""
         embed = self.model.get_input_embeddings()
         positions = torch.tensor([[position]], device=self.device)
-        guesses = []
+        guesses: list[int] = []
         while len(guesses) < self.draft_tokens and token_id not in self.eos_ids:
             x = torch.cat([embed(torch.tensor([[token_id]], device=self.device)), hidden], -1)
             out = self.drafter(inputs_embeds=x, position_ids=positions, shared_kv_states=shared)
@@ -453,7 +454,7 @@ class SimpleBackend:
             kept = int(((cand_probs.cumsum(-1) - cand_probs) < s.top_p).sum())
             cand_ids, cand_probs = cand_ids[:kept], cand_probs[:kept] / cand_probs[:kept].sum()
             weights = cand_probs
-            at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+            at: torch.Tensor | list = (cand_ids == draft).nonzero().flatten() if draft is not None else []
             if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
                 pick = int(at[0])
             else:

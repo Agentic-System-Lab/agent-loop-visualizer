@@ -42,23 +42,23 @@ import shutil
 import threading
 import uuid
 import weakref
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 from urllib.parse import quote, urlencode
 
 import streamlit as st
 
-from app import render
-from agent import model_families, media, tools
-from agent.model_backends import vllm_backend, vllm_docker
-from agent.model_backends.backend import Backend, Sampling
-from agent.model_backends.simple_backend import SimpleBackend, empty_cache
+from agent import media, model_families, tools
 from agent.harnesses import model_endpoint, pi_harness
 from agent.harnesses.harness import Harness
 from agent.harnesses.simple_harness import RunSettings, SimpleHarness
 from agent.i18n import LANGS, from_locale, pick
+from agent.model_backends import vllm_backend, vllm_docker
+from agent.model_backends.backend import Backend, Sampling
+from agent.model_backends.simple_backend import SimpleBackend, empty_cache
 from agent.tools import TOOLS
+from app import render
 
 # The model menu; MODEL_ID picks the one selected at first, and may name a model the menu does not list.
 DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(model_families.MODELS)))
@@ -117,7 +117,7 @@ EXAMPLES = {
         ("Use Python to read this sales data: which month had the highest total revenue, and what was the revenue for the whole year?", "sales.csv"),
     ],
 }
-EXAMPLE_ICONS = {"image": ":material/image:", "audio": ":material/graphic_eq:", "video": ":material/movie:", "file": ":material/table_chart:", "python": ":material/code:"}
+EXAMPLE_ICONS: dict[str | None, str] = {"image": ":material/image:", "audio": ":material/graphic_eq:", "video": ":material/movie:", "file": ":material/table_chart:", "python": ":material/code:"}
 SAMPLE_FILES = sorted(p.name for p in SAMPLES.iterdir() if p.is_file() and not p.name.startswith("."))
 
 
@@ -255,7 +255,7 @@ class PiAgent:
     model_id: str  # the page's model id, or "provider/id", as pi's own model menu names it
     version: str
     llm: Backend | None = None
-    model: dict | None = None  # pi's model object for one of its own (pi_harness.probe)
+    model: dict = field(default_factory=dict)  # pi's model object for one of its own (pi_harness.probe)
 
     @property
     def modalities(self) -> tuple[str, ...]:
@@ -300,7 +300,7 @@ def pi_picker(busy: bool) -> PiAgent:
     with st.sidebar:
         sources = {"page": tr("這個網頁的模型", "This page's model"), "pi": tr("pi 自己的模型", "pi's own models")}
         st.segmented_control(
-            tr("pi 問的模型", "The model pi asks"), list(sources), format_func=sources.get, key="pi_source", required=True,
+            tr("pi 問的模型", "The model pi asks"), list(sources), format_func=sources.__getitem__, key="pi_source", required=True,
             on_change=new_chat, disabled=busy,
             help=tr("這個網頁的模型：Gemma 或 Qwen，跑在 transformers 或 vLLM 上，由網頁在 127.0.0.1 上當成一個相容 OpenAI 的端點提供給 pi；"
                     "每個 token 和模型讀到的字串都看得到。pi 自己的模型：pi 登入過的 provider 的模型（Claude、GPT…），只看得到文字。",
@@ -451,7 +451,7 @@ def offered_tools() -> tuple[str, ...]:
     return tuple(name for name in TOOLS if name != "run_python" or code_ready())
 
 
-def start_run(who: "Backend | PiAgent", text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
+def start_run(who: "Backend | PiAgent", text: str, uploads: Sequence[tuple[str, bytes]] = ()) -> bool:
     """Ask the question in a new run, with `uploads` (file name, contents) saved in the conversation's folder first."""
     slot = generation_slot()
     if not slot.lock.acquire(blocking=False):
@@ -475,8 +475,8 @@ def harness_for(who: "Backend | PiAgent", text: str, attachments: list[media.Att
         settings, session = pi_settings(who), st.session_state.chat_id
         page = pi_harness.PageModel(who.llm, current_settings(who.llm).sampling) if who.llm else None
         return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session, page)
-    settings = current_settings(who)
-    return lambda emit: SimpleHarness(who, history, text, settings, emit, attachments, folder)
+    run_settings = current_settings(who)
+    return lambda emit: SimpleHarness(who, history, text, run_settings, emit, attachments, folder)
 
 
 def other_tab_run() -> LiveRun | None:
@@ -558,7 +558,7 @@ def harness_picker(busy: bool):
         st.markdown(tr("### Agent Loop 可視化", "### Agent Loop Visualizer"))
         names = {"simple": tr("內建 harness", "Built-in harness"), "pi": "pi"}
         st.segmented_control(
-            tr("用什麼跑迴圈", "What runs the loop"), list(names), format_func=names.get, key="harness", required=True,
+            tr("用什麼跑迴圈", "What runs the loop"), list(names), format_func=names.__getitem__, key="harness", required=True,
             on_change=new_chat, disabled=busy,
             help=tr("內建 harness：這個專案自己寫的迴圈（`agent/harnesses/simple_harness.py`），模型在這台電腦或 vLLM 上跑，每個 token 都看得到。"
                     "pi：把迴圈交給 pi 這個 coding agent，網頁畫出它每一步做了什麼，和它送給模型的請求。pi 可以問這個網頁的模型，每個 token 都看得到；"
@@ -582,12 +582,12 @@ def model_picker(menu: dict[str, str], busy: bool):
             about += tr(f"\n\n標 ⚠ 的模型，這個網頁還不支援它的家族（目前支援 {'、'.join(names)}）；選了會說明原因，也可以直接到 GitHub 提 issue。",
                         f"\n\nA model marked ⚠ is of a family this page does not support yet (it supports {', '.join(names)}); "
                         "picking it says why, and offers a GitHub issue asking for it.")
-        st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy, help=about)
+        st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.__getitem__, key="model_id", on_change=switch_model, disabled=busy, help=about)
         if not VLLM_URL:
             # The same in both languages: with full-width parentheses the two options no longer fit side by side.
             engines = {"local": "transformers", "vllm": "vLLM (Docker)"}
             st.segmented_control(
-                tr("用什麼跑模型", "What runs the model"), list(engines), format_func=engines.get, key="engine", required=True,
+                tr("用什麼跑模型", "What runs the model"), list(engines), format_func=engines.__getitem__, key="engine", required=True,
                 on_change=switch_engine, disabled=busy,
                 help=tr("transformers：模型載入這個程式，在這台電腦上跑，每個 token 的細節都看得到。"
                         "vLLM：用專案的 docker-compose/compose.yaml 在 Docker 裡啟動 vLLM 伺服器，有 NVIDIA GPU 就用 GPU，否則用 CPU；"
@@ -861,8 +861,8 @@ def attachments_view(attachments: list[media.Attachment]):
             st.image(a.path, width=240)
         elif a.kind == "audio":
             st.audio(a.path, format=media.mime(a.name) or "audio/wav")
-        elif a.kind == "video" and media.mime(a.name):
-            st.video(a.path, format=media.mime(a.name))
+        elif a.kind == "video" and (mime := media.mime(a.name)):
+            st.video(a.path, format=mime)
         elif a.kind == "video":  # a video some browsers cannot play: the frames the model reads instead
             st.image(frame_grid(a.path), width=320, caption=tr("瀏覽器不一定播得了這種影片；這是模型讀到的其中幾張畫格",
                                                      "Browsers may not play this kind of video; here are some of the frames the model reads"))
@@ -925,7 +925,7 @@ def viz_panel(llm: "Backend | PiAgent"):
     # The switcher keeps its own width; in a narrow column the caption wraps under it.
     with st.container(horizontal=True, vertical_alignment="center"):
         names = {"loop": tr("迴圈", "Loop"), "context": tr("脈絡", "Context"), "model": tr("模型", "Model")}
-        view = st.segmented_control(tr("檢視", "View"), list(names), format_func=names.get, key="viz_tab", required=True, label_visibility="collapsed")
+        view = st.segmented_control(tr("檢視", "View"), list(names), format_func=names.__getitem__, key="viz_tab", required=True, label_visibility="collapsed")
         if run and len(runs) > 1:
             st.caption(tr(f"第 {index + 1} 輪：{run.text[:40]}", f"Turn {index + 1}: {run.text[:40]}"))
 
@@ -933,10 +933,11 @@ def viz_panel(llm: "Backend | PiAgent"):
     with st.container(height=BOX_HEIGHT, border=False, key=f"{view}_view"):
         if view == "context":
             context_panel(index, data)
-        elif view == "model" and isinstance(llm, PiAgent):
-            pi_model_panel(llm, data)
         elif view == "model":
-            model_panel(llm, data)
+            if isinstance(llm, PiAgent):
+                pi_model_panel(llm, data)
+            else:
+                model_panel(llm, data)
         else:
             loop_panel(index, run, data, llm.model_id)
 
@@ -944,7 +945,7 @@ def viz_panel(llm: "Backend | PiAgent"):
 def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_id: str):
     lang, harness = st.session_state.lang, st.session_state.harness
     st.html(render.diagram_html(data, st.context.theme.type == "dark", lang, model=model_id, harness=harness))
-    if data is None:
+    if data is None or run is None:
         st.html(render.PI_INTRO[st.session_state.pi_source][lang] if harness == "pi" else render.INTRO[lang])
         return
     st.caption(render.run_stats(data, lang))
@@ -972,7 +973,7 @@ def context_panel(index: int | None, data: dict | None):
                    "Once you send a question, this shows the request pi sends the model in each step, and, when pi asks this page's model, "
                    "the whole string the model read."))
         return
-    if not steps:
+    if not steps or data is None:
         st.info(tr("送出問題後，這裡會顯示每一步模型實際讀到的完整字串。", "Once you send a question, this shows the whole string the model read in each step."))
         return
     key = f"ctx_step_{index}"
@@ -1079,7 +1080,7 @@ def agent_page():
         polling = own_live or other_tab_run() is not None
         harness_picker(polling)
         if pi_picked():
-            llm = pi_picker(polling)
+            llm: Backend | PiAgent = pi_picker(polling)
         else:
             model_picker(model_menu(), polling)
             llm = current_llm()
@@ -1090,9 +1091,10 @@ def agent_page():
             st.button(tr("再試一次", "Try again"), icon=":material/refresh:", on_click=retry_vllm)
         if isinstance(e, pi_harness.PiError):  # and the switch back to the built-in harness
             st.button(tr("再試一次", "Try again"), icon=":material/refresh:", on_click=retry_pi)
-        if unsupported:  # and the menu has the models the page does support
+        if isinstance(e, vllm_backend.UnsupportedModel):  # and the menu has the models the page does support
             ask_for_model(e)
         st.stop()
+    model: Callable[[], Backend | PiAgent | None]  # what the workspace draws, None once it has been let go
     if isinstance(llm, PiAgent):
         pi_sidebar(llm, own_live, polling)
         if llm.llm:  # the page's own model, held weakly as below
@@ -1137,7 +1139,7 @@ def language_switch():
         picked = st.context.cookies.get(LANG_COOKIE)
         st.session_state.lang = picked if picked in LANGS else from_locale(st.context.locale)
     with st.container(key="lang_switch"):
-        st.segmented_control("Language / 語言", list(LANGS), format_func=LANGS.get, key="lang", required=True,
+        st.segmented_control("Language / 語言", list(LANGS), format_func=LANGS.__getitem__, key="lang", required=True,
                              label_visibility="collapsed", on_change=pick_lang)
         if st.session_state.get("lang_picked"):
             cookie = f"{LANG_COOKIE}={st.session_state.lang}; path=/; max-age=31536000; SameSite=Lax"  # a year

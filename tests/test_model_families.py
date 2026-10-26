@@ -5,8 +5,8 @@ import re
 import pytest
 
 from agent import model_families
-from agent.model_families import GEMMA4, QWEN3_5
 from agent.i18n import LANGS
+from agent.model_families import GEMMA4, QWEN3_5
 
 CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
 

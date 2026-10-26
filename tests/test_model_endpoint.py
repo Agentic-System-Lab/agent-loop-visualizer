@@ -12,11 +12,11 @@ import urllib.request
 
 import pytest
 
-from fakes import FakeLLM, qwen_tool_call, tool_call
-from agent.model_backends.backend import Sampling
-from agent.model_families import GEMMA4, QWEN3_5
 from agent.harnesses import model_endpoint
 from agent.harnesses.model_endpoint import conversation, endpoint
+from agent.model_backends.backend import Sampling
+from agent.model_families import GEMMA4, QWEN3_5
+from fakes import FakeLLM, qwen_tool_call, tool_call
 
 SYSTEM = {"role": "system", "content": "You are an expert coding assistant operating inside pi."}
 BASH = {"type": "function", "function": {"name": "bash", "description": "Run a command",

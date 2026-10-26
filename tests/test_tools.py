@@ -417,7 +417,7 @@ def test_the_sandbox_image_agrees_with_tools():
 
 def test_the_sandbox_image_installs_a_pip_without_the_revoked_certificates_by_hash():
     """pip below 26.2.2 also trusts its own copy of certifi, which still has eMudhra's compromised emSign certificates."""
-    [line] = [l for l in (SANDBOX / "Dockerfile").read_text().splitlines() if '"pip @ ' in l]
+    [line] = [text for text in (SANDBOX / "Dockerfile").read_text().splitlines() if '"pip @ ' in text]
     version = re.search(r"/pip-([\d.]+)-py3-none-any\.whl#sha256=[0-9a-f]{64}\"", line).group(1)
     assert tuple(map(int, version.split("."))) >= (26, 2, 2)
 

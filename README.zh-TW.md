@@ -65,6 +65,8 @@ docker build -t agent-loop-sandbox agent/sandbox    # 選用：「讓模型寫�
 
 > 下載時出現 401，可是模型明明是公開的？多半是本機存的 Hugging Face token 過期了。重新登入（`uv run hf auth login`），或加上 `HF_HUB_DISABLE_IMPLICIT_TOKEN=1` 不送 token。
 
+> 在 `agent/` 還叫 `harness/` 的時候就 clone 了？Python 在那裡寫的 `__pycache__` 資料夾 git 會忽略，所以 pull 之後它們還留著，看起來像一個空的 `harness/`。沒有程式會 import 它；`git clean -fdX harness` 會刪掉它，而且只刪其中 git 忽略的檔案。
+
 ## 可以試試看的實驗
 
 1. **只是聊天機器人**：在側欄關掉「使用工具」，問「台北現在幾點？」。模型看不到任何工具，只能猜或承認不知道。打開工具再問一次，比較兩次的脈絡分頁。
@@ -83,7 +85,7 @@ docker build -t agent-loop-sandbox agent/sandbox    # 選用：「讓模型寫�
 
 ## 架構
 
-專案分成兩塊。`agent/` 跑一輪：跑 agent 迴圈的 harness、工具、模型家族，以及跑模型的那一層。`app/` 是你看到的東西：網頁、它從 agent 的事件畫出來的 HTML，還有運作說明。兩塊的依賴只有一個方向：`app/` 建在 `agent/` 上面，`agent/` 裡沒有任何東西 import `app/` 或 Streamlit，所以迴圈不需要網頁就能跑、也能測。
+專案分成兩塊。`agent/` 跑一輪：跑 agent 迴圈的 harness、工具、模型家族，以及跑模型的那一層。`app/` 是你看到的東西：網頁、它從 agent 的事件畫出來的 HTML，還有運作說明。兩塊的依賴只有一個方向：`app/` 建在 `agent/` 上面，`agent/` 裡沒有任何東西 import `app/` 或 Streamlit（`test_layout.py` 會檢查），所以迴圈不需要網頁就能跑、也能測。
 
 ```
 streamlit_app.py       Streamlit 從這裡開始：每次重跑都執行 app/page.py 的 main()
@@ -249,6 +251,7 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 - **pi 自己的模型**：pi 登入過的模型（Claude、GPT、Gemini，或它 `models.json` 裡任何相容的端點），這台電腦不載入模型。API 傳回來的是文字，不是 token，所以沒有 token 的機率、候選和特殊 token，API 那邊怎麼把請求寫成模型讀的字串也沒有人說：一個 step 顯示 pi 的請求、一段段傳回來的文字、provider 報的 token 數（以及其中多少來自 cache），和照 pi 的價目估的費用。
 
 ```bash
+nvm use                                          # 用 nvm 的話：照 .nvmrc 換成 Node 22，pi 也要裝在它底下，因為 nvm 的全域套件是每個版本各裝各的
 npm install -g @earendil-works/pi-coding-agent   # pi 1.4 需要 Node.js 22.19 以上
 pi                                               # 再輸入 /login 登入一次；或在啟動 app 之前設好 API key，例如 ANTHROPIC_API_KEY
 PI_COMMAND=/path/to/pi uv run streamlit run streamlit_app.py   # pi 不在 PATH 上的話（任何指令都行，npx 也可以）
@@ -306,6 +309,8 @@ Qwen 不管回答完或要用工具都停在 `<|im_end|>`，所以 harness 是�
 
 ```bash
 uv run pytest                                          # 約 40 秒，不載入模型權重、不連網路
+uv run ruff check                                      # lint：可能的 bug、沒用到的 import、import 的順序（加 --fix 會排好）
+uv run mypy                                            # 型別：agent/ 和 app/ 每個函式都檢查，tests/ 只檢查有標型別的地方
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma（含 MTP 草稿模型）和 Qwen，約 4 分鐘；加 -k Qwen 只跑一個
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # 問一台正在跑的 vLLM 伺服器
 RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real                        # 用 Qwen3.5 在 Docker 裡啟動 vLLM，問它一個問題
@@ -315,6 +320,8 @@ RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real                   
 大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，和 `SimpleBackend` 一樣是一個 `Backend`（`backend.py`），所以 harness 和網頁可以從頭跑到尾。需要 pi 的地方，測試啟動的是 `tests/fake_pi.py`，它照劇本說 pi 1.4 的 RPC 協定，所以不需要 Node，也不需要模型。
 
 網頁收的每一種檔案格式都有測試：`tests/samples.py` 用範例的檔案做出每種格式的小檔案（收據的每種圖片格式、錄音的每種聲音格式、滾動的球的每種影片格式、銷售資料的每種資料格式）。`media.py` 多收了一種格式卻沒有對應的範例檔，`test_media.py` 就會失敗；`test_real_model.py` 拿每一種格式問兩個模型。需要 Docker 的測試只在 Docker 和沙箱 image 都在時才跑。
+
+每次 push 和 pull request，`.github/workflows/checks.yml` 都會在 Ubuntu 上跑 `ruff check`、`mypy` 和 `uv run pytest`；需要模型、沙箱 image、vLLM 伺服器或 pi 的測試在那裡會跳過。
 
 運作說明會引用程式碼，`tests/guide_excerpts.txt` 存著它引用的每一段程式，不含行號。改到被引用的程式時，`test_guide.py` 會失敗，並列出引用它的段落：重讀那幾段，把不再正確的說明改掉，再用 `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py` 重寫這個檔案。
 
@@ -335,6 +342,7 @@ RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real                   
 | `test_vllm_docker.py` | 在 Docker 裡啟動 vLLM，Docker 在 `subprocess` 這一層換成假的：先照固定的 commit 下載權重，再用模型、它的 revision 和 `models/` 以 `docker compose up` 跑 `docker-compose/compose.yaml`，Docker 有 nvidia runtime（或 `AGENT_LOOP_VLLM_DEVICE` 指定）時再疊上 `compose.gpu.yaml`；模型已經在跑的伺服器不會再啟動一次，換模型會換掉它；沒有 Docker、Docker 沒在執行、沒有 Compose、`docker compose up` 失敗、容器因為記憶體不夠被停掉、容器結束（列出記錄裡的例外，原因在前）和伺服器一直沒回應，都用兩種語言說明；Compose 還在忙時頁面重跑，也會停掉它；`docker compose down`；程式要求的模型在啟動失敗後還記著，直到停掉為止；結束程式時停掉它啟動的伺服器（沒有的話不碰 Docker）；在 GPU 上 MTP 用 Gemma 照固定 commit 的草稿模型（先下載）或 Qwen 自己的 MTP 層，在 CPU 上或沒要求時都不開，切換時重新啟動伺服器。compose 檔：只聽 127.0.0.1、`models/` 唯讀又離線、預設是固定 commit 的 Qwen3.5、GPU 版是同一個 vLLM、除了只給 CPU 的那個以外參數都一樣，再加上和 CPU 一樣大的 KV cache、偏低的 `--gpu-memory-utilization`，以及手動啟動時不開的推測解碼（有設定時統計才設成 detailed，沒有設定時 vLLM 不收），Docker Compose 也把網頁給的設定原封不動交給 vLLM，Docker Compose 讀得懂兩個檔、掛載的是相對的 `AGENT_LOOP_MODELS` 指的資料夾（有裝的話）；設了 `RUN_VLLM_DOCKER_TESTS=1` 時，Docker 裡真的伺服器透過 `VLLMBackend` 回答，Docker 有 GPU 時先開 MTP、再不開各一次 |
 | `test_media.py` | 網頁收的每一種格式都有範例檔、被當成正確的種類（聲音對 Qwen 是一般檔案）、解碼得出來；存檔的名字不重複也不含奇怪字元；問題的 part 和寫出文字檔欄位名稱的說明；照片轉正、聲音改成模型的取樣率、影片畫格平均取、畫格率跟著調整；每種聲音和影片播放時的類型，以及 MKV 影片改顯示的畫格 |
 | `test_guide.py` | 運作說明頁的每個程式片段和行號都找得到，並連到 GitHub 上頁面那個 commit 的那幾行、事件表指向真的送出事件的那一行、HTML 標籤成對；每段引用的程式和 `tests/guide_excerpts.txt` 一致，改到那段程式才會變，只是換了行號不會；中英文每一段指向同樣的程式和段落，英文版沒有留下中文；每組頁籤都是已知 backend 或模型的 radio button、各有一個面板，沒有 script 也切換得了，`compose.yaml` 的片段停在該停的那一行；產生的靜態頁有亮色和暗色兩套配色與迴圈圖、寫出對應的 commit，根目錄的頁面會送到正確的語言 |
+| `test_layout.py` | `agent/` 裡沒有任何檔案 import `app` 或 Streamlit，不論寫在檔案開頭還是函式裡，從每個檔案的語法樹讀出來：agent 不認識網頁 |
 | `test_real_model.py` | 預設跳過。每個模型：載入的模型是一個 `Backend`；greedy 解碼和 `model.generate()` 一致，純文字、附上圖片、影片和（Gemma）錄音都一樣，之後再問純文字也一樣；真的模型能呼叫計算機並回答；每一種圖片格式都讀得出收據的總計、每一種聲音格式都寫得出錄音的內容（Gemma；Qwen 收到的是一般檔案）、每一種影片格式都看得出球往哪邊滾、每一種資料格式都能用 `run_python` 打開，也寫得出在沙箱裡跑得動的程式（有 Docker 時）；Gemma 開 MTP 時 greedy 輸出和不開一模一樣（附上圖片也是），而且草稿真的有被收下；在 CUDA 上，暖機過的模型放掉之後，GPU 記憶體會全部還回去；裝了 pi 的話，真的 pi 透過模型端點問這個模型，呼叫 bash 再回答，每個 token 都畫得出來 |
 
 ## 已知限制
