@@ -1,7 +1,9 @@
 /* The 運作說明 page (guide.py) inlines this after the page body. The table of contents stays at
    the top of the window as one line; this keeps that line on the section you are reading and
    closes the open list after a jump, a click elsewhere or Escape. Without it the list still works.
-   It also remembers the language picked on the 中文 | English switch, for index.html to go by. */
+   It has every set of backend tabs show the backend picked last, and every set of model tabs the
+   model, and remembers those picks and the language picked on the 中文 | English switch, for the
+   next visit and index.html to go by. Without it each set of tabs still switches on its own. */
 
 const toc = document.querySelector(".g-toc details");
 const now = toc.querySelector(".g-toc-now");
@@ -31,6 +33,49 @@ document.addEventListener("keydown", (e) => {
     toc.querySelector("summary").focus();
   }
 });
+// Tabs, one per backend or one per model: picking one in a set picks the same in every other set of that kind that
+// has it. A key with a dash is a narrower one of the key before it ("vllm-docker" of "vllm", any vLLM server), and the
+// two stand for each other: a set already on a narrower one stays on it when the broader one is picked. A set without
+// the pick stays as it is.
+const tabSets = [...document.querySelectorAll(".g-tabs")];
+const related = (a, b) => a === b || a.startsWith(b + "-") || b.startsWith(a + "-");
+
+function showTab(kind, key) {
+  for (const set of tabSets) {
+    if (set.dataset.kind !== kind) continue;
+    const tabs = [...set.querySelectorAll(".g-tab-bar input")];
+    const current = tabs.find((t) => t.checked);
+    const next = tabs.find((t) => t.value === key)
+      || (current && related(current.value, key) ? current : tabs.find((t) => related(t.value, key)));
+    if (next) next.checked = true;
+  }
+}
+
+const picked = {};  // kind -> the key picked last, kept as "tab-<kind>"
+for (const kind of new Set(tabSets.map((set) => set.dataset.kind))) {
+  try { picked[kind] = localStorage.getItem("tab-" + kind); } catch (err) {}
+  if (picked[kind]) showTab(kind, picked[kind]);
+}
+if (Object.values(picked).some(Boolean)) {
+  document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView();  // the tabs above it may have changed height
+}
+document.addEventListener("change", (e) => {
+  const tab = e.target.closest(".g-tab-bar input");
+  if (!tab) return;
+  // Sets above this one change height; keep it where it was on the screen. The browser's own scroll anchoring is
+  // off meanwhile, so the two do not both move the page.
+  const set = tab.closest(".g-tabs");
+  const kind = set.dataset.kind;
+  const top = set.getBoundingClientRect().top;
+  document.documentElement.style.overflowAnchor = "none";
+  showTab(kind, tab.value);
+  scrollBy(0, set.getBoundingClientRect().top - top);
+  requestAnimationFrame(() => { document.documentElement.style.overflowAnchor = ""; });
+  const was = picked[kind];
+  if (!(was && was.startsWith(tab.value + "-"))) picked[kind] = tab.value;  // "vllm" keeps the kind of server picked before
+  try { localStorage.setItem("tab-" + kind, picked[kind]); } catch (err) {}
+});
+
 addEventListener("scroll", update, { passive: true });
 addEventListener("resize", update);
 update();

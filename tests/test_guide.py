@@ -17,12 +17,13 @@ from pathlib import Path
 import pytest
 
 from app import guide
-from app.guide import Code, span, statement_end
+from app.guide import Code, Tabs, span, statement_end
 from harness.i18n import LANGS
 from html_check import assert_balanced
 
-CODES = [item for sec in guide.SECTIONS for item in sec.body if isinstance(item, Code)]
-PROSE = [guide.INTRO] + [text for sec in guide.SECTIONS for text in (sec.title, sec.lead, *sec.body) if not isinstance(text, Code)]
+CODES = [item for sec in guide.SECTIONS for item in guide.parts(sec.body) if isinstance(item, Code)]
+PROSE = [guide.INTRO] + [text for sec in guide.SECTIONS for text in (sec.title, sec.lead, *guide.parts(sec.body)) if not isinstance(text, Code)]
+TAB_SETS = [item for sec in guide.SECTIONS for item in sec.body if isinstance(item, Tabs)]
 CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
 
 
@@ -33,6 +34,9 @@ def bilingual():
     yield from (code.caption for code in CODES if code.caption)
     for _, _, _, carries, shows in guide.EVENTS:
         yield from (carries, shows)
+    for title, tabs in guide.TAB_KINDS.values():
+        yield title
+        yield from (label for label, _ in tabs.values())
 
 
 def paragraphs():
@@ -73,7 +77,7 @@ def quoted_sections() -> dict[str, str]:
     """What each part of the page quotes, by section key; "intro" and "events" are the introduction
     and the event table. Line numbers are left out, so an edit elsewhere in a file changes nothing."""
     blocks = {"intro": quoted([guide.INTRO])}
-    blocks |= {sec.key: quoted([sec.title, sec.lead, *sec.body]) for sec in guide.SECTIONS}
+    blocks |= {sec.key: quoted([sec.title, sec.lead, *guide.parts(sec.body)]) for sec in guide.SECTIONS}
     blocks["events"] = "\n\n".join(chip(file, text) for _, file, text, _, _ in guide.EVENTS)
     return {key: block for key, block in blocks.items() if block}
 
@@ -145,7 +149,7 @@ def test_the_snapshot_follows_the_quoted_code_not_its_line_numbers(tmp_path, mon
     lines = agent_py.read_text(encoding="utf-8").splitlines()
     lines[span(code)[0] - 1] += "  # edited"
     agent_py.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    sec = next(sec for sec in guide.SECTIONS if code in sec.body)
+    sec = next(sec for sec in guide.SECTIONS if code in guide.parts(sec.body))
     assert sec.key in changed_sections(snapshot_text(before), quoted_sections())
 
 
@@ -216,6 +220,56 @@ def test_page_html(lang):
     if lang == "en":  # the code is the same on both pages; everything around it is in English
         words = prose.replace("中文", "").replace("＃", "")  # the switch's other language, the events' number mark
         assert not CJK.search(words), words[CJK.search(words).start() - 80:][:160]
+
+
+def test_every_set_of_tabs_is_one_tab_per_backend_or_per_model():
+    kinds = [set(tabs) for _, tabs in guide.TAB_KINDS.values()]
+    assert not set.intersection(*kinds)  # a key says which kind its set of tabs is
+    assert {tabs.kind for tabs in TAB_SETS} == set(guide.TAB_KINDS)
+    for tabs in TAB_SETS:
+        assert 2 <= len(tabs.panels) <= guide.MAX_TABS, list(tabs.panels)  # guide.css hides the panels not picked up to MAX_TABS
+        assert set(tabs.panels) <= set(guide.TAB_KINDS[tabs.kind][1]), list(tabs.panels)
+        for body in tabs.panels.values():
+            assert body and not any(isinstance(item, Tabs) for item in body)
+    files = next(sec for sec in guide.SECTIONS if sec.key == "files")
+    assert [list(t.panels) for t in files.body if isinstance(t, Tabs)] == [
+        ["transformers", "vllm-docker", "vllm-url"], ["transformers", "vllm"], ["gemma4", "qwen3_5", "gemma4-drafter"]]
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_tabs_are_radio_buttons_that_switch_without_a_script(lang):
+    html = guide.page_html("0123456789abcdef", lang)
+    sets = re.findall(r'<div class="g-tabs" data-kind="(\w+)">(.*?)</div><div class="g-panel">', html, re.S)
+    assert len(sets) == len(TAB_SETS)
+    names = []
+    for (kind, bar), tabs in zip(sets, TAB_SETS):
+        title, labels = guide.TAB_KINDS[kind]
+        assert kind == tabs.kind and f'role="radiogroup" aria-label="{title[lang]}"' in bar
+        radios = re.findall(r'<input type="radio" name="([\w-]+)" value="([\w-]+)"( checked)?>', bar)
+        assert [value for _, value, _ in radios] == list(tabs.panels)
+        assert [checked for _, _, checked in radios] == [" checked"] + [""] * (len(radios) - 1)  # the first tab shows until one is picked
+        assert len({name for name, _, _ in radios}) == 1
+        names.append(radios[0][0])
+        for key in tabs.panels:
+            label, small = labels[key]
+            assert f"<span>{guide.esc(label[lang])}</span><small>{guide.esc(small)}</small>" in bar
+    assert len(set(names)) == len(names)  # each set is a radio group of its own
+    assert html.count('class="g-panel"') == sum(len(t.panels) for t in TAB_SETS)
+    css = guide.stylesheet()
+    for n in range(1, guide.MAX_TABS + 1):  # the rule that shows only the picked tab's panel
+        assert f"label:nth-child({n}) > input:not(:checked)) > .g-panel:nth-child({n + 1})" in css
+    js = (guide.ASSETS / "guide.js").read_text(encoding="utf-8")
+    assert 'localStorage.setItem("tab-" + kind' in js and 'localStorage.getItem("tab-" + kind)' in js  # each kind's pick holds across the page and visits
+
+
+def test_an_excerpt_of_a_file_other_than_python_ends_where_it_says():
+    code = Code("docker-compose/compose.yaml", "- ${AGENT_LOOP_MODELS:-../models}:/models:ro", end='HF_HUB_OFFLINE: "1"')
+    lo, hi = span(code)
+    lines = guide.source(code.file)[0]
+    assert guide.source(code.file)[1] is None
+    assert 'HF_HUB_OFFLINE: "1"' in lines[hi - 1] and hi - lo < 10
+    assert span(Code(code.file, code.start)) == (lo, lo)
+    assert '<span class="nt">' in guide.code_html(code, "en")  # highlighted as YAML
 
 
 def test_stylesheet_has_both_palettes():

@@ -187,6 +187,44 @@ harness/backends/simple_backend.py: def _download(
             return model_id
         return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
 
+harness/backends/vllm_docker.py: say("download", "") … snapshot_download(drafter
+    say("download", "")
+    snapshot_download(model_id, revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
+    if config and (drafter := config.get("model")):  # the server reads models/ offline, its drafter's weights too
+        snapshot_download(drafter, revision=config["revision"], cache_dir=MODELS_DIR)
+
+[[harness/backends/vllm_docker.py|"AGENT_LOOP_MODELS": str(MODELS_DIR)]]
+    "AGENT_LOOP_MODELS": str(MODELS_DIR), "VLLM_SPECULATIVE_CONFIG": json.dumps(config) if config else "None",
+
+docker-compose/compose.yaml: - ${AGENT_LOOP_MODELS:-../models}:/models:ro … HF_HUB_OFFLINE: "1"
+      - ${AGENT_LOOP_MODELS:-../models}:/models:ro  # the project's models/; by hand, a full path, since Compose takes a relative one from here
+      # What vLLM compiles for a model, the first start's longest wait, kept for the next container that loads it.
+      - compile-cache:/root/.cache/vllm
+    environment:
+      HF_HUB_CACHE: /models
+      HF_HUB_OFFLINE: "1"
+
+docker-compose/compose.yaml: - ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B} … --served-model-name=
+    - ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+    - --revision=${VLLM_REVISION:-2fc06364715b967f1860aea9cf38778875588b17}
+    # Offline, vLLM names the model by its folder in models/; the page asks for it by its id.
+    - --served-model-name=${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
+
+[[harness/backends/vllm_backend.py|WEIGHTS = []]
+    WEIGHTS = ["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"]
+
+harness/backends/vllm_backend.py: def _checkpoint_files(
+    def _checkpoint_files(model_id: str) -> str:
+        """The model's folder in MODELS_DIR with everything but its weights, at the revision families.REVISIONS pins.
+        The server should load the same revision (vllm serve <model> --revision <commit>) so that both read the same
+        tokenizer and chat template."""
+        if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
+            return model_id
+        return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR, ignore_patterns=WEIGHTS)
+
+[[harness/backends/vllm_backend.py|def family_of(]]
+    def family_of(model_id: str) -> families.Family | None:
+
 [[harness/backends/simple_backend.py|def pick_device()]]
     def pick_device() -> str:
 
@@ -208,6 +246,18 @@ harness/backends/simple_backend.py: def _download(
 [[harness/backends/simple_backend.py|def _sampling_defaults(self)]]
     def _sampling_defaults(self) -> dict:
 
+[[harness/backends/vllm_backend.py|self.family = families.for_model_type(config.model_type)]]
+    self.family = families.for_model_type(config.model_type)
+
+[[harness/backends/vllm_backend.py|self.context_length = card.get(]]
+    self.context_length = card.get("max_model_len") or text_cfg.max_position_embeddings  # the server's limit (--max-model-len)
+
+[[harness/backends/vllm_backend.py|self.processor = AutoProcessor.from_pretrained(files)]]
+    self.processor = AutoProcessor.from_pretrained(files)
+
+[[harness/backends/vllm_backend.py|def _generation_config(]]
+    def _generation_config(folder: str, config) -> GenerationConfig:
+
 [[harness/families/qwen3_5.py|sampling={]]
     sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},
 
@@ -223,6 +273,9 @@ harness/backends/simple_backend.py: def _download(
 [[harness/families/qwen3_5.py|file_notes=FILES,]]
     file_notes=FILES,
 
+[[app/render.py|elif served and kind == "model.safetensors":]]
+    elif served and kind == "model.safetensors":
+
 harness/families/__init__.py: class FileNote:
     class FileNote:
         """What one file in a checkpoint's folder holds in this family. The Model tab shows the note next to the file,
@@ -233,17 +286,11 @@ harness/families/__init__.py: class FileNote:
 
 == submit ==
 
-[[harness/backends/simple_backend.py|torch._C._cuda_clearCublasWorkspaces()]]
-    torch._C._cuda_clearCublasWorkspaces()
-
 [[harness/backends/simple_backend.py|def _sampling_defaults(self)]]
     def _sampling_defaults(self) -> dict:
 
 [[app/page.py|key="model_id", on_change=switch_model]]
     st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy, help=about)
-
-[[harness/backends/simple_backend.py|def load_drafter(self):]]
-    def load_drafter(self):
 
 app/page.py: @st.cache_resource(max_entries=1 … def release_model():
     @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
@@ -258,6 +305,12 @@ app/page.py: @st.cache_resource(max_entries=1 … def release_model():
         load_llm.clear()
         gc.collect()
         empty_cache()
+
+[[harness/backends/simple_backend.py|torch._C._cuda_clearCublasWorkspaces()]]
+    torch._C._cuda_clearCublasWorkspaces()
+
+[[harness/backends/simple_backend.py|def load_drafter(self):]]
+    def load_drafter(self):
 
 [[app/page.py|if not st.session_state.get("engine_picked"):]]
     if not st.session_state.get("engine_picked"):
@@ -462,6 +515,43 @@ harness/backends/simple_backend.py: def _modalities(self)
         }
         return tuple(kind for kind, ok in reads.items() if ok)
 
+[[harness/backends/vllm_backend.py|self.modalities = tuple(kind for kind in readable if kind not in refused)]]
+    self.modalities = tuple(kind for kind in readable if kind not in refused)
+
+[[app/render.py|def refused_html(]]
+    def refused_html(server: dict | None, lang: str) -> str:
+
+harness/backends/vllm_backend.py: def _probe(
+    def _probe(self, hi: list[int], kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
+        """Ask the server, with one-token requests that start from `hi` (a short prompt's ids), whether it has
+        /inference/v1/generate (--enable-scale-out), whether it sends sampling masks (--return-sampling-mask), and which
+        of `kinds` (the checkpoint's media) it takes. A kind it does not take comes back with why, in both of the page's
+        languages."""
+        try:
+            out = self._generate_once(hi, [], top_k=2)
+        except ServerError as e:
+            if e.status is None:  # unreachable, not refused
+                raise
+            if e.status == 403:  # what vLLM answers on that route without --enable-scale-out
+                why = {"zh": "伺服器啟動時沒有加 `--enable-scale-out`，只有 /v1/completions 可用，而它只收文字。",
+                       "en": "the server was started without `--enable-scale-out`, so only /v1/completions is there, which takes text only."}
+            elif e.status == 404:  # a vLLM without the route
+                why = {"zh": "這個版本的 vLLM 沒有 /inference/v1/generate，只有 /v1/completions 可用，而它只收文字；新版 vLLM 加上 `--enable-scale-out` 才有。",
+                       "en": "this vLLM has no /inference/v1/generate, only /v1/completions, which takes text only; a newer vLLM started with `--enable-scale-out` has it."}
+            else:
+                why = {"zh": f"伺服器的 /inference/v1/generate 拒絕了請求，所以只用 /v1/completions，它只收文字（{e.text['en']}）",
+                       "en": f"the server's /inference/v1/generate refused a request, so only /v1/completions is used, which takes text only ({e.text['en']})"}
+            return False, False, {kind: why for kind in kinds}
+        masks = any(choice.get("sampling_mask") is not None for choice in out.get("choices") or [])
+        refused = {}
+        for kind in kinds:
+            prompt = self.render([{"role": "user", "content": [{"type": kind}, {"type": "text", "text": "Hi"}]}], None, False)
+            try:
+                self._generate_once(self.tokenizer(prompt, add_special_tokens=False).input_ids, [probe_part(kind, self.audio_rate)])
+            except ServerError as e:
+                refused[kind] = {"zh": f"伺服器不收：{e.text['en']}", "en": f"the server refused it: {e.text['en']}"}
+        return True, masks, refused
+
 [[harness/media.py|def save(]]
     def save(folder: Path, name: str, data: bytes, modalities: tuple[str, ...]) -> Attachment:
 
@@ -527,6 +617,26 @@ harness/backends/simple_backend.py: def _encoded_media(
             return inputs
         # The pixels go; the rest stays, such as the grid sizes Qwen3.5's positions are computed from.
         return {**{k: v for k, v in inputs.items() if not k.startswith("pixel_values")}, "mm_encoder_outputs": encoded}
+
+[[harness/backends/vllm_backend.py|def content_part(]]
+    def content_part(part: dict, audio_rate: int) -> dict:
+
+harness/backends/vllm_backend.py: def encode(self, prompt
+    def encode(self, prompt: str, parts: list[dict]) -> Encoded:
+        """The prompt's token ids, which are what the server reads. With media (`parts`, in the order of their
+        placeholders), the server expands each placeholder into the tokens its file takes, so it is asked how first, with
+        a one-token request; the text and the count are of the prompt as the server reads it, and the ids stay the ones
+        the chat template wrote, which generate() sends again with the files."""
+        ids = self.tokenizer(prompt, add_special_tokens=False).input_ids
+        if not parts:
+            return Encoded(prompt, ids, len(ids))
+        if unread := {p["type"] for p in parts} - set(self.modalities):  # media.save makes those plain files, so this is a bug
+            raise ValueError(f"The vLLM server takes no {', '.join(sorted(unread))} here, only {', '.join(self.modalities) or 'text'}.")
+        files = [content_part(p, self.audio_rate) for p in parts]
+        expanded = self._generate_once(ids, files, return_token_ids=True)["prompt_token_ids"]
+        counts = Counter(kind for token in expanded for kind, media_id in self.media_token_ids.items() if media_id is not None and token == media_id)
+        return Encoded(self.tokenizer.decode(expanded, skip_special_tokens=False), ids, len(expanded),
+                       {"content_parts": files, "prompt_token_ids": expanded}, dict(counts))
 
 == model ==
 
@@ -632,6 +742,54 @@ harness/backends/simple_backend.py: decode_s = time.perf_counter() - decode_star
         "raw": self.tokenizer.decode(generated, skip_special_tokens=False),
     }
 
+harness/backends/vllm_backend.py: def generate(self, prompt … yield {"type": "prefill"
+    def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
+        """Yield the events SimpleBackend.generate yields, from the server's stream: prefill once the first token is back
+        (its time is the time to the first token), one event per token, then done."""
+        channel = "thought" if prompt.text.endswith(self.family.thought_prefix) else "content"
+        generated: list[int] = []
+        text = ""
+        finish = None
+        end: dict = {}  # the finish reason and the speculative decoding counts, once the stream has them
+        start = time.perf_counter()
+        decode_start = None
+
+        # /inference/v1/generate when the server has it: it says more about each token, and takes media.
+        if self.generate_api:
+            tokens = self._stream_generate(prompt, sampling, end)
+        else:
+            tokens = self._stream(self._request(prompt, sampling), sampling, end)
+        try:
+            for token_id, details in tokens:
+                if decode_start is None:
+                    decode_start = time.perf_counter()
+                    yield {"type": "prefill", "n_tokens": prompt.n_tokens, "ms": round((decode_start - start) * 1000, 1)}
+
+[[harness/backends/vllm_backend.py|# From here on, as in SimpleBackend.generate.]]
+    # From here on, as in SimpleBackend.generate.
+
+[[harness/backends/vllm_backend.py|tokens.close()]]
+    tokens.close()  # closing the stream early tells the server to stop generating
+
+harness/backends/vllm_backend.py: if finish is None: … "raw": self.tokenizer.decode(generated
+    if finish is None:
+        reason = end.get("finish_reason")
+        if reason not in ("stop", "length"):
+            raise ServerError(f"vLLM 伺服器沒有正常結束這一步（finish_reason：{reason}）。",
+                              f"The vLLM server did not finish this step normally (finish_reason: {reason}).")
+        finish = "stop_token" if reason == "stop" else "max_new_tokens"
+    decode_s = time.perf_counter() - decode_start
+    yield {
+        "type": "done",
+        "finish": finish,
+        "stop_piece": self.piece(generated[-1]) if finish == "stop_token" and generated else None,
+        "n_tokens": len(generated),
+        "decode_ms": round(decode_s * 1000, 1),
+        "tok_per_s": round(len(generated) / decode_s, 1) if decode_s > 0 else None,
+        "mtp": mtp_counts(end.get("spec"), len(generated)) if finish != "user_stopped" else None,
+        "raw": self.tokenizer.decode(generated, skip_special_tokens=False),
+    }
+
 == sampling ==
 
 harness/backends/simple_backend.py: def _sample(self, logits
@@ -684,6 +842,71 @@ harness/backends/simple_backend.py: def _sample(self, logits
                 for rank, (v, i) in enumerate(top)
             ],
         }
+
+harness/backends/vllm_backend.py: def _sampling_params(
+    def _sampling_params(self, prompt: Encoded, s: Sampling) -> dict:
+        """Each sidebar setting, and every other sampling setting set to do nothing, so that a default the server took
+        from the checkpoint (a repetition penalty, say) cannot change the distribution the page shows."""
+        return {
+            "max_tokens": max(1, min(s.max_new_tokens, self.context_length - prompt.n_tokens)),  # vLLM refuses a request that cannot fit
+            "temperature": max(s.temperature, 0.0),  # 0 is greedy there as here
+            "top_p": s.top_p,
+            "top_k": s.top_k,  # 0 is no limit there as here
+            "min_p": 0.0,
+            "repetition_penalty": 1.0,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0,
+            "stop_token_ids": sorted(self.eos_ids),
+        }
+
+harness/backends/vllm_backend.py: def _details(
+    def _details(self, token_id: int, logprobs: dict, n: int, s: Sampling) -> dict:
+        """What /v1/completions said about the n-th token of a chunk: its log probability, and those of the 5 most likely
+        tokens, keyed "token_id:<id>". The token's rank is known only when it is one of those 5."""
+        token_logprobs, top_logprobs = logprobs.get("token_logprobs") or [], logprobs.get("top_logprobs") or []
+        if n >= len(token_logprobs) or token_logprobs[n] is None:
+            return {}
+        logprob = token_logprobs[n]
+        listed = top_logprobs[n] if n < len(top_logprobs) and top_logprobs[n] else {}
+        # The chosen token is listed too, even when it is not among the 5.
+        listed = {int(k.removeprefix("token_id:")): v for k, v in listed.items() if k.startswith("token_id:")}
+        top = sorted(listed.items(), key=lambda c: (-c[1], c[0]))[:TOP_N]
+        rank = 1 + sum(v > logprob for _, v in top) if any(i == token_id for i, _ in top) else None
+        return self._token_details(token_id, logprob, listed, rank, None, s)
+
+[[harness/backends/vllm_backend.py|def logprobs_mode(]]
+    def logprobs_mode(listed: list[float]) -> str:
+
+harness/backends/vllm_backend.py: def _token_details(
+    def _token_details(self, token_id: int, logprob: float, listed: dict[int, float], rank: int | None,
+                       mask: list[int] | None, s: Sampling) -> dict:
+        """The details of a token event, from what the server said about the token: its log probability, those of the
+        tokens listed with it, its rank and its sampling mask when it sent them. What the numbers may be shown as
+        depends on the server's --logprobs-mode. Only the model's own log probabilities are p, logprob and the top 5.
+        Processed ones are the distribution the token was drawn from, so the token's is its sampling probability, and
+        the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
+        details = {"rank": rank} if rank else {}
+        if self.logprobs_mode == "raw_logprobs":
+            # Equally likely tokens go lowest id first, as in SimpleBackend.
+            ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
+            if rank is not None and rank > TOP_N:  # listed only because it was chosen
+                ranked = [c for c in ranked if c[0] != token_id]
+            top = [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in ranked[:TOP_N]]
+            details.update(p=math.exp(logprob), logprob=logprob, top=top)
+        elif self.logprobs_mode == "processed_logprobs":
+            details["p_sampled"] = math.exp(logprob)
+        if mask is not None:
+            details["kept"] = len(set(mask))
+        elif self.logprobs_mode.startswith("processed") and any(v <= UNREPORTED for v in listed.values()):
+            # Some of the most likely tokens were cut, and those left are more likely still, so all of them are listed.
+            details["kept"] = sum(v > UNREPORTED for v in listed.values())
+        return self._greedy(details, token_id, s)
+
+[[harness/backends/vllm_backend.py|def _refuses_greedy(]]
+    def _refuses_greedy(self, ids: list[int]) -> bool:
+
+[[harness/backends/vllm_backend.py|def _greedy(]]
+    def _greedy(self, details: dict, token_id: int, s: Sampling) -> dict:
 
 [[app/render.py|def heat(p: float)]]
     def heat(p: float) -> str:
@@ -777,6 +1000,33 @@ harness/backends/simple_backend.py: at = (cand_ids == draft) … pick = int(torc
             weights[at[0]] = 0
         pick = int(torch.multinomial(weights, 1))
 
+[[harness/families/__init__.py|VLLM_SPECULATIVE = {]]
+    VLLM_SPECULATIVE = {
+
+[[harness/backends/vllm_docker.py|def speculative(model_id]]
+    def speculative(model_id: str, where: str) -> dict | None:
+
+[[app/render.py|def with_drafts(]]
+    def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:
+
+harness/backends/vllm_backend.py: def drafted_tokens(
+    def drafted_tokens(accepted: list[int], drafted: list[int], n_tokens: int) -> dict | None:
+        """Which of a step's tokens were guesses the model kept (kept_at) and which replace a guess it turned down
+        (turned_down_at), from vLLM's per-step counts (--per-request-spec-decode-metrics detailed). The first token comes
+        from the prefill; after it, each verify step gives the guesses it kept and then one token of the model's own,
+        which replaces the next guess when it kept fewer than were drafted. vLLM does not count a step without guesses,
+        so when the steps do not account for every token, nobody can tell which tokens were guessed: None."""
+        kept, turned_down, at = [], [], 1
+        for n_kept, n_drafted in zip(accepted, drafted):
+            kept += range(at, at + n_kept)
+            if n_kept < n_drafted:
+                turned_down.append(at + n_kept)
+            at += n_kept + 1
+        last = accepted[-1] + 1 if accepted else 1
+        if not at - last < n_tokens <= at:  # only a stop token or the token limit may cut the last step short
+            return None
+        return {"kept_at": [i for i in kept if i < n_tokens], "turned_down_at": [i for i in turned_down if i < n_tokens]}
+
 == backends ==
 
 [[harness/backends/backend.py|class Backend(Protocol):]]
@@ -843,9 +1093,6 @@ harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
 [[app/render.py|def candidates_html(]]
     def candidates_html(tok: dict, family: families.Family, lang: str) -> str:
 
-[[harness/backends/vllm_backend.py|self.modalities = tuple(kind for kind in readable if kind not in refused)]]
-    self.modalities = tuple(kind for kind in readable if kind not in refused)
-
 [[tests/fakes.py|class FakeLLM:]]
     class FakeLLM:
 
@@ -864,126 +1111,8 @@ harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
 [[harness/backends/vllm_docker.py|def _stop_at_exit():]]
     def _stop_at_exit():
 
-[[harness/backends/vllm_backend.py|def _checkpoint_files(]]
-    def _checkpoint_files(model_id: str) -> str:
-
-harness/backends/vllm_backend.py: def _sampling_params(
-    def _sampling_params(self, prompt: Encoded, s: Sampling) -> dict:
-        """Each sidebar setting, and every other sampling setting set to do nothing, so that a default the server took
-        from the checkpoint (a repetition penalty, say) cannot change the distribution the page shows."""
-        return {
-            "max_tokens": max(1, min(s.max_new_tokens, self.context_length - prompt.n_tokens)),  # vLLM refuses a request that cannot fit
-            "temperature": max(s.temperature, 0.0),  # 0 is greedy there as here
-            "top_p": s.top_p,
-            "top_k": s.top_k,  # 0 is no limit there as here
-            "min_p": 0.0,
-            "repetition_penalty": 1.0,
-            "presence_penalty": 0.0,
-            "frequency_penalty": 0.0,
-            "stop_token_ids": sorted(self.eos_ids),
-        }
-
-harness/backends/vllm_backend.py: def _details(
-    def _details(self, token_id: int, logprobs: dict, n: int, s: Sampling) -> dict:
-        """What /v1/completions said about the n-th token of a chunk: its log probability, and those of the 5 most likely
-        tokens, keyed "token_id:<id>". The token's rank is known only when it is one of those 5."""
-        token_logprobs, top_logprobs = logprobs.get("token_logprobs") or [], logprobs.get("top_logprobs") or []
-        if n >= len(token_logprobs) or token_logprobs[n] is None:
-            return {}
-        logprob = token_logprobs[n]
-        listed = top_logprobs[n] if n < len(top_logprobs) and top_logprobs[n] else {}
-        # The chosen token is listed too, even when it is not among the 5.
-        listed = {int(k.removeprefix("token_id:")): v for k, v in listed.items() if k.startswith("token_id:")}
-        top = sorted(listed.items(), key=lambda c: (-c[1], c[0]))[:TOP_N]
-        rank = 1 + sum(v > logprob for _, v in top) if any(i == token_id for i, _ in top) else None
-        return self._token_details(token_id, logprob, listed, rank, None, s)
-
-[[harness/backends/vllm_backend.py|def logprobs_mode(]]
-    def logprobs_mode(listed: list[float]) -> str:
-
-harness/backends/vllm_backend.py: def _token_details(
-    def _token_details(self, token_id: int, logprob: float, listed: dict[int, float], rank: int | None,
-                       mask: list[int] | None, s: Sampling) -> dict:
-        """The details of a token event, from what the server said about the token: its log probability, those of the
-        tokens listed with it, its rank and its sampling mask when it sent them. What the numbers may be shown as
-        depends on the server's --logprobs-mode. Only the model's own log probabilities are p, logprob and the top 5.
-        Processed ones are the distribution the token was drawn from, so the token's is its sampling probability, and
-        the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
-        details = {"rank": rank} if rank else {}
-        if self.logprobs_mode == "raw_logprobs":
-            # Equally likely tokens go lowest id first, as in SimpleBackend.
-            ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
-            if rank is not None and rank > TOP_N:  # listed only because it was chosen
-                ranked = [c for c in ranked if c[0] != token_id]
-            top = [{"id": i, "piece": self.piece(i), "p": math.exp(v)} for i, v in ranked[:TOP_N]]
-            details.update(p=math.exp(logprob), logprob=logprob, top=top)
-        elif self.logprobs_mode == "processed_logprobs":
-            details["p_sampled"] = math.exp(logprob)
-        if mask is not None:
-            details["kept"] = len(set(mask))
-        elif self.logprobs_mode.startswith("processed") and any(v <= UNREPORTED for v in listed.values()):
-            # Some of the most likely tokens were cut, and those left are more likely still, so all of them are listed.
-            details["kept"] = sum(v > UNREPORTED for v in listed.values())
-        return self._greedy(details, token_id, s)
-
-[[harness/backends/vllm_backend.py|def _probe(]]
-    def _probe(self, hi: list[int], kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
-
-[[harness/backends/vllm_backend.py|def _refuses_greedy(]]
-    def _refuses_greedy(self, ids: list[int]) -> bool:
-
-[[harness/backends/vllm_backend.py|def _greedy(]]
-    def _greedy(self, details: dict, token_id: int, s: Sampling) -> dict:
-
-[[harness/backends/vllm_backend.py|def content_part(]]
-    def content_part(part: dict, audio_rate: int) -> dict:
-
-harness/backends/vllm_backend.py: def encode(self, prompt
-    def encode(self, prompt: str, parts: list[dict]) -> Encoded:
-        """The prompt's token ids, which are what the server reads. With media (`parts`, in the order of their
-        placeholders), the server expands each placeholder into the tokens its file takes, so it is asked how first, with
-        a one-token request; the text and the count are of the prompt as the server reads it, and the ids stay the ones
-        the chat template wrote, which generate() sends again with the files."""
-        ids = self.tokenizer(prompt, add_special_tokens=False).input_ids
-        if not parts:
-            return Encoded(prompt, ids, len(ids))
-        if unread := {p["type"] for p in parts} - set(self.modalities):  # media.save makes those plain files, so this is a bug
-            raise ValueError(f"The vLLM server takes no {', '.join(sorted(unread))} here, only {', '.join(self.modalities) or 'text'}.")
-        files = [content_part(p, self.audio_rate) for p in parts]
-        expanded = self._generate_once(ids, files, return_token_ids=True)["prompt_token_ids"]
-        counts = Counter(kind for token in expanded for kind, media_id in self.media_token_ids.items() if media_id is not None and token == media_id)
-        return Encoded(self.tokenizer.decode(expanded, skip_special_tokens=False), ids, len(expanded),
-                       {"content_parts": files, "prompt_token_ids": expanded}, dict(counts))
-
-[[harness/families/__init__.py|VLLM_SPECULATIVE = {]]
-    VLLM_SPECULATIVE = {
-
-[[harness/backends/vllm_docker.py|def speculative(model_id]]
-    def speculative(model_id: str, where: str) -> dict | None:
-
-[[app/render.py|def with_drafts(]]
-    def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:
-
-harness/backends/vllm_backend.py: def drafted_tokens(
-    def drafted_tokens(accepted: list[int], drafted: list[int], n_tokens: int) -> dict | None:
-        """Which of a step's tokens were guesses the model kept (kept_at) and which replace a guess it turned down
-        (turned_down_at), from vLLM's per-step counts (--per-request-spec-decode-metrics detailed). The first token comes
-        from the prefill; after it, each verify step gives the guesses it kept and then one token of the model's own,
-        which replaces the next guess when it kept fewer than were drafted. vLLM does not count a step without guesses,
-        so when the steps do not account for every token, nobody can tell which tokens were guessed: None."""
-        kept, turned_down, at = [], [], 1
-        for n_kept, n_drafted in zip(accepted, drafted):
-            kept += range(at, at + n_kept)
-            if n_kept < n_drafted:
-                turned_down.append(at + n_kept)
-            at += n_kept + 1
-        last = accepted[-1] + 1 if accepted else 1
-        if not at - last < n_tokens <= at:  # only a stop token or the token limit may cut the last step short
-            return None
-        return {"kept_at": [i for i in kept if i < n_tokens], "turned_down_at": [i for i in turned_down if i < n_tokens]}
-
-[[app/render.py|def refused_html(]]
-    def refused_html(server: dict | None, lang: str) -> str:
+[[app/page.py|def model_menu()]]
+    def model_menu() -> dict[str, str]:
 
 == parse ==
 
