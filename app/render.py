@@ -1259,10 +1259,11 @@ def folder_html(info: dict, lang: str) -> str:
     if server := info.get("server"):  # how goes through prose_html, which escapes it
         how += pick(
             lang,
-            f"{server['engine']} 伺服器自己讀權重，所以這裡只下載了 tokenizer、chat template 和設定檔，用來把 prompt render 成 token id；"
-            "伺服器啟動時用 `--revision` 指定同一個 commit，兩邊讀的就是同樣的檔案。",
-            f" The {server['engine']} server reads the weights itself, so only the tokenizer, the chat template and the settings are downloaded "
-            "here, to render the prompts into token ids; a server started with `--revision` at the same commit reads the same files.",
+            f"{server['engine']} 伺服器自己讀權重；這裡的檔案，網頁只讀 tokenizer、chat template 和設定檔，用來把 prompt render 成 token id。"
+            "伺服器啟動時用 `--revision` 指定同一個 commit，兩邊讀的就是同樣的檔案；vLLM (Docker) 讀的就是這個資料夾，唯讀掛上，權重也在這裡。",
+            f" The {server['engine']} server reads the weights itself; of the files here the page reads only the tokenizer, the chat template and "
+            "the settings, to render the prompts into token ids. A server started with `--revision` at the same commit reads the same files, and "
+            "vLLM (Docker) this very folder, mounted read-only, the weights included.",
         )
     drafter = info.get("drafter") or {}
     extra = ""
