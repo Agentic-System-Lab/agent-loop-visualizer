@@ -1,8 +1,8 @@
 """The interface between the harness and whatever runs the model.
 
-The harness (agent.Run) and the page (app/page.py) reach the model only through a Backend. It renders the
-conversation into a prompt with the model's chat template, encodes the prompt into the tokens the model reads,
-and generates, yielding the events render.py draws. The app runs one of two: simple_backend.SimpleBackend, transformers
+This project's harness (harnesses/simple_harness.SimpleHarness) and the page (app/page.py) reach the model only through
+a Backend. It renders the conversation into a prompt with the model's chat template, encodes the prompt into the tokens
+the model reads, and generates, yielding the events render.py draws. The app runs one of two: simple_backend.SimpleBackend, transformers
 on this machine, with a hand-written decoding loop that sees the whole distribution at every token, or
 vllm_backend.VLLMBackend, a vLLM server. tests/fakes.FakeLLM replays scripted replies. A backend that asks another
 serving engine, such as SGLang or Ollama, would be one more; this module says what it has to provide.

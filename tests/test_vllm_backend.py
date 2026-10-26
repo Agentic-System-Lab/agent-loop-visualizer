@@ -28,12 +28,12 @@ from transformers import AutoProcessor
 from app import render
 from fakes import MEDIA_TOKENS, PLACEHOLDERS, FakeLLM, fake_folder, pieces, qwen_tool_call, tool_call
 from harness import families, media
-from harness.agent import Run, RunSettings
 from harness.backends import vllm_backend
 from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
 from harness.backends.simple_backend import MODELS_DIR
 from harness.backends.vllm_backend import GENERATE, UNREPORTED, ServerError, UnsupportedModel, VLLMBackend
 from harness.families import GEMMA4, QWEN3_5
+from harness.harnesses.simple_harness import RunSettings, SimpleHarness
 from harness.i18n import LANGS, pick
 from html_check import assert_balanced
 from test_render import render_everything
@@ -637,7 +637,7 @@ def test_an_error_the_server_sends_mid_run_is_shown_in_the_pages_language(hub, l
     llm = connect(server)
     server.stream_error = {"message": "out of memory", "type": "InternalServerError", "code": 500}
     events = []
-    Run(llm, [], "Hi", RunSettings(lang="zh"), events.append).run()  # a turn started on the Chinese page
+    SimpleHarness(llm, [], "Hi", RunSettings(lang="zh"), events.append).run()  # a turn started on the Chinese page
     [error] = [e for e in events if e["type"] == "error"]
     assert error["text"] == {"zh": "ServerError: vLLM 伺服器在生成時出錯：out of memory", "en": "ServerError: The vLLM server failed while generating: out of memory"}
     data = render.build(events)
@@ -825,7 +825,7 @@ def test_the_harness_calls_a_tool_and_answers_over_vllm_and_every_moment_of_it_r
     server = Server([tool_call("calculator", expression="6*7"), ANSWER])
     llm = connect(server)
     events = []
-    Run(llm, [], "6 乘以 7 是多少？", RunSettings(), events.append).run()
+    SimpleHarness(llm, [], "6 乘以 7 是多少？", RunSettings(), events.append).run()
     end = events[-1]
     assert end["stop_reason"] == "no_tool_call" and end["final"] == "答案是 42。"
     results = [e for e in events if e["type"] == "tool_result"]
@@ -845,7 +845,7 @@ def test_a_server_that_drafts_shows_its_counts_in_the_step_without_underlines(hu
     server.spec = {"num_spec_steps": 3, "num_accepted_draft_tokens": 4, "num_draft_tokens": 6, "acceptance_histogram": [1, 0, 2],
                    "mean_acceptance_length": 2.3, "draft_acceptance_rate": 0.67, "num_spec_tokens": 2}
     events = []
-    Run(connect(server), [], "Hi", RunSettings(), events.append).run()
+    SimpleHarness(connect(server), [], "Hi", RunSettings(), events.append).run()
     data = render.build(events)
     html = render.step_html(data["steps"][0], data, lang="en", live=False)
     assert "MTP kept <b>4</b> / 6 guesses" in html and "3 decoding forward passes" in html
@@ -1066,7 +1066,7 @@ def test_a_question_with_an_image_runs_through_the_harness_and_every_moment_of_i
     llm = connect(server)
     photo = media.save(tmp_path, "receipt.png", (EXAMPLES / "receipt.png").read_bytes(), llm.modalities)
     events = []
-    Run(llm, [], "這張收據的總計是多少？", RunSettings(), events.append, [photo], tmp_path).run()
+    SimpleHarness(llm, [], "這張收據的總計是多少？", RunSettings(), events.append, [photo], tmp_path).run()
     assert events[-1]["stop_reason"] == "no_tool_call" and events[-1]["final"] == "答案是 42。"
     context = next(e for e in events if e["type"] == "context")
     assert context["media_tokens"] == {"image": MEDIA_TOKENS} and "<|image|>" * MEDIA_TOKENS in context["prompt"]
@@ -1095,7 +1095,7 @@ def test_per_step_counts_mark_the_guesses_once_the_step_is_done(hub):
     server = Server([ANSWER])  # 8 tokens: one from the prefill, then 2 + 1, 0 + 1 and 3, where the stop token ends it
     server.spec = DETAILED
     events = []
-    Run(connect(server), [], "Hi", RunSettings(), events.append).run()
+    SimpleHarness(connect(server), [], "Hi", RunSettings(), events.append).run()
     end = next(e for e in events if e["type"] == "model_end")
     assert end["mtp"] == {"drafted": 9, "accepted": 5, "forwards": 3, "kept_at": [1, 2, 5, 6, 7], "turned_down_at": [3, 4]}
     assert not any("draft" in e for e in events if e["type"] == "token")  # the events stay as the server sent them
@@ -1169,7 +1169,7 @@ def test_with_the_real_tokenizer_the_server_reads_the_prompt_the_page_shows(mode
     server.tokenizer = AutoProcessor.from_pretrained(folder).tokenizer  # the server answers with the real tokenizer's ids
     llm = connect(server, model_id)
     events = []
-    Run(llm, [], "6 乘以 7 是多少？", RunSettings(), events.append).run()
+    SimpleHarness(llm, [], "6 乘以 7 是多少？", RunSettings(), events.append).run()
     assert events[-1]["stop_reason"] == "no_tool_call" and events[-1]["final"] == "答案是 42。"
     contexts = [e for e in events if e["type"] == "context"]
     # The ids the server got are the real tokenizer's for the prompt the Context tab shows, special tokens whole.
@@ -1252,7 +1252,7 @@ def test_real_server_with_detailed_spec_counts_marks_guesses_that_add_up(served)
 @real_server
 def test_real_server_runs_the_calculator_and_answers(served):
     events = []
-    Run(served, [], "What is 1234 * 5678? Use the calculator.", RunSettings(sampling=greedy(served, 256)), events.append).run()
+    SimpleHarness(served, [], "What is 1234 * 5678? Use the calculator.", RunSettings(sampling=greedy(served, 256)), events.append).run()
     calls = [e for e in events if e["type"] == "tool_call"]
     assert calls and calls[0]["name"] == "calculator" and not calls[0]["errors"]
     assert events[-1]["stop_reason"] == "no_tool_call" and "7006652" in events[-1]["final"].replace(",", "")

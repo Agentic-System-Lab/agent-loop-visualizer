@@ -1,6 +1,6 @@
 """Model families: everything that changes when the model changes.
 
-The harness (agent.py), the decoding loop (simple_backend.py) and the page (render.py) are written once.
+This project's harness (harnesses/simple_harness.py), the decoding loop (simple_backend.py) and the page (render.py) are written once.
 What differs between Gemma 4 and Qwen3.5 is how the model writes its turns, its thinking and its
 tool calls, which tokens stop it, and what its control tokens mean. A family module describes all
 of that in one Family, and everything else asks the family.

@@ -331,7 +331,7 @@ def qwen_tool_call(name: str, **args) -> str:
 def record_run(outputs: list, user: str = "台北現在幾點？", history: list | None = None, sampling=None, family=None,
                attachments=(), files=None, **settings):
     """Run the harness to the end on the calling thread; return the run, its events and the fake model."""
-    from harness.agent import Run, RunSettings
+    from harness.harnesses.simple_harness import RunSettings, SimpleHarness
     from harness.backends.backend import Sampling
 
     fake = FakeLLM(list(outputs), family=family)
@@ -339,6 +339,6 @@ def record_run(outputs: list, user: str = "台北現在幾點？", history: list
         fake.drafter_id = fake.info["drafter_id"] = DRAFTER["model_id"]
         fake.load_drafter()
     events: list[dict] = []
-    run = Run(fake, history or [], user, RunSettings(sampling=sampling or Sampling(), **settings), events.append, attachments, files)
+    run = SimpleHarness(fake, history or [], user, RunSettings(sampling=sampling or Sampling(), **settings), events.append, attachments, files)
     run.run()
     return run, events, fake

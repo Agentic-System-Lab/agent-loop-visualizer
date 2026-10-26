@@ -9,6 +9,7 @@
 這個專案是學習用的：用更直覺、更視覺化的方式，讓你看懂 agent 迴圈在底層怎麼運作。Agent 的聊天框背後跑著一個迴圈：一步接著一步，模型提出動作、harness 去執行，直到停止。一般的聊天 app 只讓你看到問題和答案；這個網頁在每一步發生的當下把它畫出來，細到模型寫下的每一個 token，整個機制攤開在你眼前。畫面上的每個部分都對應 [Agent Atlas 技術與實戰交流](https://cyyeh.github.io/agent-atlas-learning/) unit 01 導讀的一節，本專案就是它的專案之一；[可以試試看的實驗](#可以試試看的實驗)則把這些概念變成可以自己動手試的實驗。
 
 - 模型：側欄可以選 [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) 或 [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)，在本機用 Hugging Face `transformers` 推論，也可以用 [vLLM](https://docs.vllm.ai/) 跑：在側欄的「用什麼跑模型」選 vLLM (Docker)，網頁會替你在 Docker 裡啟動一台 vLLM 伺服器，有 NVIDIA GPU 就用 GPU，否則用 CPU；或是設定 `VLLM_URL`，連到你自己的伺服器，在這台電腦上或有 GPU 的 Linux 機器上都行（見[在 vLLM 伺服器上跑模型](#在-vllm-伺服器上跑模型)）
+- Harness：迴圈是這個專案自己寫的（`harness/harnesses/simple_harness.py`），也可以在側欄的「用什麼跑迴圈」選 [pi](https://pi.dev)：這個 coding agent 會問它登入過的 Claude、GPT 或其他模型，網頁照 pi 回報的事件畫出它的每一步，只是看不到 token（「[pi 當 harness](#pi-當-harness)」）
 - MTP 推測解碼：一次 forward 產生好幾個 token。用 `transformers` 時，Gemma 4 E2B 可以在側欄打開（預設關閉），用 [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant) 當草稿模型；在有 GPU 的 vLLM 上兩個模型都會推測解碼，Gemma 4 E2B 用同一個草稿模型，Qwen3.5 用它自己 checkpoint 裡的 MTP 層，由網頁在 Docker 裡啟動的 vLLM 預設就打開
 - 檔案：用輸入框左邊的 ＋ 附上圖片和影片（兩個模型都行）、聲音（Gemma 4 E2B，也可以直接用麥克風錄音），或是在輸入框上方選一個範例檔案（收據、錄音、影片、銷售資料），自己問它問題；每個檔案在脈絡裡變成一串 token，畫面上看得到
 - 寫程式（選用）：在側欄打開「讓模型寫程式」，模型多一個 `run_python` 工具，它寫的 Python 在 Docker 沙箱裡執行，讀得到你附上的資料檔（CSV、TSV、JSON、純文字、Markdown、Excel），也能用 matplotlib 畫圖，圖會出現在聊天區。只有這個功能和 vLLM (Docker) 需要 Docker
@@ -30,7 +31,7 @@
 | 環境 | 工具實際回傳的結果與耗時；`run_python` 的程式碼寫在上面，印出來的東西或 traceback 寫在下面 | §2 環境與可觀察的狀態 |
 | 停止 | 停止原因和停止 token。Gemma 回答完停在 `<turn\|>`（相當於 end_turn）、要工具時停在 `<\|tool_response>`（相當於 tool_use）；Qwen 兩種都停在 `<\|im_end\|>`。另外還有步數上限、token 上限、使用者中斷 | §5 什麼時候停 |
 | 模型分頁 | 參數量拆解、層數與層的種類、注意力頭數、脈絡上限、模型讀得懂什麼（文字、圖片、聲音、影片）、MTP 草稿模型、解碼設定的說明、每一步的 prefill 時間與 tok/s（開 MTP 時加上草稿收下幾個、解碼 forward 幾次），tokenizer 全部特殊 token 的 id 與用途（Gemma 24 個、Qwen 33 個），以及 `models/` 裡這個模型資料夾的每個檔案：大小、用途、在這個模型裡裝了什麼、關鍵欄位的值 | §1、§7 Agent 是系統 |
-| 運作說明頁 | 一輪對話的 18 個階段（包括圖片怎麼變成 token、MTP 怎麼猜、怎麼驗證，以及模型可以交給誰跑），每段附上做這件事的程式碼片段和行號，點了會在 GitHub 上打開那幾行，有中文和英文兩版。放在 GitHub Pages，行號在產生頁面時從原始碼查出來，連結指向那個 commit；每次推上 main 都會重新產生，程式改了會跟著更新 | 全部 |
+| 運作說明頁 | 一輪對話的 19 個階段（包括圖片怎麼變成 token、MTP 怎麼猜、怎麼驗證、模型可以交給誰跑，以及把迴圈交給 pi），每段附上做這件事的程式碼片段和行號，點了會在 GitHub 上打開那幾行，有中文和英文兩版。放在 GitHub Pages，行號在產生頁面時從原始碼查出來，連結指向那個 commit；每次推上 main 都會重新產生，程式改了會跟著更新 | 全部 |
 
 ## 快速開始
 
@@ -43,6 +44,7 @@
 - [uv](https://docs.astral.sh/uv/) 0.13.4 以上（會自動裝好 Python 3.12）。更舊的版本還信任 eMudhra 那批外洩的 emSign 憑證（[公告](https://discuss.python.org/t/109576)），所以 `uv sync` 會拒絕執行；用 `uv self update`（或 `brew upgrade uv`）更新
 - 網路：第一次下載模型，以及 Wikipedia 工具
 - 選用：[Docker](https://docs.docker.com/get-started/get-docker/)（Docker Desktop、OrbStack 或 Colima），只有讓模型寫程式、或用 vLLM (Docker) 跑模型時才需要
+- 選用：[pi](https://pi.dev) 和 Node.js 22.19 以上，只有要把迴圈交給 pi 時才需要（「[pi 當 harness](#pi-當-harness)」）
 
 ```bash
 uv sync
@@ -91,7 +93,11 @@ app/                   你看到的東西，站在 harness 上面
   guide.py             「運作說明」頁：中英文內容、行號查詢，以及產生放上 GitHub Pages 的靜態 HTML
   assets/              網頁的樣式和運作說明的 script；logo.svg；examples/ 是範例附上的檔案，也是輸入框上方的範例檔案
 harness/               跑一輪的東西；從不 import Streamlit
-  agent.py             迴圈：組 prompt → 生成 → 解析 → 驗證 →（先問你）→ 執行工具 → 接回脈絡 → 判斷要不要停
+  harnesses/           跑迴圈的那一層
+    harness.py         網頁透過它跑一輪的 Harness：run、stop、decide，以及每個 harness 送出的事件
+    simple_harness.py  這個專案的迴圈：組 prompt → 生成 → 解析 → 驗證 →（先問你）→ 執行工具 → 接回脈絡 → 判斷要不要停
+    pi_harness.py      pi 當 harness：用 RPC 模式跑 pi，把它的 JSON 紀錄翻成網頁的事件
+    pi_approve.ts      讓網頁在 pi 執行工具前先問你的 pi extension
   backends/            跑模型的那一層
     backend.py         harness 和畫面透過它使用模型的 Backend：render、encode、generate，以及 token 事件的欄位
     simple_backend.py  本機推論，自己寫的解碼迴圈；MTP 的草稿與驗證也在這裡
@@ -113,11 +119,11 @@ tests/                 pytest 測試，見下面「測試」
 models/                下載的模型（git 會忽略它；AGENT_LOOP_MODELS 可以換位置）
 ```
 
-agent 在背景 thread 執行，每走到一個階段就 append 一個事件；UI 只負責把事件列表畫出來。所以按「停止」或「允許」時 Streamlit 重跑 script，背景的迴圈不會被打斷。
+agent 在背景 thread 執行，每走到一個階段就 append 一個事件；UI 只負責把事件列表畫出來。所以按「停止」或「允許」時 Streamlit 重跑 script，背景的迴圈不會被打斷。網頁只透過 `Harness`（`harnesses/harness.py`）跑迴圈：`run()`、`stop()`、`decide()`，以及它送出的事件。`SimpleHarness` 是這個專案自己的，`PiHarness` 則把迴圈交給 pi（「[pi 當 harness](#pi-當-harness)」）。
 
 「運作說明」是一個靜態頁：`uv run python -m app.guide _site` 會寫出 `_site/zh/index.html` 和 `_site/en/index.html`（樣式和一小段 script 都內嵌在裡面，可以直接用瀏覽器打開），以及 `_site/index.html`：它把讀者送到上次在頁面右上角選過的語言，沒選過就照瀏覽器的語言。推上 main 時，`.github/workflows/pages.yml` 先跑 `tests/test_guide.py`，再做同一件事並發佈到 GitHub Pages；測試沒過的話，網站上維持原來那一版。
 
-一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→（真的執行工具時的 `tool_start`）→ `tool_result`，最後是 `run_end`；出錯時它前面還有一個 `error`：`message` 是例外的訊息，backend 的錯誤（例如 vLLM 伺服器的）另外帶著兩種語言的版本（`text`），畫面顯示目前語言的那一個。`context` 帶的是模型實際讀到的 prompt（每個附件都展開成它的 token），以及每種媒體佔了幾個 token（`media_tokens`）。`token` 帶著這個 token，以及 backend 知道的話，它的機率、排名、前 5 名候選和 MTP 草稿模型猜了什麼（`backend.TOKEN_DETAILS`）：`simple_backend.py` 全都知道；backend 沒有回報的，畫面就不畫，不會拿沒量過的數字來填。等這一步結束才知道哪些 token 是 MTP 猜中的 backend（vLLM 伺服器），把它們放在 `model_end` 的 MTP 統計裡（`kept_at`、`turned_down_at`），畫面到那時才標出來。`tool_result` 帶著模型讀的觀察，另外還有工具做給你看的圖（`images`：`run_python` 畫的圖的路徑），模型讀不到。
+一次執行的事件依序是：`run_start`，然後每一步 `step_start` → `context` → `prefill` → `token` ×N → `model_end` → `parsed`，有工具呼叫時再加上 `tool_call` →（`approval_request` → `approval`）→（真的執行工具時的 `tool_start`）→ `tool_result`，最後是 `run_end`；出錯時它前面還有一個 `error`：`message` 是例外的訊息，backend 的錯誤（例如 vLLM 伺服器的）另外帶著兩種語言的版本（`text`），畫面顯示目前語言的那一個。`context` 帶的是模型實際讀到的 prompt（每個附件都展開成它的 token），以及每種媒體佔了幾個 token（`media_tokens`）。`token` 帶著這個 token，以及 backend 知道的話，它的機率、排名、前 5 名候選和 MTP 草稿模型猜了什麼（`backend.TOKEN_DETAILS`）：`simple_backend.py` 全都知道；backend 沒有回報的，畫面就不畫，不會拿沒量過的數字來填。等這一步結束才知道哪些 token 是 MTP 猜中的 backend（vLLM 伺服器），把它們放在 `model_end` 的 MTP 統計裡（`kept_at`、`turned_down_at`），畫面到那時才標出來。`tool_result` 帶著模型讀的觀察，另外還有工具做給你看的圖（`images`：`run_python` 畫的圖的路徑），模型讀不到。`run_start` 說這一輪是哪個 harness 跑的（`harness`：`simple` 或 `pi`）。自己不跑模型的 harness，也就是 pi，不送 `context`、`prefill` 和 `token`，也沒有 family：它改送 `delta`，模型邊寫邊傳回來的一段輸出和它的 channel（思考、回覆、工具呼叫），`model_end` 帶的則是 provider 報的 token 數（`usage`）。
 
 ### 兩種語言
 
@@ -234,9 +240,26 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 - **在 DGX Spark 上**（NVIDIA GB10，GPU 和整台電腦共用 128 GB 記憶體）：在 GPU 上，Qwen3.5 0.8B 啟動約 2 分鐘、解碼約 113 tok/s，Gemma 4 E2B 啟動約 3 分鐘、解碼約 41 tok/s，兩個模型都通過接真的伺服器的測試，包括 Gemma 讀得懂的每種媒體。照 vLLM 預設的 `gpu_memory_utilization`（0.92），伺服器在這台電腦上不肯啟動：vLLM 把整台電腦可用的記憶體當成 GPU 空著的記憶體，大約是 122 GiB 裡的 108 GiB。在同一台電腦的 CPU 上，Qwen3.5 0.8B 啟動約 1.3 分鐘、解碼約 23 tok/s。
 - **在 Mac 上**（Apple M5，給 Docker 10 個核心）：Qwen3.5 0.8B 啟動約 1.5 分鐘，佔 Docker 約 9 GB 記憶體，解碼約 10 tok/s。Gemma 4 E2B 要的記憶體比 Docker Desktop 預設的多：16 GB 時載入到一半會被停掉（頁面會說明，也說怎麼給 Docker 更多記憶體），24 GB 時 3 到 5 分鐘啟動、解碼約 4.6 tok/s，但載入時問伺服器收哪些媒體，要在 CPU 上跑它的圖片、聲音和影片編碼器，第一次要花大約 10 分鐘。
 
+### pi 當 harness
+
+網頁也可以把迴圈交給 [pi](https://pi.dev)，一個有自己的迴圈、system prompt 和工具（read、bash、edit、write、grep、find、ls）的 coding agent。在側欄最上面的「用什麼跑迴圈」選 pi：這台電腦不載入模型，pi 問它登入過的模型（Claude、GPT、Gemini，或它 `models.json` 裡任何相容的端點），網頁用同一張迴圈圖、同樣的 step 卡片和事件列表，畫出 pi 說它做了什麼。畫不出來的，是只有自己跑模型的 harness 才看得到的東西：API 傳回來的是文字，不是 token，所以沒有 token 的機率、候選和特殊 token；pi 也不說它送出的 prompt 是什麼，所以 step 沒有脈絡段，「脈絡」分頁是空的。一個 step 顯示一段段傳回來的文字、provider 報的 token 數（以及其中多少來自 cache），和照 pi 的價目估的費用。
+
+```bash
+npm install -g @earendil-works/pi-coding-agent   # pi 1.4 需要 Node.js 22.19 以上
+pi                                               # 再輸入 /login 登入一次；或在啟動 app 之前設好 API key，例如 ANTHROPIC_API_KEY
+PI_COMMAND=/path/to/pi uv run streamlit run streamlit_app.py   # pi 不在 PATH 上的話（任何指令都行，npx 也可以）
+```
+
+- **網頁怎麼跑它。** `harness/harnesses/pi_harness.py` 每個問題都用 RPC 模式啟動 pi（`pi --mode rpc`）：指令寫進它的 stdin，紀錄從它的 stdout 讀出來，一行一個 JSON。它先選好模型和思考等級、關掉 pi 自己的重試（重試會變成另一個 step，所以請求失敗就當成錯誤顯示），再送出問題，每個指令都等 pi 回應了才送下一個；pi 的一個 turn（向模型送一次請求，加上回覆裡要執行的工具）就是一個 step。pi 把對話存在這段對話資料夾裡的 session 檔，下一個問題就接著它；按「新對話」會刪掉。
+- **啟動 pi 時不帶的東西。** 你自己的 extension、skill、prompt 範本和 context 檔（AGENTS.md、CLAUDE.md）都不載入（`--no-extensions` 之類），所以網頁畫的是 pi 本身的迴圈，每台電腦上都一樣；模型和登入資訊還是你的，在 `~/.pi/agent`。
+- **工具。** 側欄選模型看得到 pi 的哪些工具（預設是 read、bash、edit、write，和 pi 一樣）。它們在這台電腦上、這段對話的資料夾裡執行，沒有沙箱：不像 `run_python`，bash 碰得到你碰得到的一切。附上的檔案存在那個資料夾裡，問題裡會寫出檔名；讀得懂圖片的模型，圖片也會跟著問題一起送過去。
+- **執行工具前先問我。** pi 自己不會問；打開時，網頁讓 pi 載入 `harness/harnesses/pi_approve.ts`，一個在每次執行工具前開確認對話框的小 extension。在 RPC 模式下，對話框出現在 stdout，網頁把它顯示成「允許」和「拒絕」，你的回答再從 stdin 送回去；被拒絕的呼叫不會執行，模型讀到的是用這一輪語言寫的拒絕原因。
+- **停止。** 按停止會送給 pi `abort`。pi 自己沒有步數上限，所以「步數上限」由網頁來守：pi 開始超過上限的那個 turn 時，網頁就請它中止。確認一直沒人回答的話，5 分鐘後停掉 pi，和內建 harness 一樣。
+- **測試**用的是 pi 1.4.0：透過照劇本說它的協定的替身（`tests/fake_pi.py`），以及 `RUN_PI_TESTS=1` 時，指向 127.0.0.1 上一個照劇本回答的模型的真 pi。
+
 ### 支援更多模型
 
-harness（`agent.py`）、解碼迴圈（`simple_backend.py`）和畫面（`render.py`）都只寫一次，裡面沒有任何「如果是 Gemma」的分支。每個模型不一樣的地方集中在 `families/` 的一個 `Family` 物件裡：
+harness（`harnesses/simple_harness.py`）、解碼迴圈（`simple_backend.py`）和畫面（`render.py`）都只寫一次，裡面沒有任何「如果是 Gemma」的分支。每個模型不一樣的地方集中在 `families/` 的一個 `Family` 物件裡：
 
 - 讀輸出：`parse`（把輸出切成思考、工具呼叫、回覆）、`thought_prefix`、`channel_switch`（哪些 token 切到思考、工具呼叫、回覆）、`stop_tokens`
 - 寫回對話：`reasoning_key`（思考存在哪個欄位，chat template 才讀得到）、`text_with_calls`（工具呼叫前的文字留不留）
@@ -281,9 +304,10 @@ uv run pytest                                          # 約 40 秒，不載入�
 RUN_MODEL_TESTS=1 uv run pytest tests/test_real_model.py   # 載入真的 Gemma（含 MTP 草稿模型）和 Qwen，約 4 分鐘；加 -k Qwen 只跑一個
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # 問一台正在跑的 vLLM 伺服器
 RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real                        # 用 Qwen3.5 在 Docker 裡啟動 vLLM，問它一個問題
+RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real                                  # 啟動真的 pi（PATH 上的，或 PI_COMMAND），對上 127.0.0.1 上照劇本回答的模型
 ```
 
-大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，和 `SimpleBackend` 一樣是一個 `Backend`（`backend.py`），所以 harness 和網頁可以從頭跑到尾。
+大部分測試用 `tests/fakes.py` 的假模型：它照劇本一個 token 一個 token 吐出預先寫好的輸出，和 `SimpleBackend` 一樣是一個 `Backend`（`backend.py`），所以 harness 和網頁可以從頭跑到尾。需要 pi 的地方，測試啟動的是 `tests/fake_pi.py`，它照劇本說 pi 1.4 的 RPC 協定，所以不需要 Node，也不需要模型。
 
 網頁收的每一種檔案格式都有測試：`tests/samples.py` 用範例的檔案做出每種格式的小檔案（收據的每種圖片格式、錄音的每種聲音格式、滾動的球的每種影片格式、銷售資料的每種資料格式）。`media.py` 多收了一種格式卻沒有對應的範例檔，`test_media.py` 就會失敗；`test_real_model.py` 拿每一種格式問兩個模型。需要 Docker 的測試只在 Docker 和沙箱 image 都在時才跑。
 
@@ -296,9 +320,10 @@ RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real         
 | `test_families.py` | 每個家族都說明了它用到的 token、中英文說明列出同樣的 token、`model_type` 找得到家族；token 顯示成它代表的文字，只是一個字一部分的 byte 顯示成 `<0xF0>`；每個家族都用中英文說明它 checkpoint 裡的檔案，兩種語言提到同樣的欄位和 token；每個模型和草稿模型都照固定的 commit 下載；vLLM 替清單裡的模型推測解碼時，用的是它 checkpoint 裡的 MTP 層，或 transformers 用的那個草稿模型 |
 | `test_tools.py` | schema 驗證與預設值、計算機的 AST 白名單（拒絕 `__import__` 之類）、時區、Wikipedia（HTTP 用假的）；`run_python` 鎖住的 `docker run`、各種錯誤（traceback、沒有輸出、記憶體太多、跑太久、沒有 image）、Docker 沒準備好或 image 過舊時缺什麼，都有中英文兩種；記號後面的圖存檔時不蓋掉現有檔案、只收 PNG、最多四張、程式出錯就不收；image 的版本 label 和用 hash 安裝的 pip；有 Docker 時，真的沙箱讀得到 `/data` 但改不了、連不上網路，讀得了每一種資料格式，送得回中文標籤畫得出來的圖，pip（和它的 certifi）也是修正 emSign 之後的版本 |
 | `test_simple_backend.py` | `SimpleBackend` 有 `Backend` 的每個方法和屬性，它的 token 帶著每個欄位和細節；自己寫的解碼迴圈：KV cache、停止 token、token 上限、中斷、channel 切換、被拆開的中文字元；`encode()` 照順序把每種媒體和家族的設定交給 processor、短影片給它全部畫格；圖片和影片在 prefill 前先跑視覺編碼器，上一個 prompt 的位置偏移不會留下來；greedy 遇到兩個 token 打平時和 `generate()` 一樣拿 id 小的；temperature / top-k / top-p 的候選與機率；MTP 用照劇本猜的假草稿模型：猜測的收下與退回、全部收下時多一個 token、KV cache 退回多少、草稿模型看不到作廢的猜測，以及抽樣時檢查猜測不改變分布；模型照固定的 revision 下載到 `models/`（`AGENT_LOOP_MODELS` 可以換位置，相對路徑從啟動 app 的地方算起；`HF_HUB_CACHE` 不行），在 CUDA 上放掉模型時，先放掉 cuBLAS 的工作區再清快取，模型資料夾的檔案、大小（經過快取的連結）和說明提到的欄位 |
-| `test_agent.py` | 假模型是一個 `Backend`，它的 token 帶的欄位和 `SimpleBackend` 的一樣；harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止；附件變成問題裡的 part 和給 `run_python` 的說明、每一輪的媒體都交給 processor、展開後的脈絡仍然只把工具結果標成新加入、`run_python` 拿到這段對話的資料夾、沒有 `run_python` 的一輪；模型讀到圖在哪裡，圖本身只給頁面 |
-| `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；一串同樣的特殊 token 畫成一個標籤加個數、截斷的片段不會切開 token、媒體佔了幾個 token、好幾行的程式碼和輸出照行寫出來、這一輪沒提供的工具、一次執行和每一步的圖；模型資料夾卡片：檔案的順序、大小和說明、家族有說明但 checkpoint 沒有的檔案、草稿模型的資料夾、跳脫；backend 沒回報機率、或只回報 log 機率時，token 照它帶的內容畫，不多畫；英文畫面上沒有留下中文 |
-| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：Streamlit 不在每次執行完腳本後做垃圾回收，重跑會等正在跑的那一次；送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案；設了 `VLLM_URL` 時，選單列出伺服器提供的模型、側欄和模型分頁寫出伺服器、MTP 由伺服器決定、開了 sampling mask 的伺服器不會從側欄收到 greedy 或不限的 top-k、模型讀伺服器收的媒體，頁面說明它不收哪些和原因，選單不列伺服器上的 LoRA adapter，網頁不支援的家族的模型標上 ⚠、一開始選第一個支援的，選了不支援的會說明原因，並附上用頁面語言填好的 GitHub issue，寫出模型（資料夾只寫名字），不寫伺服器的位址，伺服器跑到一半送來的錯誤用頁面的語言顯示，載入時或之後連不上伺服器，都用頁面的語言說明；沒設 `VLLM_URL` 時，「用什麼跑模型」一開始是 transformers、完全不碰 Docker，選 vLLM (Docker)會放掉本機的模型（沒有東西留著它）再用它啟動伺服器，重跑不會再啟動，換模型就用新模型啟動，換回 transformers 會停掉容器，vLLM 在跑時新開分頁或重新整理會接上它的伺服器和模型，停在 transformers 的分頁會跟著另一個分頁換到 vLLM 再換回來（模型在這裡只載入一次），在 GPU 上 vLLM 預設開 MTP 啟動、切換開關會不開 MTP 重新啟動（按還原建議值會再開），在 CPU 上不開 MTP、開關會說明原因，分頁會跟著另一個分頁選的 MTP，啟動失敗時用頁面的語言說明，只有按「再試一次」才重試，換回 transformers 的切換鈕也還在 |
+| `test_simple_harness.py` | 假模型是一個 `Backend`，它的 token 帶的欄位和 `SimpleBackend` 的一樣；harness：事件順序、工具結果接回脈絡、驗證錯誤、重複呼叫、結果截斷、每一種停止原因、允許 / 拒絕 / 等待時按停止；附件變成問題裡的 part 和給 `run_python` 的說明、每一輪的媒體都交給 processor、展開後的脈絡仍然只把工具結果標成新加入、`run_python` 拿到這段對話的資料夾、沒有 `run_python` 的一輪；模型讀到圖在哪裡，圖本身只給頁面 |
+| `test_pi_harness.py` | pi 當 harness，用 `tests/fake_pi.py` 代替 pi：兩個 harness 都是 `Harness`，pi 只送介面列出的事件；一輪變成照迴圈順序的網頁事件（依 channel 串流進來的思考、文字和工具呼叫參數、provider 報的 token 數和 cache、呼叫和結果）；pi 在這段對話的資料夾、用它的 session 啟動，帶著側欄的工具、不帶你自己的 extension，送出問題之前先選好模型、關掉重試，完全沒有工具，附件的檔名寫給模型、圖片直接送過去，重複的呼叫有標示，工具失敗，token 上限，下一個問題用同一個 session；透過 extension 先問：允許、拒絕（模型讀到這一輪語言的拒絕原因）、等待時按停止、逾時；回覆到一半按停止和 pi 還沒啟動就按停止，步數上限之後不再畫 step；請求失敗、問題被拒絕、pi 沒有的模型、pi 一啟動就結束和沒有安裝 pi，都用兩種語言說明；pi 有哪些模型；`RUN_PI_TESTS=1` 時，真的 pi 對上 127.0.0.1 上照劇本回答的模型，先問和不先問各一次 |
+| `test_render.py` | 一次執行的每一個事件前綴都能用兩種語言畫出來（執行中每 0.5 秒重畫）、HTML 標籤成對、迴圈圖是合法 SVG、模型輸出一律跳脫、特殊 token 的說明浮窗與列表；MTP 的底線、浮窗、統計和草稿模型卡片；一串同樣的特殊 token 畫成一個標籤加個數、截斷的片段不會切開 token、媒體佔了幾個 token、好幾行的程式碼和輸出照行寫出來、這一輪沒提供的工具、一次執行和每一步的圖；模型資料夾卡片：檔案的順序、大小和說明、家族有說明但 checkpoint 沒有的檔案、草稿模型的資料夾、跳脫；backend 沒回報機率、或只回報 log 機率時，token 照它帶的內容畫，不多畫；pi 跑的一輪：照 channel 畫出串流進來的文字、沒有 token 的數字、一律跳脫、合併時不改動事件，迴圈圖、停止卡片和每一步的表格說是 pi 在跑迴圈，pi 的卡片兩種語言都對；英文畫面上沒有留下中文 |
+| `test_app.py` | 用 Streamlit `AppTest` 操作整個網頁：Streamlit 不在每次執行完腳本後做垃圾回收，重跑會等正在跑的那一次；送出問題、範例按鈕、側欄設定傳到模型、多輪對話、脈絡與模型分頁、允許 / 拒絕 / 停止、新對話、還原設定、兩個分頁不能同時跑、換模型、運作說明連到 GitHub Pages 上同語言的那一版；MTP 開關預設關閉、打開才載入草稿模型、換到沒有草稿模型的 Qwen 會關掉並停用；英文瀏覽器看到英文、上次選的語言優先於瀏覽器、切換語言時對話和設定都留著、模型讀到的錯誤跟著語言；每種語言的頁面只有那種語言的範例、範例會附上它的檔案，模型讀得懂那一種才出現、輸入框上方選的範例檔案會附在接下來打的問題，模型用得上的才列出來、「讓模型寫程式」打開了才去找 Docker 並說明缺什麼、銷售資料的範例用 Python 讀附上的檔案、圖畫在聊天區和畫它的那一步、「新對話」刪掉這段對話的檔案；設了 `VLLM_URL` 時，選單列出伺服器提供的模型、側欄和模型分頁寫出伺服器、MTP 由伺服器決定、開了 sampling mask 的伺服器不會從側欄收到 greedy 或不限的 top-k、模型讀伺服器收的媒體，頁面說明它不收哪些和原因，選單不列伺服器上的 LoRA adapter，網頁不支援的家族的模型標上 ⚠、一開始選第一個支援的，選了不支援的會說明原因，並附上用頁面語言填好的 GitHub issue，寫出模型（資料夾只寫名字），不寫伺服器的位址，伺服器跑到一半送來的錯誤用頁面的語言顯示，載入時或之後連不上伺服器，都用頁面的語言說明；沒設 `VLLM_URL` 時，「用什麼跑模型」一開始是 transformers、完全不碰 Docker，選 vLLM (Docker)會放掉本機的模型（沒有東西留著它）再用它啟動伺服器，重跑不會再啟動，換模型就用新模型啟動，換回 transformers 會停掉容器，vLLM 在跑時新開分頁或重新整理會接上它的伺服器和模型，停在 transformers 的分頁會跟著另一個分頁換到 vLLM 再換回來（模型在這裡只載入一次），在 GPU 上 vLLM 預設開 MTP 啟動、切換開關會不開 MTP 重新啟動（按還原建議值會再開），在 CPU 上不開 MTP、開關會說明原因，分頁會跟著另一個分頁選的 MTP，啟動失敗時用頁面的語言說明，只有按「再試一次」才重試，換回 transformers 的切換鈕也還在；「用什麼跑迴圈」選 pi 時，側欄是它的模型和設定、沒有解碼設定，問題畫成 pi 的迴圈、在這段對話的資料夾裡跑，側欄的設定傳到 pi，在網頁上按「允許」，停止，「脈絡」分頁說 pi 不給看 prompt、「模型」分頁顯示 pi 的模型和工具，pi 沒有模型或沒有安裝時說明原因並可以「再試一次」，從不找 Docker，換回來時內建 harness 的模型和設定都還在，切換會開新對話，英文畫面沒有中文 |
 | `test_chat_template.py` | 用每個模型真的 tokenizer 和 chat template（已經下載到 `models/` 才跑）：特殊 token 都是單一 token、每個特殊 token 都有說明、token 浮窗顯示的是它代表的文字、模板寫進歷史的工具呼叫能被 parser 讀回；用真的模板跑 harness，確認 step 卡片標成「新加入」的剛好是工具結果（兩個參數、思考模式、工具呼叫前有文字），用真的 processor、問題附上圖片和影片時也一樣；每個模型（和草稿模型）資料夾裡的每個檔案都有說明，說明提到的欄位在檔案裡都找得到 |
 | `test_vllm_backend.py` | vLLM backend 對上一個假伺服器，它說的是 vLLM 0.32 的串流格式：`/v1/completions` 收到 render 好的 prompt 的 token id、側欄的每個設定（其他取樣設定都設成不起作用）、停止 token，以及放得進伺服器脈絡的 `max_tokens`；每個 token 的機率和前 5 名，排名只在前 5 名裡才有；加了 `--enable-scale-out` 時走 `/inference/v1/generate`，每個 token 都有排名，雖然選中的 token 排在清單第一個，前 5 名仍照排名；兩條路上同分第一的 token 都是 #1，雖然 vLLM 的排名把同分的也算進去；有 sampling mask 時（vLLM 只在 processed log 機率下送），有剩下的候選和取樣時的機率，沒有模型自己的機率，temperature 0 和 top-k 0 在每條路上都照 vLLM 的做法被拒絕，有 mask 但沒加 `--enable-scale-out` 的伺服器，網頁載入時也會發現，而還沒準備好的伺服器不算這種拒絕；載入時用一個 token 判斷伺服器的 `--logprobs-mode`，沒有 mask 的 processed log 機率在前幾名有被剃掉時看得到剩下幾個，logits 只有排名；greedy 是只剩一個、一定抽中的候選；伺服器收哪幾種媒體、每個檔案跟著佔位 token 送過去、脈絡分頁顯示伺服器的展開、生成時展開得不一樣就是錯誤、不收的種類成為一般檔案；兩條路上都有 MTP 的統計，每一步的統計對得上時才標出猜中的 token，收下的只算到停止 token 為止；停止 token、token 上限、按停止就關掉串流；連不上伺服器、它沒有提供的模型、用它自己的資料夾、或用網頁（或它的 transformers）不認得的家族的模型、或沒有 config.json 的模型啟動的伺服器、沒有或出錯的 `/inference/v1/generate`、它的拒絕和錯誤、伺服器從 logits 算出的排名在列出的機率打平時仍照列出的機率，兩種語言都有，跑到一半的錯誤用頁面的語言顯示；伺服器提供的模型屬於哪個家族，只讀它的 config.json 就知道（這台電腦上的資料夾就地讀，沒有 config.json 的 repo 不屬於任何家族，連不上 Hub 或只在伺服器上的資料夾就說不出來），不支援的模型的錯誤帶著模型 id 和 `model_type`，給網頁的 GitHub issue 用；暖機，以及第一個 token 之前就結束的一步；模型卡片上的規格、伺服器、每種 logprobs 模式下數字代表什麼、sampling mask 和它不收的媒體；一整輪呼叫工具再回答、一輪附上圖片的問題，每個時刻都畫得出來；用真的 tokenizer 和 chat template（在 `models/` 裡時），伺服器拿到的就是脈絡分頁上的 prompt；設了 `VLLM_TEST_URL` 時問真的伺服器，伺服器加了哪些參數就測哪些 |
 | `test_vllm_docker.py` | 在 Docker 裡啟動 vLLM，Docker 在 `subprocess` 這一層換成假的：先照固定的 commit 下載權重，再用模型、它的 revision 和 `models/` 以 `docker compose up` 跑 `docker-compose/compose.yaml`，Docker 有 nvidia runtime（或 `AGENT_LOOP_VLLM_DEVICE` 指定）時再疊上 `compose.gpu.yaml`；模型已經在跑的伺服器不會再啟動一次，換模型會換掉它；沒有 Docker、Docker 沒在執行、沒有 Compose、`docker compose up` 失敗、容器因為記憶體不夠被停掉、容器結束（列出記錄裡的例外，原因在前）和伺服器一直沒回應，都用兩種語言說明；Compose 還在忙時頁面重跑，也會停掉它；`docker compose down`；程式要求的模型在啟動失敗後還記著，直到停掉為止；結束程式時停掉它啟動的伺服器（沒有的話不碰 Docker）；在 GPU 上 MTP 用 Gemma 照固定 commit 的草稿模型（先下載）或 Qwen 自己的 MTP 層，在 CPU 上或沒要求時都不開，切換時重新啟動伺服器。compose 檔：只聽 127.0.0.1、`models/` 唯讀又離線、預設是固定 commit 的 Qwen3.5、GPU 版是同一個 vLLM、除了只給 CPU 的那個以外參數都一樣，再加上和 CPU 一樣大的 KV cache、偏低的 `--gpu-memory-utilization`，以及手動啟動時不開的推測解碼（有設定時統計才設成 detailed，沒有設定時 vLLM 不收），Docker Compose 也把網頁給的設定原封不動交給 vLLM，Docker Compose 讀得懂兩個檔、掛載的是相對的 `AGENT_LOOP_MODELS` 指的資料夾（有裝的話）；設了 `RUN_VLLM_DOCKER_TESTS=1` 時，Docker 裡真的伺服器透過 `VLLMBackend` 回答，Docker 有 GPU 時先開 MTP、再不開各一次 |
@@ -333,6 +358,9 @@ RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real         
 - `vllm_backend.py` 照 vLLM 0.32 原始碼裡的協定寫，測試用的是說這些協定的假伺服器、真的 tokenizer 和真的網頁；`/inference/v1/generate`、它的 sampling mask 和每一步的統計在 vLLM 裡標示為實驗性功能，之後可能會改。對真伺服器的測試（`VLLM_TEST_URL`）只在一種 GPU 上跑過：DGX Spark 的 GB10。
 - 在 Mac 上，Docker 裡的 vLLM 是用 CPU 跑，而且慢：Gemma 4 E2B 解碼約 4.6 tok/s，Docker 要有大約 20 GB 以上的記憶體，第一次載入還要花大約 10 分鐘跑它的媒體編碼器，看伺服器收哪些媒體。`compose.gpu.yaml` 只在一種 NVIDIA GPU 上跑過：DGX Spark 的 GB10。CPU 版的 image 修改了 vLLM 0.32.0（`docker-compose/vllm-cpu/patch_vllm.py`）；新版的 vLLM 可能兩個修正都不需要，要修改的程式和寫它時不一樣的話，建 image 時會停下來。
 - 用 Ctrl+C 或 SIGTERM 結束程式時，會停掉 vLLM 的容器。用別的方式結束（關掉終端機、`kill -9`）的話，容器會繼續跑、佔著模型，要用 `docker compose -p agent-loop-vllm down` 停掉。
+- 用 pi 時，網頁只看得到 pi 回報的東西：沒有 token、機率和特殊 token，也看不到 pi 送出的 prompt。token 數是 provider 報的，tok/s 是回覆傳回來時量的（含網路），費用是照 pi 目錄裡的價格估的。pi 的模型是 provider 的：要花錢，對話也會送到那個 provider。
+- pi 的工具在這台電腦上執行，沒有沙箱；打開 bash 的話，你做得到的事模型都做得到。打開「執行工具前先問我」，每個呼叫都會先給你看。
+- `pi_harness.py` 照 pi 1.4 的 RPC 協定寫，根據它的文件和 pi 1.4.0 實際送出的紀錄；真 pi 的測試只用 pi 1.4.0 跑過。pi 1.4 需要 Node.js 22.19 以上：Node 太舊的話它啟動不了，網頁會顯示它說了什麼。網頁最多每分鐘問一次 pi 有哪些模型；在 pi 裡登入 provider 之後，按「再試一次」就會列出來。
 - `MODEL_ID` 環境變數決定一開始選哪個模型，也可以指定選單裡沒有的 checkpoint，只要它屬於已經支援的家族（Gemma 4 或 Qwen3.5）；其他家族要先照「支援更多模型」加一個 family。
 
 ## 授權

@@ -5,7 +5,8 @@ Qwen3.5 0.8B, through Hugging Face `transformers`, or on vLLM: in Docker, starte
 server at `VLLM_URL`) and draws every step of its agent loop: context,
 model, harness, environment, stop, down to each token's probability. A question can carry images, sound
 and video for the model, and, when the sidebar lets the model write code, data files for a `run_python`
-tool that runs in a Docker sandbox. It is a teaching project for the
+tool that runs in a Docker sandbox. The sidebar can also hand the loop to pi, a coding agent that asks a
+model it has credentials for, and draw what pi reports doing, without tokens. It is a teaching project for the
 Agent Atlas course. The page and its 運作說明 (How it works) guide are in Traditional Chinese and
 English. README.md (English) and README.zh-TW.md (Traditional Chinese) are the full account of what the
 page shows, the architecture, the tests and the known limits; read the parts you are about to change.
@@ -22,6 +23,7 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py   # the mod
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # vllm_backend.py against that real server
 docker compose -f docker-compose/compose.yaml up -d        # the vLLM server the sidebar's vLLM (Docker) starts, by hand (+ -f docker-compose/compose.gpu.yaml on NVIDIA GPUs)
 RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real   # starts that server with Qwen3.5 and asks it through VLLMBackend, ~2 min
+RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real   # the real pi (on the PATH, or PI_COMMAND; pi 1.4 needs Node 22.19+) against a scripted model on 127.0.0.1
 uv run python -m app.guide _site                           # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
 ```
@@ -42,9 +44,13 @@ app/                     the Streamlit app
   guide.py               the 運作說明 page: content in both languages, code references by text, static HTML for GitHub Pages
   assets/                style.css (palette and app), dark.css, guide.css, guide.js (the guide's one inlined script), logo.svg, examples/ (files the examples attach, also offered above the input box)
 harness/                 the agent, the model and what runs it; no Streamlit
-  agent.py               the harness (Run): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
+  harnesses/
+    harness.py           Harness: what the page asks of whatever runs the loop (run, stop, decide), and the events every harness sends
+    simple_harness.py    this project's harness (SimpleHarness, RunSettings): prompt → generate → parse → validate → (ask) → run tool → back into context → stop?
+    pi_harness.py        PiHarness: pi (PI_COMMAND) in RPC mode for each question, its JSON records turned into the page's events; probe() lists its models
+    pi_approve.ts        the pi extension behind Ask me before running a tool: a confirm dialog that pi_harness.py answers on stdin
   backends/
-    backend.py           Backend: what agent.py and the page ask of whatever runs the model (SimpleBackend, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
+    backend.py           Backend: what SimpleHarness and the page ask of whatever runs the model (SimpleBackend, VLLMBackend, tests' FakeLLM); Sampling, Encoded, the token event's fields
     simple_backend.py    SimpleBackend: the hand-written decoding loop (KV cache, temperature / top-k / top-p, MTP draft and verify)
     vllm_backend.py      VLLMBackend (VLLM_URL): the tokenizer and chat template here, the token ids to a vLLM server (/v1/completions, or /inference/v1/generate with --enable-scale-out: media, sampling masks), what it says about each token back
     vllm_docker.py       the sidebar's vLLM (Docker): downloads the model, `docker compose up -d` with it, waits until it answers, `docker compose down`; DockerError in both languages
@@ -70,14 +76,17 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   rerun, so everything a rerun does is inside functions, and what the module reads from the environment (`VLLM_URL`,
   `MODEL_ID`, `AGENT_LOOP_UPLOADS`) is read once per process. Tests change those on the module (`page.VLLM_URL`,
   `page.UPLOADS`, `page.SimpleBackend`), not in the environment.
-- **Events are the interface.** `agent.Run` runs in a background thread and appends one event per
+- **Events are the interface.** The page runs a turn only through a `Harness` (harnesses/harness.py): `SimpleHarness`, or
+  `PiHarness` with pi picked under What runs the loop. It runs in a background thread and appends one event per
   stage; the order is in the READMEs' Architecture (架構) section. `app/render.py` is a pure function of that list and the
   page only draws it, which is why stop and approve can rerun the script without interrupting the loop.
   A new or changed event needs render.py, the `EVENTS` table in app/guide.py (tests check that it lists
-  every event the harness sends and points at the line that sends it) and the event list in both READMEs.
+  every event either harness sends and points at the line that sends it) and the event list in both READMEs.
+  Most events are optional (`harness.SOMETIMES`): pi sends no `context`, `prefill`, `token` or family but `delta`, and
+  render.py draws a step from what it has, never filling in what the harness did not see.
   The harness and the page reach the model only through `backend.Backend`; a token event's probabilities,
   rank, candidates and MTP draft (`backend.TOKEN_DETAILS`) are optional, and render.py leaves out what is missing.
-- **Nothing model-specific outside `harness/families/`.** agent.py, simple_backend.py and render.py have no "if Gemma".
+- **Nothing model-specific outside `harness/families/`.** simple_harness.py, simple_backend.py and render.py have no "if Gemma".
   Parsing output, the tokens that switch to thinking / tool call / reply, stop tokens, special-token
   explanations, notes on the files of its checkpoints and recommended sampling all live on the
   `Family`. Another checkpoint of a supported family is one line in `MODELS` and one in `REVISIONS`,
@@ -94,8 +103,8 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   something else: a processed --logprobs-mode is the sampling distribution, never the model's p.
 - **Escape everything the model writes** before it reaches `st.html`. tests/test_render.py checks it,
   and also that every prefix of a run's events renders, because the page redraws mid-run.
-- **app/guide.py finds code by text, not line number.** `Code("harness/agent.py", "def run(self):")` and inline
-  `[[harness/agent.py|def run(self):]]` are looked up when the page is built, by their path from the project's folder,
+- **app/guide.py finds code by text, not line number.** `Code("harness/harnesses/simple_harness.py", "def run(self):")` and inline
+  `[[harness/harnesses/simple_harness.py|def run(self):]]` are looked up when the page is built, by their path from the project's folder,
   and each must match exactly one line. Before renaming, moving or rewriting a line, grep app/guide.py for it; if a reference breaks,
   tests/test_guide.py fails. Fix the reference, and when the behavior changed, the prose around it too. A file that is not Python
   (docker-compose/compose.yaml) is quoted line by line, through the line with `end`. Where a part of a section differs by what
@@ -120,7 +129,8 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   when the two languages drift apart (different refs, links or tokens).
 - **The model reads harness and tool errors in the run's language.** `RunSettings.lang` is the page's
   language when the turn started; `Tool.validate`, `family.parse` and the harness's own messages word
-  errors in it, and `ToolError` / `ParseError` carry both texts. The system prompts in agent.py are the
+  errors in it, and `ToolError` / `ParseError` carry both texts (with pi, the refusal pi_approve.ts gives the model, through
+  `AGENT_LOOP_REFUSAL`). The system prompts in simple_harness.py are the
   same for both languages, so the model's behavior does not depend on the page's language.
 - **The language switch.** The app starts in the language in the `agent_loop_lang` cookie, else the
   browser's (`st.context.locale` through `i18n.from_locale`); picking one writes the cookie with an
@@ -153,12 +163,21 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   image build the new one, and keep compose.gpu.yaml's command the same as compose.yaml's but `--skip-mm-profiling`, plus its two flags on GPU
   memory and two on speculative decoding (tests/test_vllm_docker.py checks it). The app stops the container it started when it quits (`_stop_at_exit`), so a test
   that fakes a start leaves `vllm_docker._chosen` empty.
+- **pi only when asked for, and as itself.** The page starts pi only once What runs the loop is pi, and then never
+  `docker`. It starts pi without the user's extensions, skills, prompt templates and context files (`pi_harness.FLAGS`),
+  so the page draws pi's own loop; the credentials are pi's. Each command waits for pi's response before the next (pi
+  handles them concurrently: a prompt sent beside `set_model` goes to the old model), auto-retry stays off (a retry is
+  a turn of its own), and Max steps is kept by aborting pi at the turn past it. pi's tools run unsandboxed in the
+  conversation's folder; the page says so wherever they are offered. Read pi's docs (docs/rpc.md, json.md,
+  rpc-extension-ui.md in its package) before changing what is sent or read.
 
 ## Tests
 
 - Most tests use `FakeLLM` from tests/fakes.py: same interface as `SimpleBackend`, prompts in a simplified
   form of each family's chat format, scripted replies streamed token by token. Cover new harness or UI
-  behavior with it; tests/test_app.py drives the whole page through Streamlit's `AppTest`.
+  behavior with it; tests/test_app.py drives the whole page through Streamlit's `AppTest`. In pi's place they start
+  tests/fake_pi.py (`FakePi`), which speaks pi 1.4's RPC protocol from a script; tests/test_pi_harness.py runs the real
+  pi only with `RUN_PI_TESTS=1`, against a scripted OpenAI-compatible server on 127.0.0.1.
 - tests/test_chat_template.py checks each family against the model's real tokenizer and chat template
   and skips models not yet downloaded into models/. tests/test_real_model.py loads the real
   weights and runs only with `RUN_MODEL_TESTS=1`. After changing parsing, prompts, stop tokens or the

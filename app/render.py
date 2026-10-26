@@ -7,6 +7,8 @@ page's language, "zh" or "en" (i18n.py), so switching it redraws a finished run 
 
 A token shows as much of the model's distribution as the backend reported (backend.TOKEN_DETAILS):
 simple_backend.SimpleBackend reports all of it, and what a backend leaves out is left out here too, never filled in.
+So does a step: a harness that does not run the model itself (pi, harnesses/pi_harness.py) sends no context and no tokens,
+only the text the model streams (delta) and the token counts its provider reported, and its steps are drawn from those.
 """
 
 import base64
@@ -35,6 +37,21 @@ STOP_REASONS = {
         "format_errors": ("repeated format errors", "The model wrote a tool call that could not be parsed 3 times in a row, so the harness stopped the loop."),
         "approval_timeout": ("confirmation timed out", "No one pressed Allow or Reject (the tab was closed or reloaded, say), so the harness took it as a refusal and stopped the loop, freeing the model for other tabs."),
         "error": ("error", "Something went wrong in the code; the message is below."),
+    },
+}
+# Where pi runs the loop (harnesses/pi_harness.py), the page stops it from outside, so these stops are said otherwise.
+PI_STOP_REASONS = {
+    "zh": {
+        "max_steps": ("達到步數上限", "pi 自己沒有步數上限：迴圈跑滿設定的步數，網頁就請 pi 中止，不管模型想不想繼續。"),
+        "user_stopped": ("使用者中斷", "你按了停止，網頁請 pi 中止：模型正在寫的回覆和正在執行的工具都會停下。"),
+        "approval_timeout": ("等待確認逾時", "一直沒有人按「允許」或「拒絕」（例如分頁已經關掉或重新整理），網頁當作拒絕並請 pi 中止，讓其他分頁可以使用。"),
+        "error": ("執行錯誤", "pi 或模型的 API 回報了錯誤，訊息在下面。"),
+    },
+    "en": {
+        "max_steps": ("step limit reached", "pi has no step limit of its own: once the loop has gone around the set number of times, the page asks pi to abort, whether or not the model wants to go on."),
+        "user_stopped": ("stopped by the user", "You pressed stop, and the page asked pi to abort: the reply the model was writing and the tool that was running both stop."),
+        "approval_timeout": ("confirmation timed out", "No one pressed Allow or Reject (the tab was closed or reloaded, say), so the page took it as a refusal and asked pi to abort, freeing it for other tabs."),
+        "error": ("error", "pi or the model's API reported an error; the message is below."),
     },
 }
 LAYER_TYPES = {
@@ -144,6 +161,34 @@ INTRO = {
     <div style="--stage: var(--c-harness)"><dt>Harness</dt><dd>Parses the tool calls the model wrote, validates them against the schema and asks you first when it should. The model never touches the environment itself.</dd></div>
     <div style="--stage: var(--c-env)"><dt>Environment</dt><dd>Where the tools really run. The result goes back into the context as an observation, and the next step begins.</dd></div>
     <div style="--stage: var(--c-stop)"><dt>Stop</dt><dd>The model calls no more tools, a step or token limit is reached, or you press stop.</dd></div>
+  </dl>
+</div>
+""",
+}
+
+# The same cycle, as pi runs it (harnesses/pi_harness.py).
+PI_INTRO = {
+    "zh": """
+<div class="intro">
+  <p class="intro-lede">送出問題後，這裡會一步一步畫出 pi 的 agent 迴圈。迴圈由 pi 跑，網頁只畫它說它做了什麼：</p>
+  <dl class="intro-list">
+    <div style="--stage: var(--c-context)"><dt>脈絡</dt><dd>pi 把它的 system prompt、工具和對話組成一個請求，送到模型的 API。請求裡寫了什麼，pi 不說，所以「脈絡」分頁是空的。</dd></div>
+    <div style="--stage: var(--c-model)"><dt>模型</dt><dd>一次 API 請求。回覆是一段一段傳回來的文字，不是 token，所以沒有機率；token 數是 provider 報的。</dd></div>
+    <div style="--stage: var(--c-harness)"><dt>Harness</dt><dd>pi 讀出回覆裡的工具呼叫、檢查參數；打開「執行工具前先問我」時，先問你。</dd></div>
+    <div style="--stage: var(--c-env)"><dt>環境</dt><dd>pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱。結果接回對話，開始下一步。</dd></div>
+    <div style="--stage: var(--c-stop)"><dt>停止</dt><dd>模型不再呼叫工具、達到步數上限，或是你按下停止。</dd></div>
+  </dl>
+</div>
+""",
+    "en": """
+<div class="intro">
+  <p class="intro-lede">Send a question, and pi's agent loop is drawn here step by step. pi runs the loop; the page draws what pi says it does:</p>
+  <dl class="intro-list">
+    <div style="--stage: var(--c-context)"><dt>Context</dt><dd>pi joins its system prompt, its tools and the conversation into one request to the model's API. pi does not say what the request holds, so the Context tab stays empty.</dd></div>
+    <div style="--stage: var(--c-model)"><dt>Model</dt><dd>One request to the API. The reply streams back as text, not tokens, so there are no probabilities; the token counts are the provider's.</dd></div>
+    <div style="--stage: var(--c-harness)"><dt>Harness</dt><dd>pi reads the tool calls in the reply and checks their arguments; with Ask me before running a tool on, it asks you first.</dd></div>
+    <div style="--stage: var(--c-env)"><dt>Environment</dt><dd>pi's tools run on this computer, in this conversation's folder, without a sandbox. Their results go back into the conversation, and the next step begins.</dd></div>
+    <div style="--stage: var(--c-stop)"><dt>Stop</dt><dd>The model calls no more tools, the step limit is reached, or you press stop.</dd></div>
   </dl>
 </div>
 """,
@@ -304,17 +349,18 @@ def media_line(counts: dict, lang: str) -> str:
 # ---------- events -> steps ----------
 
 def build(events: list[dict]) -> dict:
-    data = {"model": None, "family": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+    data = {"model": None, "family": None, "harness": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
     for ev in events:
         kind = ev["type"]
         data["last"], data["t"] = kind, ev["t"]
         if kind == "run_start":
-            data["model"], data["family"] = ev["model"], families.get(ev["family"])
-            data["settings"] = ev["settings"]
+            # A harness that does not know how the model writes its turns (pi) sends no family.
+            data["model"], data["family"] = ev["model"], families.get(ev["family"]) if ev.get("family") else None
+            data["harness"], data["settings"] = ev.get("harness", "simple"), ev["settings"]
         elif kind == "step_start":
             data["steps"].append({
                 "n": ev["step"], "t0": ev["t"], "t1": ev["t"], "context": None, "prefill": None,
-                "tokens": [], "done": None, "parsed": None, "calls": {},
+                "tokens": [], "text": [], "done": None, "parsed": None, "calls": {},
             })
         elif kind == "run_end":
             data["end"] = ev
@@ -325,6 +371,11 @@ def build(events: list[dict]) -> dict:
             step["t1"] = ev["t"]
             if kind == "token":
                 step["tokens"].append(ev)
+            elif kind == "delta":  # kept as runs of one channel: [{"channel", "text"}]
+                if step["text"] and step["text"][-1]["channel"] == ev["channel"]:
+                    step["text"][-1] = {**step["text"][-1], "text": step["text"][-1]["text"] + ev["text"]}
+                else:
+                    step["text"].append({"channel": ev["channel"], "text": ev["text"]})
             elif kind in ("context", "prefill", "parsed"):
                 step[kind] = ev
             elif kind == "model_end":
@@ -375,10 +426,23 @@ def pending_approvals(data: dict) -> list[dict]:
 
 
 def draft(data: dict) -> str:
-    """The reply as it streams: content tokens of the step in progress."""
+    """The reply as it streams: content tokens of the step in progress, or the content its harness streamed."""
     if not data["steps"]:
         return ""
-    return "".join(t["text"] for t in data["steps"][-1]["tokens"] if t["channel"] == "content")
+    step = data["steps"][-1]
+    return "".join(t["text"] for t in step["tokens"] + step["text"] if t["channel"] == "content")
+
+
+def generated(step: dict) -> int:
+    """How many tokens the model wrote in a step: those drawn, or the count its provider reported when none are."""
+    return len(step["tokens"]) or (step["done"] or {}).get("n_tokens") or 0
+
+
+def context_tokens(step: dict) -> int | None:
+    """How many tokens the model read in a step: the context's, or the prompt its provider reported reading."""
+    if step["context"]:
+        return step["context"]["n_tokens"]
+    return ((step["done"] or {}).get("usage") or {}).get("prompt")
 
 
 def stop_title(stop_reason: str, lang: str) -> str:
@@ -395,8 +459,8 @@ def status(data: dict, lang: str) -> str:
     if last == "prefill":
         read = step["prefill"]["n_tokens"]
         return f"Step {n} · " + pick(lang, f"模型讀完 {read:,} 個 token，開始生成", f"the model has read {read:,} tokens and starts generating")
-    if last == "token":
-        channel = step["tokens"][-1]["channel"]
+    if last in ("token", "delta"):
+        channel = (step["tokens"] or step["text"])[-1]["channel"]
         if channel == "thought":
             return f"Step {n} · " + pick(lang, "模型思考中…", "the model is thinking…")
         if channel == "tool_call":
@@ -421,8 +485,8 @@ def footer(data: dict, lang: str) -> str:
 def run_stats(data: dict, lang: str) -> str:
     s = data["settings"]
     steps = data["steps"]
-    ctx = next((st["context"]["n_tokens"] for st in reversed(steps) if st["context"]), 0)
-    gen = sum(len(st["tokens"]) for st in steps)
+    ctx = next((n for st in reversed(steps) if (n := context_tokens(st)) is not None), 0)
+    gen = sum(generated(st) for st in steps)
     return f"Step {len(steps)} / {s.get('max_steps', '?')} · " + pick(
         lang, f"脈絡 {ctx:,} tokens · 共生成 {gen:,} tokens", f"context {ctx:,} tokens · {gen:,} tokens generated"
     ) + f" · {fmt_ms(data['t'])}"
@@ -459,6 +523,13 @@ EDGES = [  # key, path, label position and anchor, label in each language
     ("env-context", "M102 150 V84", 92, 120, "end", {"zh": "觀察", "en": "observation"}),
     ("harness-stop", "M462 184 H554", 509, 174, "middle", {"zh": "沒有工具呼叫", "en": "no tool call"}),
 ]
+# What the diagram says otherwise when pi runs the loop: its own harness, its tools on this computer, and text, not
+# tokens, from the model's API.
+PI_DIAGRAM = {
+    "harness": {"zh": "pi · 驗證 · 權限", "en": "pi · check · ask"},
+    "env": {"zh": "這台電腦", "en": "this computer"},
+    "model-harness": {"zh": "輸出文字", "en": "text out"},
+}
 
 
 def loop_state(data: dict | None, lang: str) -> dict:
@@ -470,7 +541,7 @@ def loop_state(data: dict | None, lang: str) -> dict:
     caps, steps = state["captions"], data["steps"]
     for s in steps:
         state["visited"].add("context")
-        if s["prefill"]:
+        if s["prefill"] or s["text"]:
             state["visited"].add("model")
         if s["done"]:
             state["visited"].add("harness")
@@ -479,14 +550,17 @@ def loop_state(data: dict | None, lang: str) -> dict:
 
     step = steps[-1] if steps else None
     if step:
-        if step["context"]:
-            caps["context"] = f"{step['context']['n_tokens']:,} tokens"
+        if (read := context_tokens(step)) is not None:
+            caps["context"] = f"{read:,} tokens"
         if step["prefill"]:
             caps["model"] = f"prefill {fmt_ms(step['prefill']['ms'])}"
         if step["tokens"]:
             caps["model"] = pick(lang, f"已生成 {len(step['tokens'])} tokens", f"{len(step['tokens'])} tokens so far")
-        if step["done"]:
-            caps["model"] = f"{step['done']['n_tokens']} tok · {step['done']['tok_per_s']} tok/s"
+        elif step["text"]:
+            chars = sum(len(r["text"]) for r in step["text"])
+            caps["model"] = pick(lang, f"已收到 {chars:,} 字元", f"{chars:,} characters so far")
+        if done := step["done"]:
+            caps["model"] = f"{done['n_tokens']} tok" + (f" · {done['tok_per_s']} tok/s" if done.get("tok_per_s") else "")
         calls = list(step["calls"].values())
         if step["parsed"]:
             caps["harness"] = pick(lang, "、", ", ").join(c["name"] for c in calls) or pick(lang, "沒有工具呼叫", "no tool call")
@@ -504,10 +578,12 @@ def loop_state(data: dict | None, lang: str) -> dict:
     last = data["last"]
     started = bool(step and step["calls"] and list(step["calls"].values())[-1]["started"])
     state["active"], state["edge"] = {
-        "step_start": ("context", "env-context" if step and step["n"] > 1 else None),
+        # pi sends the request as its turn starts, and says nothing more until the model's output comes back.
+        "step_start": ("context", "context-model" if data["harness"] == "pi" else "env-context" if step and step["n"] > 1 else None),
         "context": ("context", "context-model"),
         "prefill": ("model", "context-model"),
         "token": ("model", None),
+        "delta": ("model", None),
         "model_end": ("harness", "model-harness"),
         "parsed": ("harness", "model-harness"),
         "tool_call": ("harness", None),
@@ -557,15 +633,17 @@ text { font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft Jhe
 """
 
 
-def diagram_html(data: dict | None, dark: bool, lang: str, counter: str | None = None, model: str | None = None) -> str:
+def diagram_html(data: dict | None, dark: bool, lang: str, counter: str | None = None, model: str | None = None,
+                 harness: str | None = None) -> str:
     """The loop diagram as an <img>: Streamlit's HTML sanitizer removes inline <svg>.
-    `model` names the model when no run says which one it is."""
+    `model` and `harness` name the model and what runs the loop when no run says which they are."""
     st = loop_state(data, lang)
     if counter:
         st["counter"] = counter
     model = (data or {}).get("model") or model
     if model:
         st["captions"].setdefault("model", model.split("/")[-1])
+    words_for = PI_DIAGRAM if ((data or {}).get("harness") or harness) == "pi" else {}
     pal = PALETTES["dark" if dark else "light"]
     css = DIAGRAM_CSS
     for key, value in pal.items():
@@ -573,10 +651,12 @@ def diagram_html(data: dict | None, dark: bool, lang: str, counter: str | None =
     edges = []
     for key, path, x, y, anchor, label in EDGES:
         cls = "edge on" if key == st["edge"] else "edge"
+        label = words_for.get(key, label)
         edges.append(f'<g class="{cls}"><path d="{path}"/><text x="{x}" y="{y}" text-anchor="{anchor}">{label[lang]}</text></g>')
     nodes = []
     for key, x, y, words in NODES:
         title, caption = words[lang]
+        caption = words_for[key][lang] if key in words_for else caption
         cls = ["node"]
         if key in st["visited"]:
             cls.append("visited")
@@ -845,6 +925,8 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
             f'<p class="meta-line">{meta}</p>{token_legend(s, live, lang, [t for st in data["steps"] for t in st["tokens"]])}'
             f'{tokens_html(step["tokens"], not live, family, lang)}</section>'
         )
+    elif step["text"] or step["done"]:  # from a harness that sees the model's text, not its tokens
+        parts.append(streamed_html(step, lang))
 
     if step["parsed"]:
         body = []
@@ -860,6 +942,9 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
             if c["errors"]:
                 errors = esc(pick(lang, "；", "; ").join(c["errors"]))
                 body.append(f'<p class="check bad">✗ {errors} → ' + pick(lang, "把錯誤當作觀察送回模型", "the error goes back to the model as an observation") + "</p>")
+            elif family is None:  # pi: the API sends the call as JSON already, and pi checks it as it runs the tool
+                body.append('<p class="check ok">' + pick(lang, "API 傳回的已經是 JSON；pi 執行前再用工具的 schema 檢查參數",
+                                                          "the API returned it as JSON; pi checks the arguments against the tool's schema before running it") + "</p>")
             else:
                 name = esc(family.name)
                 body.append('<p class="check ok">✓ ' + pick(lang, f"從 {name} 格式解析成 JSON，符合工具 schema",
@@ -879,8 +964,9 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
                                                              "the confirmation timed out; the harness took it as a refusal and stopped the loop") + "</p>")
             elif c["approval"] == "stopped":
                 body.append('<p class="check warn">⏹ ' + pick(lang, "執行被停止，這個呼叫沒有執行", "the run was stopped, so this call did not run") + "</p>")
+        what = PI_DIAGRAM["harness"][lang] if data["harness"] == "pi" else pick(lang, "解析 · 驗證 · 權限", "parse · check · ask")
         parts.append(
-            f'<section class="stage stage-harness"><h4 class="stage-title">Harness <small>{pick(lang, "解析 · 驗證 · 權限", "parse · check · ask")}</small></h4>'
+            f'<section class="stage stage-harness"><h4 class="stage-title">Harness <small>{what}</small></h4>'
             f'{"".join(body)}</section>'
         )
 
@@ -906,6 +992,49 @@ def step_html(step: dict, data: dict, lang: str, live: bool) -> str:
     return "".join(parts)
 
 
+def text_html(runs: list[dict]) -> str:
+    """The text a harness streamed (delta), by channel: thinking in italics, tool calls in monospace; no token
+    boundaries, since it saw none."""
+    return '<div class="tokens">' + "".join(f'<span class="run ch-{esc(r["channel"])}">{esc(r["text"])}</span>' for r in runs) + "</div>"
+
+
+def streamed_html(step: dict, lang: str) -> str:
+    """The model section of a step whose harness asks a model's API (pi): the text as it streamed, and what the
+    provider reported once the reply was done. No number here was guessed: an API sends no probabilities."""
+    sep, done, meta = '<span class="sep">|</span>', step["done"], []
+    if done:
+        meta.append(pick(lang, f'生成 <b>{done["n_tokens"]:,}</b> tokens', f'wrote <b>{done["n_tokens"]:,}</b> tokens')
+                    + (f' · {done["tok_per_s"]} tok/s' if done.get("tok_per_s") else ""))
+        if done.get("first_ms") is not None:
+            meta.append(pick(lang, f"第一段輸出在 {fmt_ms(done['first_ms'])} 後回來", f"first output after {fmt_ms(done['first_ms'])}"))
+        usage = done.get("usage") or {}
+        if usage.get("prompt"):
+            cached = pick(lang, f"，其中 {usage['cached']:,} 來自 cache", f", {usage['cached']:,} from the cache") if usage.get("cached") else ""
+            meta.append(pick(lang, f"讀了 <b>{usage['prompt']:,}</b> tokens{cached}", f"read <b>{usage['prompt']:,}</b> tokens{cached}"))
+        if usage.get("cost"):
+            meta.append(pick(lang, f"照 pi 的價目約 ${usage['cost']:.4f}", f"about ${usage['cost']:.4f} at pi's prices"))
+        if done["finish"] == "max_new_tokens":
+            meta.append(pick(lang, "到達 token 上限", "hit the token limit"))
+        elif done["finish"] == "user_stopped":
+            meta.append(pick(lang, "使用者中斷", "stopped by the user"))
+        elif done["finish"] == "error":
+            meta.append(pick(lang, "請求失敗", "the request failed"))
+    else:
+        chars = sum(len(r["text"]) for r in step["text"])
+        meta.append(pick(lang, f"已收到 {chars:,} 字元…", f"{chars:,} characters so far…"))
+    legend = (
+        '<p class="tok-legend"><span>' + pick(lang, "API 傳回來的是文字，不是 token，所以沒有機率可畫；token 數是 provider 報的。",
+                                               "The API sends back text, not tokens, so there are no probabilities to draw; the token counts are the provider's.")
+        + "</span>" + pick(lang, '<span><em>斜體</em> = 思考</span><span><span class="mono">等寬</span> = 工具呼叫</span>',
+                           '<span><em>italic</em> = thinking</span><span><span class="mono">monospace</span> = tool call</span>') + "</p>"
+    )
+    return (
+        f'<section class="stage stage-model"><h4 class="stage-title">{pick(lang, "模型", "Model")} '
+        f'<small>{pick(lang, "一次 API 請求，回覆一段一段傳回來", "one request to the API; the reply streams back")}</small></h4>'
+        f'<p class="meta-line">{sep.join(meta)}</p>{legend}{text_html(step["text"])}</section>'
+    )
+
+
 def call_html(name: str, arguments: dict | None) -> str:
     """A tool call as name(arguments JSON). An argument that runs over several lines, such as code, is shown as …
     in the JSON and written out below it."""
@@ -924,13 +1053,14 @@ def error_text(data: dict, lang: str) -> str | None:
 
 def stop_html(data: dict, lang: str) -> str:
     end = data["end"]
-    title, desc = STOP_REASONS[lang].get(end["stop_reason"], (end["stop_reason"], ""))
+    reasons = {**STOP_REASONS[lang], **(PI_STOP_REASONS[lang] if data["harness"] == "pi" else {})}
+    title, desc = reasons.get(end["stop_reason"], (end["stop_reason"], ""))
     last = data["steps"][-1] if data["steps"] else None
     piece = last["done"]["stop_piece"] if last and last["done"] else None
     if end["stop_reason"] == "no_tool_call" and piece:
         stop_chip, meaning = chip(piece, data["family"], lang), stop_meaning(piece, data["family"], lang)
         desc += pick(lang, f" 最後停在 {stop_chip}（{meaning}）。", f" It stopped at {stop_chip} ({meaning}).")
-    gen = sum(len(s["tokens"]) for s in data["steps"])
+    gen = sum(generated(s) for s in data["steps"])
     error = f'<p class="check bad">{esc(error_text(data, lang))}</p>' if data["error"] else ""
     cls = "stop-card is-error" if end["stop_reason"] == "error" else "stop-card"
     totals = pick(lang, f'共 {len(data["steps"])} 步 · 生成 {gen:,} tokens', f'{n_steps(len(data["steps"]), lang)} · {gen:,} tokens generated')
@@ -1106,15 +1236,15 @@ def knobs_html(s: dict, defaults: dict, lang: str) -> str:
 def step_rows(data: dict, lang: str) -> list[dict]:
     rows = []
     for s in data["steps"]:
-        if not s["context"]:
+        if not s["context"] and not s["done"]:
             continue
         probs = [t["p"] for t in s["tokens"] if not t["special"] and known(t, "p")]
         done = s["done"] or {}
         rows.append({
             "step": s["n"],
-            pick(lang, "脈絡 tokens", "context tokens"): s["context"]["n_tokens"],
+            pick(lang, "脈絡 tokens", "context tokens"): context_tokens(s),
             "prefill ms": s["prefill"]["ms"] if s["prefill"] else None,
-            pick(lang, "生成 tokens", "generated tokens"): len(s["tokens"]),
+            pick(lang, "生成 tokens", "generated tokens"): generated(s),
             "tok/s": done.get("tok_per_s"),
             pick(lang, "平均機率", "mean probability"): round(sum(probs) / len(probs), 3) if probs else None,
             pick(lang, "停止", "stop"): done.get("stop_piece") or done.get("finish"),
@@ -1279,4 +1409,77 @@ def folder_html(info: dict, lang: str) -> str:
         + pick(lang, "下面是每個檔案的大小和用途，以及它在這個家族的 checkpoint 裡裝了什麼；欄位的值是從檔案讀出來的。",
                " Below is each file's size and purpose, and what it holds in this family's checkpoints; the values of the fields are read from the files.")
         + f'</p>{files_html(folder, family.file_notes, family, lang, served="server" in info)}{extra}</div>'
+    )
+
+
+# ---------- pi ----------
+
+def pi_model_html(model: dict, version: str, lang: str) -> str:
+    """The model pi asks, from pi's own model object: it runs at its provider, and the page sees only what the API
+    sends back."""
+    name, where = model.get("name") or model["id"], f'{model["provider"]}/{model["id"]}'
+    cost = model.get("cost") or {}
+    specs = [
+        ("provider", model["provider"]),
+        ("API", model.get("api")),
+        (pick(lang, "脈絡上限", "context limit"), f'{model["contextWindow"]:,} tokens' if model.get("contextWindow") else None),
+        (pick(lang, "輸出上限", "output limit"), f'{model["maxTokens"]:,} tokens' if model.get("maxTokens") else None),
+        (pick(lang, "讀得懂", "reads"), " · ".join(MODALITIES[lang].get(k, k) for k in model.get("input") or ("text",))),
+        (pick(lang, "會思考", "thinks"), pick(lang, "會", "yes") if model.get("reasoning") else pick(lang, "不會", "no")),
+        (pick(lang, "每百萬 token", "per million tokens"),
+         pick(lang, f'讀 ${cost["input"]} · 寫 ${cost["output"]}', f'${cost["input"]} in · ${cost["output"]} out') if cost.get("input") is not None and cost.get("output") is not None else None),
+    ]
+    spec_html = "".join(f"<div><dt>{esc(k)}</dt><dd>{esc(v)}</dd></div>" for k, v in specs if v)
+    about = pick(
+        lang,
+        f"pi {version} 跑迴圈，透過 {model['provider']} 的 API 問這個模型；模型在 provider 的伺服器上跑，不在這台電腦上。"
+        "模型清單和登入資訊是 pi 自己的（`pi` 再輸入 `/login`，或環境裡的 API key）。"
+        "API 傳回來的是文字，不是 token，所以這裡沒有 token 的機率、特殊 token 和模型資料夾；pi 也不說它送出的 prompt 是什麼。",
+        f"pi {version} runs the loop and asks this model through {model['provider']}'s API; the model runs on the provider's servers, "
+        "not on this computer. The models and the credentials are pi's own (`pi`, then `/login`, or an API key in the environment). "
+        "An API sends back text, not tokens, so there are no token probabilities, special tokens or model folder here; nor does pi say which prompt it sends.",
+    )
+    return (
+        f'<div class="card"><h4>{esc(name)} <small>{esc(where)}</small></h4><p class="card-sub">{prose_html(about)}</p>'
+        f'<dl class="specs">{spec_html}</dl></div>'
+    )
+
+
+def pi_settings_html(s: dict, lang: str) -> str:
+    """What the sidebar gave pi for the turn."""
+    rows = [
+        (pick(lang, "思考", "Thinking"), s.get("thinking", "off"),
+         pick(lang, "pi 的思考等級：off 到 high，越高模型在回覆前想得越多（也越貴）。模型不會思考時只有 off。",
+              "pi's thinking level, from off to high: the higher, the more the model thinks before it replies (and the more it costs). A model that does not think has only off.")),
+        (pick(lang, "執行工具前先問我", "Ask me before running a tool"), pick(lang, "開", "on") if s.get("approve_tools") else pick(lang, "關", "off"),
+         pick(lang, "pi 自己不問；網頁載入一個小 extension（pi_approve.ts），在每次執行工具前問你。",
+              "pi does not ask by itself; the page loads a small extension (pi_approve.ts) that asks you before every tool call.")),
+        (pick(lang, "步數上限", "Max steps"), s.get("max_steps"),
+         pick(lang, "pi 沒有步數上限；跑滿設定的步數，網頁就請 pi 中止。", "pi has no step limit; once the loop has gone around this many times, the page asks pi to abort.")),
+    ]
+    body = "".join(f"<div><dt>{k} <b>{esc(v)}</b></dt><dd>{d}</dd></div>" for k, v, d in rows)
+    return (
+        f'<div class="card"><h4>{pick(lang, "pi 的設定", "pi settings")}</h4><p class="card-sub">'
+        + pick(lang, "解碼的設定（temperature、top-k、top-p）在 provider 那邊，pi 不讓人改；側欄只給得了這些。",
+               "The decoding settings (temperature, top-k, top-p) are the provider's, and pi does not let them be changed; the sidebar gives only these.")
+        + f'</p><dl class="knobs">{body}</dl></div>'
+    )
+
+
+def pi_tools_html(tools: dict, offered: list[str], lang: str) -> str:
+    """pi's built-in tools, each with what it does and where it runs; one not in `offered` is marked as kept from the model."""
+    items = []
+    for name, (what, environment) in tools.items():
+        off = "" if name in offered else '<p class="check warn">' + pick(lang, "這一輪沒有提供給模型，見側欄的設定", "not offered to the model in this turn; see the sidebar") + "</p>"
+        items.append(
+            f'<li><p class="call-line"><span class="fn">{esc(name)}</span></p><p class="tool-desc">{esc(what[lang])}</p>'
+            f'<p class="result-line">{pick(lang, "環境：", "environment: ")}{esc(environment[lang])}</p>{off}</li>'
+        )
+    return (
+        f'<div class="card"><h4>{pick(lang, "動作空間：pi 的工具", "Action space: the tools pi has")}</h4><p class="card-sub">'
+        + pick(lang, "pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱：bash 碰得到你碰得到的一切。想先看過每個呼叫，就打開「執行工具前先問我」。"
+                     "工具的 schema 和說明是 pi 寫給模型的，網頁看不到。",
+               "pi's tools run on this computer, in this conversation's folder, without a sandbox: bash reaches whatever you can. To see each call first, "
+               "turn on Ask me before running a tool. The tools' schemas and descriptions are pi's, for the model, and the page does not see them.")
+        + f'</p><ul class="tool-list">{"".join(items)}</ul></div>'
     )

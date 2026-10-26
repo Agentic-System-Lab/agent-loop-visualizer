@@ -10,16 +10,19 @@
 [[app/page.py|self.thread = threading.Thread]]
     self.thread = threading.Thread(target=self._work, daemon=True)
 
-[[harness/agent.py|def emit(self, event_type]]
+[[harness/harnesses/simple_harness.py|def emit(self, event_type]]
     def emit(self, event_type: str, **data):
 
-[[harness/agent.py|def stop(self):]]
+[[harness/harnesses/simple_harness.py|def stop(self):]]
     def stop(self):
 
-[[harness/agent.py|def decide(self, call_id]]
+[[harness/harnesses/simple_harness.py|def decide(self, call_id]]
     def decide(self, call_id: str, approved: bool):
 
-[[harness/agent.py|def run(self):]]
+[[harness/harnesses/harness.py|class Harness(Protocol):]]
+    class Harness(Protocol):
+
+[[harness/harnesses/simple_harness.py|def run(self):]]
     def run(self):
 
 [[harness/backends/backend.py|class Backend(Protocol):]]
@@ -350,15 +353,15 @@ app/page.py: def current_llm() -> Backend:
     if not slot.lock.acquire(blocking=False):
 
 app/page.py: def start_run(
-    def start_run(llm: Backend, text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
+    def start_run(who: "Backend | PiAgent", text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
         """Ask the question in a new run, with `uploads` (file name, contents) saved in the conversation's folder first."""
         slot = generation_slot()
         if not slot.lock.acquire(blocking=False):
             st.toast(tr("另一個 agent 正在執行（可能在別的分頁），請稍等。", "Another agent is running (maybe in another tab). Please wait."))
             return False
         try:
-            attachments = [media.save(chat_folder(), name, data, llm.modalities) for name, data in uploads]
-            run = LiveRun(llm, st.session_state.history, text, attachments, chat_folder(), current_settings(llm), slot)
+            attachments = [media.save(chat_folder(), name, data, who.modalities) for name, data in uploads]
+            run = LiveRun(harness_for(who, text, attachments), text, attachments, slot)
         except Exception:
             slot.lock.release()
             raise
@@ -379,17 +382,27 @@ app/page.py: def current_settings(
             lang=s.lang,
         )
 
+app/page.py: def harness_for(
+    def harness_for(who: "Backend | PiAgent", text: str, attachments: list[media.Attachment]) -> Callable[[Callable[[dict], None]], Harness]:
+        """What runs the turn: pi, or this project's harness on the model in memory, with the sidebar's settings now."""
+        history, folder = st.session_state.history, chat_folder()
+        if isinstance(who, PiAgent):
+            settings, session = pi_settings(who), st.session_state.chat_id
+            return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session)
+        settings = current_settings(who)
+        return lambda emit: SimpleHarness(who, history, text, settings, emit, attachments, folder)
+
 app/page.py: class LiveRun:
     class LiveRun:
-        """One user turn: the harness thread and the events it has emitted so far."""
+        """One user turn: the harness thread and the events it has emitted so far. `make` makes the harness (simple_harness.SimpleHarness
+        or pi_harness.PiHarness) given the function it sends its events to."""
 
-        def __init__(self, llm: Backend, history: list[dict], text: str, attachments: list[media.Attachment], files: Path,
-                     settings: RunSettings, slot: Slot):
+        def __init__(self, make: Callable[[Callable[[dict], None]], Harness], text: str, attachments: list[media.Attachment], slot: Slot):
             self.text = text
             self.attachments = attachments
             self.events: list[dict] = []
             self.absorbed = False
-            self.run = Run(llm, history, text, settings, self.events.append, attachments, files)
+            self.run = make(self.events.append)
             self._slot = slot
             slot.run = self
             self.thread = threading.Thread(target=self._work, daemon=True)
@@ -412,10 +425,10 @@ app/page.py: class LiveRun:
 
 == prepare ==
 
-[[harness/agent.py|self.messages = [*history,]]
+[[harness/harnesses/simple_harness.py|self.messages = [*history,]]
     self.messages = [*history, {"role": "user", "content": media.user_content(user_text, list(attachments))}]
 
-harness/agent.py: def __init__(self, llm: Backend, history
+harness/harnesses/simple_harness.py: def __init__(self, llm: Backend, history
     def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
                  attachments: list[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
@@ -431,10 +444,10 @@ harness/agent.py: def __init__(self, llm: Backend, history
         self._decisions: dict[str, bool] = {}
         self._decided = threading.Condition()
 
-[[harness/agent.py|SYSTEM_WITH_TOOLS = ]]
+[[harness/harnesses/simple_harness.py|SYSTEM_WITH_TOOLS = ]]
     SYSTEM_WITH_TOOLS = """You are a helpful assistant running inside an agent loop.
 
-harness/agent.py: def run(self): … stop_reason, final = "max_steps", ""
+harness/harnesses/simple_harness.py: def run(self): … stop_reason, final = "max_steps", ""
     def run(self):
         s = self.settings
         family = self.llm.family  # how this model writes its turns, thinking and tool calls
@@ -442,7 +455,7 @@ harness/agent.py: def run(self): … stop_reason, final = "max_steps", ""
         schemas = {t.name: t.parameters for t in TOOLS.values()}
         system = {"role": "system", "content": SYSTEM_WITH_TOOLS if tools else SYSTEM_NO_TOOLS}
         self.emit(
-            "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+            "run_start", run_id=self.id, harness="simple", model=self.llm.model_id, family=family.key,
             settings=_settings_dict(s), tools=list(self.tools),
         )
 
@@ -460,7 +473,7 @@ harness/tools.py: def schema(self) -> dict:
 
 == context ==
 
-harness/agent.py: for step in range(1, s.max_steps + 1): … roles=_role_counts([system, *self.messages])
+harness/harnesses/simple_harness.py: for step in range(1, s.max_steps + 1): … roles=_role_counts([system, *self.messages])
     for step in range(1, s.max_steps + 1):
         self.emit("step_start", step=step)
         prompt = self.llm.render([system, *self.messages], tools, s.thinking)
@@ -487,10 +500,10 @@ harness/backends/simple_backend.py: def render(self, messages
             messages, tools=tools or None, tokenize=False, add_generation_prompt=generation_prompt, enable_thinking=thinking
         )
 
-[[harness/agent.py|encoded = self.llm.encode(]]
+[[harness/harnesses/simple_harness.py|encoded = self.llm.encode(]]
     encoded = self.llm.encode(prompt, media.parts(self.messages))
 
-harness/agent.py: def common_prefix(
+harness/harnesses/simple_harness.py: def common_prefix(
     def common_prefix(a: str, b: str) -> int:
         n = min(len(a), len(b))
         i = 0
@@ -640,7 +653,7 @@ harness/backends/vllm_backend.py: def encode(self, prompt
 
 == model ==
 
-harness/agent.py: done = None … self.emit("model_end"
+harness/harnesses/simple_harness.py: done = None … self.emit("model_end"
     done = None
     for ev in self.llm.generate(encoded, s.sampling, self._stop.is_set):
         kind = ev.pop("type")
@@ -1116,7 +1129,7 @@ harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
 
 == parse ==
 
-harness/agent.py: prefix = family.thought_prefix if … self.emit("parsed"
+harness/harnesses/simple_harness.py: prefix = family.thought_prefix if … self.emit("parsed"
     prefix = family.thought_prefix if prompt.endswith(family.thought_prefix) else ""
     parsed = family.parse(prefix + raw, schemas, s.lang)
     calls = parsed["tool_calls"] if tools else []
@@ -1217,7 +1230,7 @@ harness/families/qwen3_5.py: def convert(value: str, kind
 
 == stop ==
 
-harness/agent.py: if done["finish"] == "user_stopped": … if not calls:
+harness/harnesses/simple_harness.py: if done["finish"] == "user_stopped": … if not calls:
     if done["finish"] == "user_stopped":
         stop_reason, final = "user_stopped", parsed["content"]
         self.messages.append({"role": "assistant", "content": final})
@@ -1228,10 +1241,10 @@ harness/agent.py: if done["finish"] == "user_stopped": … if not calls:
         self.messages.append({"role": "assistant", "content": final})
         break
 
-[[harness/agent.py|stop_reason = "approval_timeout" if self._timed_out]]
+[[harness/harnesses/simple_harness.py|stop_reason = "approval_timeout" if self._timed_out]]
     stop_reason = "approval_timeout" if self._timed_out else "user_stopped"
 
-harness/agent.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
+harness/harnesses/simple_harness.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
             if format_errors >= MAX_FORMAT_ERRORS:
                 stop_reason = "format_errors"
                 break
@@ -1247,7 +1260,7 @@ harness/agent.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
 
 == record ==
 
-harness/agent.py: ids = [f"call_{step}_{i}" … prev_sequence = self.llm.render(
+harness/harnesses/simple_harness.py: ids = [f"call_{step}_{i}" … prev_sequence = self.llm.render(
     ids = [f"call_{step}_{i}" for i in range(len(calls))]
     assistant = {
         "role": "assistant",
@@ -1267,7 +1280,7 @@ harness/agent.py: ids = [f"call_{step}_{i}" … prev_sequence = self.llm.render(
 
 == check ==
 
-harness/agent.py: def _handle_call( … args, errors = tool.validate(args, lang)
+harness/harnesses/simple_harness.py: def _handle_call( … args, errors = tool.validate(args, lang)
     def _handle_call(self, step: int, cid: str, call: dict, seen: list) -> str:
         """Validate, approve and execute one tool call. Returns the observation text for the model."""
         lang = self.settings.lang
@@ -1299,7 +1312,7 @@ harness/tools.py: def validate(self, args: dict
         filled.update(args)
         return filled, errors
 
-harness/agent.py: key = (call["name"], json.dumps … {"error": "; ".join(errors)}
+harness/harnesses/simple_harness.py: key = (call["name"], json.dumps … {"error": "; ".join(errors)}
     key = (call["name"], json.dumps(args, sort_keys=True, ensure_ascii=False))
     repeated = key in seen
     seen.append(key)
@@ -1317,7 +1330,7 @@ harness/agent.py: key = (call["name"], json.dumps … {"error": "; ".join(errors
     if errors:
         return self._observe(step, cid, call["name"], {"error": "; ".join(errors)}, ok=False, ms=0)
 
-harness/agent.py: if self.settings.approve_tools: … return self._observe(step, cid, call["name"], {"error": error}
+harness/harnesses/simple_harness.py: if self.settings.approve_tools: … return self._observe(step, cid, call["name"], {"error": error}
     if self.settings.approve_tools:
         self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)
         approved = self._wait_for_decision(cid)
@@ -1333,10 +1346,10 @@ harness/agent.py: if self.settings.approve_tools: … return self._observe(step,
                 error = pick(lang, "使用者拒絕執行這個工具呼叫", "The user refused to run this tool call")
             return self._observe(step, cid, call["name"], {"error": error}, ok=False, ms=0)
 
-[[harness/agent.py|APPROVAL_TIMEOUT = ]]
+[[harness/harnesses/simple_harness.py|APPROVAL_TIMEOUT = ]]
     APPROVAL_TIMEOUT = 300  # seconds; an unanswered request (say, from a closed tab) must not hold the model forever
 
-harness/agent.py: def _wait_for_decision(
+harness/harnesses/simple_harness.py: def _wait_for_decision(
     def _wait_for_decision(self, cid: str) -> bool:
         deadline = time.monotonic() + APPROVAL_TIMEOUT
         with self._decided:
@@ -1366,7 +1379,7 @@ app/page.py: for call in render.pending_approvals(data):
 
 == execute ==
 
-harness/agent.py: self.emit("tool_start" … return self._observe(step, cid, call["name"], result, ok=ok
+harness/harnesses/simple_harness.py: self.emit("tool_start" … return self._observe(step, cid, call["name"], result, ok=ok
     self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
     start = time.perf_counter()
     try:
@@ -1439,7 +1452,7 @@ harness/tools.py: def sandbox_command(
 
 == observe ==
 
-harness/agent.py: def _observe(
+harness/harnesses/simple_harness.py: def _observe(
     def _observe(self, step: int, cid: str, name: str, result: dict | ToolResult, ok: bool, ms: float) -> str:
         # The model reads a ToolResult's data; its images (run_python's charts) are only for the page to show.
         result, images = (result.data, result.images) if isinstance(result, ToolResult) else (result, [])
@@ -1450,7 +1463,7 @@ harness/agent.py: def _observe(
         self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1), images=images)
         return text
 
-harness/agent.py: for cid, call in zip(ids, calls): … if format_errors >= MAX_FORMAT_ERRORS:
+harness/harnesses/simple_harness.py: for cid, call in zip(ids, calls): … if format_errors >= MAX_FORMAT_ERRORS:
     for cid, call in zip(ids, calls):
         result = self._handle_call(step, cid, call, seen)
         if call["error"]:
@@ -1489,17 +1502,18 @@ app/page.py: @st.fragment(run_every= … viz_panel(llm)
 
 app/render.py: def build(events: list[dict])
     def build(events: list[dict]) -> dict:
-        data = {"model": None, "family": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+        data = {"model": None, "family": None, "harness": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
         for ev in events:
             kind = ev["type"]
             data["last"], data["t"] = kind, ev["t"]
             if kind == "run_start":
-                data["model"], data["family"] = ev["model"], families.get(ev["family"])
-                data["settings"] = ev["settings"]
+                # A harness that does not know how the model writes its turns (pi) sends no family.
+                data["model"], data["family"] = ev["model"], families.get(ev["family"]) if ev.get("family") else None
+                data["harness"], data["settings"] = ev.get("harness", "simple"), ev["settings"]
             elif kind == "step_start":
                 data["steps"].append({
                     "n": ev["step"], "t0": ev["t"], "t1": ev["t"], "context": None, "prefill": None,
-                    "tokens": [], "done": None, "parsed": None, "calls": {},
+                    "tokens": [], "text": [], "done": None, "parsed": None, "calls": {},
                 })
             elif kind == "run_end":
                 data["end"] = ev
@@ -1510,6 +1524,11 @@ app/render.py: def build(events: list[dict])
                 step["t1"] = ev["t"]
                 if kind == "token":
                     step["tokens"].append(ev)
+                elif kind == "delta":  # kept as runs of one channel: [{"channel", "text"}]
+                    if step["text"] and step["text"][-1]["channel"] == ev["channel"]:
+                        step["text"][-1] = {**step["text"][-1], "text": step["text"][-1]["text"] + ev["text"]}
+                    else:
+                        step["text"].append({"channel": ev["channel"], "text": ev["text"]})
                 elif kind in ("context", "prefill", "parsed"):
                     step[kind] = ev
                 elif kind == "model_end":
@@ -1537,10 +1556,12 @@ app/render.py: def build(events: list[dict])
 
 app/render.py: state["active"], state["edge"] = {
     state["active"], state["edge"] = {
-        "step_start": ("context", "env-context" if step and step["n"] > 1 else None),
+        # pi sends the request as its turn starts, and says nothing more until the model's output comes back.
+        "step_start": ("context", "context-model" if data["harness"] == "pi" else "env-context" if step and step["n"] > 1 else None),
         "context": ("context", "context-model"),
         "prefill": ("model", "context-model"),
         "token": ("model", None),
+        "delta": ("model", None),
         "model_end": ("harness", "model-harness"),
         "parsed": ("harness", "model-harness"),
         "tool_call": ("harness", None),
@@ -1562,7 +1583,7 @@ app/page.py: def absorb_finished(
                     st.session_state.history = end["messages"]
                 run.absorbed = True
 
-harness/agent.py: def stop(self): … def decide(self, call_id
+harness/harnesses/simple_harness.py: def stop(self): … def decide(self, call_id
     def stop(self):
         self._stop.set()
         with self._decided:
@@ -1573,15 +1594,62 @@ harness/agent.py: def stop(self): … def decide(self, call_id
             self._decisions[call_id] = approved
             self._decided.notify_all()
 
+== pi ==
+
+harness/harnesses/pi_harness.py: self._pi = Process(self._args() … self._loop()
+    self._pi = Process(self._args(), self.folder, self._inbox, {
+        "AGENT_LOOP_REFUSAL": pick(s.lang, "使用者拒絕執行這個工具呼叫", "The user refused to run this tool call"),
+    })
+    # Each waits for its answer: pi handles commands concurrently, and a prompt must not go to the model it starts on.
+    self._pi.request({"type": "set_model", "provider": s.provider, "modelId": s.model})
+    self._pi.request({"type": "set_thinking_level", "level": s.thinking})
+    # A failed request is retried by pi as a new turn, which would be a step of its own; the page shows the error instead.
+    self._pi.request({"type": "set_auto_retry", "enabled": False})
+    message, images = self._message()
+    if not self._stopped_meanwhile():
+        self._pi.request({"type": "prompt", "message": message, **({"images": images} if images else {})})
+        self._loop()
+
+harness/harnesses/pi_harness.py: def _on(self, rec: dict) -> bool:
+    def _on(self, rec: dict) -> bool:
+        """Turn one of pi's records into the page's events; True once pi has settled."""
+        kind = rec.get("type")
+        if kind == "turn_start":
+            self._turn_start()
+        elif kind == "message_start" and self._open and rec["message"].get("role") == "assistant":
+            self._stream_t, self._wrote = time.perf_counter(), False
+        elif kind == "message_update" and self._open:
+            self._update(rec["assistantMessageEvent"])
+        elif kind == "message_end" and self._open and rec["message"].get("role") == "assistant":
+            self._message_end(rec["message"])
+        elif kind == "tool_execution_start" and self._open and not rec.get("parentToolCallId"):
+            self._tool_start(rec["toolCallId"], rec["toolName"], rec.get("args") or {})
+        elif kind == "tool_execution_end" and rec.get("toolCallId") in self._calls and not rec.get("parentToolCallId"):
+            self._tool_end(rec["toolCallId"], rec.get("result") or {}, rec.get("isError", False), rec.get("durationMs"))
+        elif kind == "extension_ui_request":
+            self._dialog(rec)
+        return kind == "agent_settled"
+
+[[app/render.py|def streamed_html(]]
+    def streamed_html(step: dict, lang: str) -> str:
+
+harness/harnesses/pi_approve.ts: pi.on("tool_call" … return undefined;
+    pi.on("tool_call", async (event, ctx) => {
+    	const call = JSON.stringify({ toolCallId: event.toolCallId, toolName: event.toolName, input: event.input });
+    	if (!(await ctx.ui.confirm(TITLE, call))) {
+    		return { block: true, reason: process.env.AGENT_LOOP_REFUSAL || "The user refused to run this tool call" };
+    	}
+    	return undefined;
+
 == events ==
 
-[[harness/agent.py|"run_start", run_id=]]
-    "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+[[harness/harnesses/simple_harness.py|"run_start", run_id=]]
+    "run_start", run_id=self.id, harness="simple", model=self.llm.model_id, family=family.key,
 
-[[harness/agent.py|self.emit("step_start"]]
+[[harness/harnesses/simple_harness.py|self.emit("step_start"]]
     self.emit("step_start", step=step)
 
-[[harness/agent.py|"context",]]
+[[harness/harnesses/simple_harness.py|"context",]]
     "context",
 
 [[harness/backends/simple_backend.py|yield {"type": "prefill"]]
@@ -1590,29 +1658,32 @@ harness/agent.py: def stop(self): … def decide(self, call_id
 [[harness/backends/simple_backend.py|"type": "token",]]
     "type": "token",
 
-[[harness/agent.py|self.emit("model_end"]]
+[[harness/harnesses/pi_harness.py|self.emit("delta"]]
+    self.emit("delta", step=self._step, channel=channel, text=text)
+
+[[harness/harnesses/simple_harness.py|self.emit("model_end"]]
     self.emit("model_end", step=step, raw=raw, **done)
 
-[[harness/agent.py|self.emit("parsed"]]
+[[harness/harnesses/simple_harness.py|self.emit("parsed"]]
     self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
 
-[[harness/agent.py|"tool_call",]]
+[[harness/harnesses/simple_harness.py|"tool_call",]]
     "tool_call",
 
-[[harness/agent.py|self.emit("approval_request"]]
+[[harness/harnesses/simple_harness.py|self.emit("approval_request"]]
     self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)
 
-[[harness/agent.py|self.emit("approval",]]
+[[harness/harnesses/simple_harness.py|self.emit("approval",]]
     self.emit("approval", step=step, call_id=cid, approved=approved, timed_out=self._timed_out, stopped=stopped)
 
-[[harness/agent.py|self.emit("tool_start"]]
+[[harness/harnesses/simple_harness.py|self.emit("tool_start"]]
     self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
 
-[[harness/agent.py|self.emit("tool_result"]]
+[[harness/harnesses/simple_harness.py|self.emit("tool_result"]]
     self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1), images=images)
 
-[[harness/agent.py|self.emit("error"]]
+[[harness/harnesses/simple_harness.py|self.emit("error"]]
     self.emit("error", message=f"{type(e).__name__}: {e}", **texts)
 
-[[harness/agent.py|self.emit("run_end"]]
+[[harness/harnesses/simple_harness.py|self.emit("run_end"]]
     self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)

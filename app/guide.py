@@ -10,7 +10,7 @@ inlined, and _site/index.html, which sends a reader on to the language they pick
 switch before, or else their browser's. On every push to main, .github/workflows/pages.yml runs
 tests/test_guide.py, then builds and publishes them.
 
-The content points at code by text, not by line number: Code("harness/agent.py", "def run(self):") is
+The content points at code by text, not by line number: Code("harness/harnesses/simple_harness.py", "def run(self):") is
 looked up in the file every time the page is built, so the line numbers on the page follow the
 code when it changes, and each file:line chip and excerpt links to its lines on GitHub at the commit
 the page was built from. A start text must match exactly one line of its file; tests/test_guide.py
@@ -417,7 +417,7 @@ INTRO = {
     "zh": "從你按下送出到看到回覆，中間發生的每一件事，照實際執行的順序走一遍。app 的側欄可以選 Gemma 4 E2B 或 Qwen3.5 0.8B，"
     "兩個模型跑的是同一個迴圈。問題可以附上圖片、聲音或影片（{{media}}），打開「讓模型寫程式」時，"
     "模型還能在 Docker 沙箱裡執行 Python（{{execute}}）。模型可以在這台電腦上用 transformers 跑，也可以交給一台 vLLM 伺服器（{{backends}}）。"
-    "兩個模型或兩種跑法不一樣的地方，分成頁籤（tab）各自說明，一個模型或一種 backend 一個；在任何一段選了一個，整頁同一類的頁籤都跟著換。每段都附上做這件事的程式碼；`harness/agent.py:98` 這類標記是檔案的路徑和行號，"
+    "兩個模型或兩種跑法不一樣的地方，分成頁籤（tab）各自說明，一個模型或一種 backend 一個；在任何一段選了一個，整頁同一類的頁籤都跟著換。每段都附上做這件事的程式碼；`harness/harnesses/simple_harness.py:99` 這類標記是檔案的路徑和行號，"
     "滑過去會顯示那一行，點旁邊的 GitHub 圖示會在新分頁打開那個檔案、跳到那一行，程式片段標題上的圖示也一樣。"
     "行號是產生這一頁時從原始碼查出來的，連結也指向那個 commit；每次推上 main，GitHub Actions 都會重新產生，程式改了也會跟著更新。",
     "en": "Everything that happens between pressing send and seeing the reply, in the order it really runs. The app's sidebar picks "
@@ -426,7 +426,7 @@ INTRO = {
     "The model runs on this machine with transformers, or on a vLLM server ({{backends}}). Where the two models, or the two ways of running "
     "them, differ, a section tells each in a tab of its own, one per model or per backend, and picking one in any section switches every tab "
     "of that kind on the page. "
-    "Every part comes with the code that does it; a mark like `harness/agent.py:98` is a file's path and a line number, hovering over it shows that line, "
+    "Every part comes with the code that does it; a mark like `harness/harnesses/simple_harness.py:99` is a file's path and a line number, hovering over it shows that line, "
     "and the GitHub icon beside it opens the file at that line in a new tab, as the icon on an excerpt's title does for its lines. "
     "The line numbers are looked up in the source when this page is built, and the links go to that commit; GitHub Actions rebuilds it on every push to main, so they follow the code as it changes.",
 }
@@ -434,8 +434,8 @@ INTRO = {
 SECTIONS = [
     Section("overview", "ui",
             {"zh": "總覽：兩條 thread、一張事件列表", "en": "Overview: two threads, one event list"},
-            {"zh": "你送出一個問題就是一輪（一個 `Run`）；一輪裡是一個迴圈，每一圈叫一個 step。",
-             "en": "Each question you send is one turn (one `Run`); inside a turn is a loop, and each time around it is a step."}, (
+            {"zh": "你送出一個問題就是一輪（一個 `SimpleHarness`）；一輪裡是一個迴圈，每一圈叫一個 step。",
+             "en": "Each question you send is one turn (one `SimpleHarness`); inside a turn is a loop, and each time around it is a step."}, (
         {"zh": "每個 step 做同一件事：harness 把整段對話 render 成一個字串（脈絡）→ 模型一次推論、一個 token 一個 token 生成 → "
                "harness 解析輸出。有工具呼叫，就驗證、（需要時問你）、在環境執行，把結果接回對話，進下一圈；"
                "沒有工具呼叫，就把回覆交給你，這一輪結束。",
@@ -448,13 +448,19 @@ SECTIONS = [
          "en": "The app runs on two threads. Streamlit's script thread draws the page; the agent runs on a background thread "
                "([[app/page.py|self.thread = threading.Thread]]). The two talk through just three things:"},
         (
-            {"zh": "agent 每走到一個階段，就把一個事件 append 到 `events` 列表（[[harness/agent.py|def emit(self, event_type]]）；畫面只負責把這張列表畫出來。",
-             "en": "At every stage the agent appends an event to the `events` list ([[harness/agent.py|def emit(self, event_type]]); the page only draws that list."},
-            {"zh": "按「停止」時，畫面呼叫 `Run.stop()`（[[harness/agent.py|def stop(self):]]）。",
-             "en": "Pressing Stop calls `Run.stop()` ([[harness/agent.py|def stop(self):]])."},
-            {"zh": "按「允許」或「拒絕」時，畫面呼叫 `Run.decide()`（[[harness/agent.py|def decide(self, call_id]]）。",
-             "en": "Pressing Allow or Reject calls `Run.decide()` ([[harness/agent.py|def decide(self, call_id]])."},
+            {"zh": "agent 每走到一個階段，就把一個事件 append 到 `events` 列表（[[harness/harnesses/simple_harness.py|def emit(self, event_type]]）；畫面只負責把這張列表畫出來。",
+             "en": "At every stage the agent appends an event to the `events` list ([[harness/harnesses/simple_harness.py|def emit(self, event_type]]); the page only draws that list."},
+            {"zh": "按「停止」時，畫面呼叫 `SimpleHarness.stop()`（[[harness/harnesses/simple_harness.py|def stop(self):]]）。",
+             "en": "Pressing Stop calls `SimpleHarness.stop()` ([[harness/harnesses/simple_harness.py|def stop(self):]])."},
+            {"zh": "按「允許」或「拒絕」時，畫面呼叫 `SimpleHarness.decide()`（[[harness/harnesses/simple_harness.py|def decide(self, call_id]]）。",
+             "en": "Pressing Allow or Reject calls `SimpleHarness.decide()` ([[harness/harnesses/simple_harness.py|def decide(self, call_id]])."},
         ),
+        {"zh": "這三樣就是畫面對「跑迴圈的那一層」的全部要求，`Harness`（[[harness/harnesses/harness.py|class Harness(Protocol):]]）。"
+               "`SimpleHarness` 是這個專案自己寫的那一個；側欄的「用什麼跑迴圈」選 pi 時，換成 `PiHarness`，把迴圈交給 pi 這個 coding agent（{{pi}}）。"
+               "接下來各段講的都是 `SimpleHarness`。",
+         "en": "These three are all the page asks of whatever runs the loop, the `Harness` ([[harness/harnesses/harness.py|class Harness(Protocol):]]). "
+               "`SimpleHarness` is this project's own; with pi picked under What runs the loop in the sidebar, `PiHarness` takes its place and hands the loop "
+               "to pi, a coding agent ({{pi}}). The sections that follow are about `SimpleHarness`."},
         {"zh": "專案分成兩塊。`harness/` 跑一輪：迴圈、工具、模型，以及跑模型的那一層，它從不 import Streamlit。"
                "`app/` 是你看到的東西，站在 harness 上面：開始一輪、把 harness 送出的事件畫出來、把你的點擊傳回去。"
                "根目錄的 `streamlit_app.py` 只負責啟動 `app/page.py`。`harness/` 裡每個檔案的分工：",
@@ -462,8 +468,12 @@ SECTIONS = [
                "`app/` is what you see, on top of the harness: it starts a turn, draws the events the harness sends and passes your clicks back. "
                "`streamlit_app.py` at the top only starts `app/page.py`. What each file in `harness/` does:"},
         (
-            {"zh": "`harness/agent.py`：harness 的迴圈本體 `Run.run()`（[[harness/agent.py|def run(self):]]）。",
-             "en": "`harness/agent.py`: the harness's loop itself, `Run.run()` ([[harness/agent.py|def run(self):]])."},
+            {"zh": "`harness/harnesses/`：跑迴圈的那一層。`harness.py` 是畫面對它的要求 `Harness`，以及每個 harness 送出的事件；"
+                   "`simple_harness.py` 是這個專案的 harness，迴圈本體 `SimpleHarness.run()`（[[harness/harnesses/simple_harness.py|def run(self):]]）；"
+                   "`pi_harness.py` 把迴圈交給 pi，`pi_approve.ts` 是讓網頁在 pi 執行工具前先問你的 pi extension（{{pi}}）。",
+             "en": "`harness/harnesses/`: what runs the loop. `harness.py` is what the page asks of it, `Harness`, and the events every harness sends; "
+                   "`simple_harness.py` is this project's harness, with the loop itself, `SimpleHarness.run()` ([[harness/harnesses/simple_harness.py|def run(self):]]); "
+                   "`pi_harness.py` hands the loop to pi, and `pi_approve.ts` is the pi extension through which the page asks you before pi runs a tool ({{pi}})."},
             {"zh": "`harness/backends/backend.py`：harness 和畫面對「跑模型的那一層」的全部要求，`Backend`（[[harness/backends/backend.py|class Backend(Protocol):]]）："
                    "`render()`、`encode()`、`generate()`，以及 token 事件裡哪些欄位一定有、哪些要 backend 知道才有。"
                    "`simple_backend.py` 的 `SimpleBackend` 是其中一種，`vllm_backend.py` 是另一種（{{backends}}）。",
@@ -843,14 +853,16 @@ SECTIONS = [
                "`load_llm()` 用 `st.cache_resource(max_entries=1)` 快取，記憶體裡同時只留一個模型。換模型或換「用什麼跑模型」時，"
                "`release_model()` 先清掉快取、把記憶體還給系統，下一個模型才載入，兩個不會同時佔著記憶體。Streamlit 的 fast reruns 也關掉了（`.streamlit/config.toml`）：重跑會等正在跑的那一次到下一個 Streamlit 呼叫，而不是在新的 thread 裡和它同時跑，所以模型載入到一半時切換的設定，要等載入完才生效，不會在放掉之後才又載入完、留在記憶體裡。"
                "第一次用到某個模型時，把它建議的 temperature、top-p、top-k 寫進側欄；Qwen3.5 的 checkpoint 沒附 generation_config.json，建議值來自 family"
-               "（[[harness/backends/simple_backend.py|def _sampling_defaults(self)]]）。側欄的模型選單換了之後會開新對話（[[app/page.py|key=\"model_id\", on_change=switch_model]]）。",
+               "（[[harness/backends/simple_backend.py|def _sampling_defaults(self)]]）。側欄的模型選單換了之後會開新對話（[[app/page.py|key=\"model_id\", on_change=switch_model]]）。"
+               "側欄的「用什麼跑迴圈」選了 pi 時，這台電腦不載入模型，改由 `pi_picker()` 問 pi 有哪些模型（{{pi}}）。",
          "en": "On every rerun, `current_llm()` first gets a `Backend` for the model picked in the sidebar, and the rest of the page takes it for just that ({{backends}}). "
                "`load_llm()` is cached with `st.cache_resource(max_entries=1)`, so only one model stays in memory. Switching models, or what runs them, first has "
                "`release_model()` clear that cache and hand the memory back, and only then does the next model load, so the two never hold memory at once. "
                "Streamlit's fast reruns are off too (`.streamlit/config.toml`): a rerun waits for the run in progress to reach its next Streamlit call rather than running beside it in a new thread, so a switch made while a model loads takes effect once it has loaded, and the model does not finish loading after it was let go. "
                "The first time a model is used, its recommended temperature, top-p and top-k go into the sidebar; the Qwen3.5 checkpoint ships no "
                "generation_config.json, so its recommendations come from the family ([[harness/backends/simple_backend.py|def _sampling_defaults(self)]]). "
-               "Switching models in the sidebar's menu starts a new conversation ([[app/page.py|key=\"model_id\", on_change=switch_model]])."},
+               "Switching models in the sidebar's menu starts a new conversation ([[app/page.py|key=\"model_id\", on_change=switch_model]]). "
+               "With pi picked under What runs the loop, no model loads on this machine; `pi_picker()` asks pi which models it has instead ({{pi}})."},
         Code("app/page.py", "@st.cache_resource(max_entries=1", end="def release_model():"),
         {"zh": "其他的看是用什麼跑模型：", "en": "The rest depends on what runs the model:"},
         Tabs({
@@ -906,41 +918,45 @@ SECTIONS = [
                "language: the errors that the harness and the tools send the model are worded in it for the whole turn. `tools` are the tools "
                "the model is offered: `run_python` only when Let the model write code is on and Docker is ready ({{execute}})."},
         Code("app/page.py", "def current_settings("),
-        {"zh": "`LiveRun` 建立 `Run`，把 `self.events.append` 當成 `emit` 傳進去，連同附件和這段對話的資料夾，然後開背景 thread。"
+        {"zh": "`harness_for()` 決定這一輪由誰跑：`SimpleHarness` 跑在記憶體裡的模型上，或是 `PiHarness`（{{pi}}）。兩種都帶著這段對話的歷史、附件和資料夾，"
+               "設定在這時候就固定下來。",
+         "en": "`harness_for()` decides what runs the turn: a `SimpleHarness` on the model in memory, or a `PiHarness` ({{pi}}). Either gets the conversation so far, "
+               "the attachments and the conversation's folder, and its settings are fixed now."},
+        Code("app/page.py", "def harness_for("),
+        {"zh": "`LiveRun` 拿 `self.events.append` 當成 `emit` 建出這個 harness，然後開背景 thread。"
                "thread 跑完 `run.run()` 之後才在 `finally` 裡放開鎖，所以就算 agent 出錯，鎖也一定會還回去。",
-         "en": "`LiveRun` creates the `Run`, passing `self.events.append` as its `emit`, along with the attachments and the conversation's folder, "
-               "and starts the background thread. "
+         "en": "`LiveRun` makes that harness with `self.events.append` as its `emit`, and starts the background thread. "
                "The thread releases the lock in a `finally` only after `run.run()` returns, so the lock always comes back, even when the agent fails."},
         Code("app/page.py", "class LiveRun:",
              caption={"zh": "`daemon=True`：關掉 server 時不用等 agent 跑完。", "en": "`daemon=True`: stopping the server does not wait for the agent to finish."}),
     )),
     Section("prepare", "harness",
-            {"zh": "Run 準備：訊息、工具、system prompt", "en": "Preparing a run: messages, tools, system prompt"},
+            {"zh": "準備一輪：訊息、工具、system prompt", "en": "Preparing a run: messages, tools, system prompt"},
             {"zh": "`self.messages` 是 agent 的全部記憶，之後每一步都把它整份重新 render。",
              "en": "`self.messages` is all the agent remembers; every step renders the whole of it again."}, (
-        {"zh": "`Run.__init__` 把之前的對話歷史接上這次的問題，存成 `self.messages`（[[harness/agent.py|self.messages = [*history,]]）。"
+        {"zh": "`SimpleHarness.__init__` 把之前的對話歷史接上這次的問題，存成 `self.messages`（[[harness/harnesses/simple_harness.py|self.messages = [*history,]]）。"
                "之後的工具呼叫和工具結果都 append 在後面；模型本身不記得任何事，每一步看到的都是這份 list 重新 render 出來的字串。"
                "訊息用的是 Hugging Face 的通用格式（`role`、`content`、`tool_calls`），兩個家族都吃得下，格式差異交給各自的 chat template；"
                "附了檔案時，這則訊息的 `content` 是一串 part（{{media}}）。`self.tools` 是這一輪模型拿得到的工具，"
                "`self.files` 是這段對話的資料夾。`_stop` 和 `_decided` 是 UI thread 用來通知 agent 的兩個同步工具。",
-         "en": "`Run.__init__` appends this question to the conversation so far and keeps it as `self.messages` ([[harness/agent.py|self.messages = [*history,]]). "
+         "en": "`SimpleHarness.__init__` appends this question to the conversation so far and keeps it as `self.messages` ([[harness/harnesses/simple_harness.py|self.messages = [*history,]]). "
                "Tool calls and tool results are appended after it; the model itself remembers nothing, and what it sees in each step is this "
                "list rendered into a string again. The messages use Hugging Face's common format (`role`, `content`, `tool_calls`), which "
                "both families accept; each family's chat template takes care of its own format. With files attached, that message's `content` "
                "is a list of parts ({{media}}). `self.tools` are the tools the model gets this turn, and `self.files` is the conversation's folder. "
                "`_stop` and `_decided` are the two synchronization tools the UI thread signals the agent with."},
-        Code("harness/agent.py", "def __init__(self, llm: Backend, history"),
+        Code("harness/harnesses/simple_harness.py", "def __init__(self, llm: Backend, history"),
         {"zh": "`run()` 一開始拿出這個模型的 family，決定這一輪模型看得到什麼：收集 `self.tools` 裡每個工具的 `schema()` 給 chat template"
                "（關掉「使用工具」時一個都沒有），"
                "另外留一份「工具名稱 → 參數 schema」給 parser（Qwen 的參數值是純文字，要靠 schema 才知道型別）；"
-               "system prompt 也分有工具（[[harness/agent.py|SYSTEM_WITH_TOOLS = ]]）和沒工具兩個版本。"
-               "第一個事件 `run_start` 帶著模型和 family，畫面就知道這一輪要用哪個模型的格式來畫。",
+               "system prompt 也分有工具（[[harness/harnesses/simple_harness.py|SYSTEM_WITH_TOOLS = ]]）和沒工具兩個版本。"
+               "第一個事件 `run_start` 帶著模型和 family，畫面就知道這一輪要用哪個模型的格式來畫；它也說這一輪是哪個 harness 跑的（`simple`，或 pi 的 `pi`）。",
          "en": "`run()` starts by taking the model's family and deciding what the model gets to see this turn: it collects the `schema()` "
                "of every tool in `self.tools` for the chat template (none with Use tools off), and keeps a map from tool name to parameters schema for the parser (Qwen's "
                "argument values are plain text, and only the schema says their types); the system prompt comes in two versions, with tools "
-               "([[harness/agent.py|SYSTEM_WITH_TOOLS = ]]) and without. The first event, `run_start`, carries the model and the family, so the page "
-               "knows whose format to draw the turn in."},
-        Code("harness/agent.py", "def run(self):", end='stop_reason, final = "max_steps", ""',
+               "([[harness/harnesses/simple_harness.py|SYSTEM_WITH_TOOLS = ]]) and without. The first event, `run_start`, carries the model and the family, so the page "
+               "knows whose format to draw the turn in; it also says which harness ran the turn (`simple`, or pi's `pi`)."},
+        Code("harness/harnesses/simple_harness.py", "def run(self):", end='stop_reason, final = "max_steps", ""',
              caption={"zh": "`stop_reason` 的預設值是 `max_steps`：迴圈跑完所有步數都沒有 break，停止原因就是步數上限。",
                       "en": "`stop_reason` starts out as `max_steps`: when the loop uses up its steps without a break, the step limit is why it stopped."}),
         {"zh": "工具的 schema 就是一份 JSON Schema，包成 Hugging Face chat template 認得的 function 格式：",
@@ -953,7 +969,7 @@ SECTIONS = [
              "en": "The chat template joins the system prompt, the tools and the conversation into one long string; it is all the model can see in this step."}, (
         {"zh": "每一圈從 `for step in range(1, s.max_steps + 1)` 開始，側欄的「步數上限」就是這個 range 的上界。第一件事是 render：",
          "en": "Each step starts at `for step in range(1, s.max_steps + 1)`; the sidebar's Max steps is the top of that range. The first thing is to render:"},
-        Code("harness/agent.py", "for step in range(1, s.max_steps + 1):", end="roles=_role_counts([system, *self.messages])",
+        Code("harness/harnesses/simple_harness.py", "for step in range(1, s.max_steps + 1):", end="roles=_role_counts([system, *self.messages])",
              caption={"zh": "`step_start` 讓畫面開一張新的 step 卡片；`context` 帶著模型實際讀到的完整字串送出。",
                       "en": "`step_start` has the page open a new step card; `context` goes out with the whole string the model really reads."}),
         {"zh": "`render()` 呼叫 tokenizer 自帶的 chat template，模型在 vLLM 上跑時也是在這裡 render（{{files}}）。格式是模型自己的，harness 不用知道：",
@@ -980,19 +996,19 @@ SECTIONS = [
             ),
         }),
         Code("harness/backends/simple_backend.py", "def render(self, messages"),
-        {"zh": "接著 `encode()` 把字串變成模型真正讀的 token（[[harness/agent.py|encoded = self.llm.encode(]]）。只有文字時，就是 tokenizer 切出來的 token；"
+        {"zh": "接著 `encode()` 把字串變成模型真正讀的 token（[[harness/harnesses/simple_harness.py|encoded = self.llm.encode(]]）。只有文字時，就是 tokenizer 切出來的 token；"
                "對話裡有圖片、聲音或影片時，chat template 在它們的位置只寫了一個佔位 token，`encode()` 把它展開成那個檔案佔的幾十到幾千個 token"
                "（{{media}}），所以 `context` 送出的是展開後的字串。`n_tokens` 是它的長度，畫面拿它和脈絡上限比，顯示用掉幾 %。"
                "`added_from` 是這一步新加入的內容從哪裡開始：先算 render 出來的字串和 `prev_sequence` 共同開頭的長度（{{record}}會說 `prev_sequence` 是什麼），"
                "再加上媒體展開多出來的長度：媒體都在使用者訊息裡，在新加入的內容前面。第 2 步以後，新加入的正好是工具結果。",
-         "en": "Next `encode()` turns the string into the tokens the model really reads ([[harness/agent.py|encoded = self.llm.encode(]]). With text "
+         "en": "Next `encode()` turns the string into the tokens the model really reads ([[harness/harnesses/simple_harness.py|encoded = self.llm.encode(]]). With text "
                "alone, they are the tokenizer's tokens; when the conversation has images, sound or video, the chat template wrote a single "
                "placeholder token where each goes, and `encode()` expands it into the tens to thousands of tokens that file takes ({{media}}), "
                "so `context` goes out with the expanded string. `n_tokens` is its length, which the page compares with the context limit to "
                "show how much of it is used. `added_from` is where what is new in this step begins: the length of the start that the rendered "
                "string shares with `prev_sequence` ({{record}} says what `prev_sequence` is), plus however much longer the media made it, since "
                "the media are all in user messages, before what is new. From step 2 on, what is new is exactly the tool result."},
-        Code("harness/agent.py", "def common_prefix(",
+        Code("harness/harnesses/simple_harness.py", "def common_prefix(",
              caption={"zh": "逐字元比較，回傳兩個字串共同開頭的長度。", "en": "Compares character by character and returns the length of the start the two strings share."}),
         {"zh": "畫面上的「脈絡」分頁把 `context` 事件裡的字串原樣印出來（[[app/render.py|def context_html(]]），後面接著模型這一步寫的輸出；"
                "`added_from` 之後的部分標成「這一步新加入」（第 1 步沒有上一步，從最新一則使用者訊息開始標），family 列出的特殊 token 換成可以滑過看說明的深色標籤；"
@@ -1106,7 +1122,7 @@ SECTIONS = [
                "最後的 `done` 留下來，改名成 `model_end` 送出。",
          "en": "The harness consumes the events that `generate()` yields in a for loop: `prefill` and each `token` are passed on with the step "
                "number, and the final `done` is kept and sent on as `model_end`."},
-        Code("harness/agent.py", "done = None", end='self.emit("model_end"',
+        Code("harness/harnesses/simple_harness.py", "done = None", end='self.emit("model_end"',
              caption={"zh": "傳進去的 `self._stop.is_set` 是一個函式：模型每生成一個 token 前都會呼叫它，問「要停了嗎？」。",
                       "en": "The `self._stop.is_set` passed in is a function: the model calls it before every token to ask whether to stop."}),
         Tabs({
@@ -1389,10 +1405,10 @@ SECTIONS = [
                             "The tests check that `SimpleBackend`, `VLLMBackend` and the tests' `FakeLLM` are each a `Backend`."}),
         {"zh": "畫面只在一個地方決定用哪一個：`load_llm()` 拿到伺服器的網址（`VLLM_URL`，或畫面在 Docker 裡啟動的伺服器）就用 vLLM，沒有就在這台電腦上跑"
                "（[[app/page.py|llm = vllm_backend.VLLMBackend(model_id, url) if url else SimpleBackend(model_id)]]）。"
-               "之後 `current_llm()`、側欄和 `Run`（{{prepare}}）拿到的都只是一個 `Backend`；它放在 `st.cache_resource` 裡，換模型或換「用什麼跑模型」才換掉（{{submit}}）。",
+               "之後 `current_llm()`、側欄和 `SimpleHarness`（{{prepare}}）拿到的都只是一個 `Backend`；它放在 `st.cache_resource` 裡，換模型或換「用什麼跑模型」才換掉（{{submit}}）。",
          "en": "The page decides which one in a single place: given a server's URL (`VLLM_URL`, or that of the server the page started in Docker), `load_llm()` "
                "uses vLLM, and without one runs the model here ([[app/page.py|llm = vllm_backend.VLLMBackend(model_id, url) if url else SimpleBackend(model_id)]]). "
-               "From then on `current_llm()`, the sidebar and `Run` ({{prepare}}) get just a `Backend`; it stays in `st.cache_resource` until the model, or what "
+               "From then on `current_llm()`, the sidebar and `SimpleHarness` ({{prepare}}) get just a `Backend`; it stays in `st.cache_resource` until the model, or what "
                "runs it, changes ({{submit}})."},
         {"zh": "兩種 backend 對模型知道的不一樣多，差別全在 `token` 事件裡。`TOKEN_FIELDS` 每個 backend 都要送：位置、token 的 id 和 piece、它加上的文字、"
                "是不是特殊 token、正在寫思考、工具呼叫還是回覆。`TOKEN_DETAILS` 則是知道才送：機率、排名、取樣時的機率、剩下的候選、前 5 名，以及 MTP 草稿猜了什麼。",
@@ -1480,7 +1496,7 @@ SECTIONS = [
          "en": "The chat template sometimes opens the thinking at the end of the prompt (the family's `thought_prefix`); that part is in the "
                "prompt, not in `raw`, so it is put back before the output goes to the family's `parse`, with `s.lang` as the language for its "
                "error messages. With Use tools off, a tool call the model writes anyway counts as none."},
-        Code("harness/agent.py", "prefix = family.thought_prefix if", end='self.emit("parsed"'),
+        Code("harness/harnesses/simple_harness.py", "prefix = family.thought_prefix if", end='self.emit("parsed"'),
         {"zh": "兩個 parser 回傳一樣的結構：`thinking`、`tool_calls`（每個有 `name`、`arguments`、`error`）、`content`，所以後面的 harness 不用管是哪個模型。",
          "en": "Both parsers return the same structure, `thinking`, `tool_calls` (each with `name`, `arguments` and `error`) and `content`, "
                "so the rest of the harness does not care which model it was."},
@@ -1530,14 +1546,14 @@ SECTIONS = [
          "en": "What counts here is whether parsing found a tool call, not which token it stopped at. Gemma stopping at `<|tool_response>` does "
                "mean it wants a tool, but Qwen stops at `<|im_end|>` both after an answer and for a tool; deciding by the parse lets both "
                "families share this code."},
-        Code("harness/agent.py", 'if done["finish"] == "user_stopped":', end="if not calls:"),
+        Code("harness/harnesses/simple_harness.py", 'if done["finish"] == "user_stopped":', end="if not calls:"),
         {"zh": "其他停止條件分散在迴圈各處：", "en": "The other ways to stop are spread around the loop:"},
         (
             {"zh": "for 迴圈跑完所有步數都沒 break → `max_steps`（{{prepare}}設定的預設值）。",
              "en": "The for loop uses up its steps without a break → `max_steps` (the default set in {{prepare}})."},
-            {"zh": "等待確認時被停止或逾時 → `user_stopped` 或 `approval_timeout`（[[harness/agent.py|stop_reason = \"approval_timeout\" if self._timed_out]]）。",
+            {"zh": "等待確認時被停止或逾時 → `user_stopped` 或 `approval_timeout`（[[harness/harnesses/simple_harness.py|stop_reason = \"approval_timeout\" if self._timed_out]]）。",
              "en": "Stopped or timed out while waiting for a confirmation → `user_stopped` or `approval_timeout` "
-                   "([[harness/agent.py|stop_reason = \"approval_timeout\" if self._timed_out]])."},
+                   "([[harness/harnesses/simple_harness.py|stop_reason = \"approval_timeout\" if self._timed_out]])."},
             {"zh": "連續 `MAX_FORMAT_ERRORS`（3）次寫出無法解析的工具呼叫 → `format_errors`。",
              "en": "`MAX_FORMAT_ERRORS` (3) tool calls in a row that cannot be parsed → `format_errors`."},
             {"zh": "backend 或 harness 本身丟出任何例外 → `error`，錯誤訊息會顯示在畫面上，而不是讓 thread 默默死掉；backend 的錯誤（例如 vLLM 伺服器的）兩種語言都有，畫面顯示目前語言的那一個。"
@@ -1546,7 +1562,7 @@ SECTIONS = [
                    "(a vLLM server's, say) comes in both languages, of which the page shows the one it is in. A tool's exception does not end the turn; it "
                    "becomes an observation ({{execute}})."},
         ),
-        Code("harness/agent.py", "if format_errors >= MAX_FORMAT_ERRORS:", end='self.emit("run_end"',
+        Code("harness/harnesses/simple_harness.py", "if format_errors >= MAX_FORMAT_ERRORS:", end='self.emit("run_end"',
              caption={"zh": "不管怎麼停，最後一定送出 `run_end`，帶著停止原因、最終回覆和整份訊息列表。",
                       "en": "However it stops, `run_end` always goes out last, with the stop reason, the final reply and the whole message list."}),
     )),
@@ -1580,7 +1596,7 @@ SECTIONS = [
                "`prev_sequence`; `generation_prompt=False`, since it is not the model's turn to write yet. Compared with it, what the next "
                "step's prompt has in addition is the tool result. Comparing with the last prompt plus the model's output would be off, "
                "because the template rewrites the model's part when it renders it again (it sorts the arguments and replaces the thinking markup)."},
-        Code("harness/agent.py", 'ids = [f"call_{step}_{i}"', end="prev_sequence = self.llm.render("),
+        Code("harness/harnesses/simple_harness.py", 'ids = [f"call_{step}_{i}"', end="prev_sequence = self.llm.render("),
     )),
     Section("check", "harness",
             {"zh": "驗證與權限：模型從不直接碰環境", "en": "Validation and permission: the model never touches the environment"},
@@ -1590,7 +1606,7 @@ SECTIONS = [
                "參數不符合 schema，都不會執行。",
          "en": "Each call goes to `_handle_call()`. The first check is validation: a call that failed to parse, names no tool offered this turn "
                "(`run_python` without Let the model write code, say) or has arguments that do not fit the schema never runs."},
-        Code("harness/agent.py", "def _handle_call(", end="args, errors = tool.validate(args, lang)"),
+        Code("harness/harnesses/simple_harness.py", "def _handle_call(", end="args, errors = tool.validate(args, lang)"),
         {"zh": "`Tool.validate()` 檢查必要參數有沒有給、有沒有多出不認得的參數、型別和 enum 對不對，然後補上預設值。"
                "錯誤訊息是完整的句子，用這一輪開始時頁面的語言寫，因為它會原封不動變成模型下一步讀到的觀察。",
          "en": "`Tool.validate()` checks that the required arguments are there, that there are no unknown ones, and that the types and enums "
@@ -1602,18 +1618,18 @@ SECTIONS = [
          "en": "The second check records repeats: the tool name plus the arguments as sorted JSON is the key, compared with the earlier calls "
                "in this turn; an exact repeat is flagged in the step card as the loop maybe going in circles. It is only a warning and blocks "
                "nothing. Then the `tool_call` event goes out; with errors, the errors go straight back as the observation, without reaching the environment."},
-        Code("harness/agent.py", 'key = (call["name"], json.dumps', end='{"error": "; ".join(errors)}'),
+        Code("harness/harnesses/simple_harness.py", 'key = (call["name"], json.dumps', end='{"error": "; ".join(errors)}'),
         {"zh": "第三關是你。開著「執行工具前先問我」時，harness 送出 `approval_request`，然後停在 `_wait_for_decision()` 等。"
                "拒絕、停止、逾時都會變成一則錯誤觀察，模型下一步只看得到這段文字。",
          "en": "The third check is you. With Ask me before running a tool on, the harness sends `approval_request` and waits in "
                "`_wait_for_decision()`. A rejection, a stop or a timeout each becomes an error observation, and that text is all the model sees in the next step."},
-        Code("harness/agent.py", "if self.settings.approve_tools:", end='return self._observe(step, cid, call["name"], {"error": error}'),
+        Code("harness/harnesses/simple_harness.py", "if self.settings.approve_tools:", end='return self._observe(step, cid, call["name"], {"error": error}'),
         {"zh": "等待用的是 `threading.Condition`：每 0.5 秒醒來一次，直到你按下按鈕（`decide()` 會 `notify_all`）、按了停止，"
-               "或超過 `APPROVAL_TIMEOUT`（[[harness/agent.py|APPROVAL_TIMEOUT = ]]，5 分鐘）。逾時就當作拒絕並停止整輪，免得一個關掉的分頁把模型佔住。",
+               "或超過 `APPROVAL_TIMEOUT`（[[harness/harnesses/simple_harness.py|APPROVAL_TIMEOUT = ]]，5 分鐘）。逾時就當作拒絕並停止整輪，免得一個關掉的分頁把模型佔住。",
          "en": "The wait uses a `threading.Condition`: it wakes every 0.5 s until you press a button (`decide()` calls `notify_all`), press stop, "
-               "or `APPROVAL_TIMEOUT` passes ([[harness/agent.py|APPROVAL_TIMEOUT = ]], 5 minutes). A timeout counts as a rejection and stops the "
+               "or `APPROVAL_TIMEOUT` passes ([[harness/harnesses/simple_harness.py|APPROVAL_TIMEOUT = ]], 5 minutes). A timeout counts as a rejection and stops the "
                "whole turn, so a closed tab cannot hold on to the model."},
-        Code("harness/agent.py", "def _wait_for_decision("),
+        Code("harness/harnesses/simple_harness.py", "def _wait_for_decision("),
         {"zh": "畫面這邊，等待中的呼叫會在聊天區顯示「允許／拒絕」按鈕，按下去就呼叫 `run.run.decide()`；"
                "像 `run_python` 的程式碼這種好幾行的參數，另外用程式碼區塊顯示，看得清楚再決定。"
                "「先問我」寫在 harness 的程式裡，而不是寫在 prompt 裡請模型遵守，所以模型沒有辦法繞過。",
@@ -1633,7 +1649,7 @@ SECTIONS = [
                "conversation's folder. A `ToolError` from the tool is an expected failure (a mistyped timezone, a page that does not exist, "
                "code that fails), and its message goes to the model as it is, in the turn's language; any other exception is caught too and "
                "becomes `{\"error\": …}`."},
-        Code("harness/agent.py", 'self.emit("tool_start"', end="return self._observe(step, cid, call[\"name\"], result, ok=ok"),
+        Code("harness/harnesses/simple_harness.py", 'self.emit("tool_start"', end="return self._observe(step, cid, call[\"name\"], result, ok=ok"),
         {"zh": "五個工具各自連到不同的環境：", "en": "The five tools reach different environments:"},
         (
             {"zh": "`get_current_time`：讀系統時鐘，用 IANA 時區名稱換算（[[harness/tools.py|def get_current_time(]]）。",
@@ -1693,11 +1709,11 @@ SECTIONS = [
          "en": "In `_observe()` the tool result (or error) becomes a JSON string (a `ToolResult` with charts is split first: the model reads only "
                "its data, and the images go only into the event, for the page), cut at `MAX_RESULT_CHARS` (2000 characters) with "
                "`…(truncated)` added, so one long web page cannot flood the context; the `tool_result` event goes out, and the string is returned."},
-        Code("harness/agent.py", "def _observe("),
+        Code("harness/harnesses/simple_harness.py", "def _observe("),
         {"zh": "回傳的字串變成一則 `role: tool` 的訊息 append 到 `self.messages`。同時更新連續格式錯誤的次數：這次是解析錯誤就加一，正常就歸零。",
          "en": "The returned string is appended to `self.messages` as a `role: tool` message. The count of format errors in a row is updated at "
                "the same time: one more for a parse error, back to zero otherwise."},
-        Code("harness/agent.py", "for cid, call in zip(ids, calls):", end="if format_errors >= MAX_FORMAT_ERRORS:"),
+        Code("harness/harnesses/simple_harness.py", "for cid, call in zip(ids, calls):", end="if format_errors >= MAX_FORMAT_ERRORS:"),
         {"zh": "然後回到 for 迴圈開頭，下一圈 render 時 chat template 把工具結果寫進脈絡，這就是 step 卡片上「上一步的觀察接回脈絡」那一段：",
          "en": "Then it is back to the top of the for loop, and when the next step renders, the chat template writes the tool result into the "
                "context; this is what the step card shows as the last step's observation, back in the context:"},
@@ -1732,14 +1748,14 @@ SECTIONS = [
         Code("app/page.py", "@st.fragment(run_every=", end="viz_panel(llm)"),
         {"zh": "每次重畫，`LiveRun.data()` 複製一份目前的事件列表交給 `render.build()`，按順序折成一個個 step。"
                "`run_start` 告訴它這一輪是哪個模型、哪個 family，之後畫特殊 token、停止 token 和使用者訊息的位置都問這個 family；"
-               "`step_start` 開一個新的 step，`context`、`prefill`、`token`、`parsed` 填進去，`model_end` 帶來的推測解碼結果標出哪些 token 是猜中的"
+               "`step_start` 開一個新的 step，`context`、`prefill`、`token`、`parsed` 填進去（pi 跑的一輪沒有 family，也沒有前三個，換成串流進來的文字 `delta`，{{pi}}），`model_end` 帶來的推測解碼結果標出哪些 token 是猜中的"
                "（伺服器到這時才說，{{mtp}}），工具相關的事件依 `call_id` 歸到各自的呼叫。"
                "之後所有 HTML 都是這個結構（和頁面語言）的純函式，所以執行到一半的任何時刻都畫得出來；"
                "切換語言也只是用另一種語言重畫同一份事件，跑完的對話也會跟著換。",
          "en": "On every redraw, `LiveRun.data()` copies the event list so far and hands it to `render.build()`, which folds it into steps in "
                "order. `run_start` says which model and family the turn uses, and from then on the special tokens, the stop tokens and where "
                "the user's message starts are all asked of that family; `step_start` opens a new step, `context`, `prefill`, `token` and "
-               "`parsed` fill it in, `model_end` marks the tokens that were guesses when a server says so only then ({{mtp}}), and the tool events go to their calls by `call_id`. All the HTML after that is a pure function of this "
+               "`parsed` fill it in (a turn pi ran has no family and none of the first three, but `delta`, the text as it streams, {{pi}}), `model_end` marks the tokens that were guesses when a server says so only then ({{mtp}}), and the tool events go to their calls by `call_id`. All the HTML after that is a pure function of this "
                "structure (and of the page's language), so it can be drawn at any moment of a run; switching the language just redraws the "
                "same events in the other one, finished turns included."},
         Code("app/render.py", "def build(events: list[dict])"),
@@ -1751,23 +1767,73 @@ SECTIONS = [
          "en": "When a turn ends, `absorb_finished()` keeps the full message list from `run_end` as `history`. The next question is appended "
                "to it, so the agent remembers what was said before, earlier tool results included."},
         Code("app/page.py", "def absorb_finished("),
-        {"zh": "停止按鈕呼叫 `Run.stop()`：設定 `_stop` 並叫醒正在等確認的 thread。解碼迴圈每個 token 前都會檢查 `_stop`，"
+        {"zh": "停止按鈕呼叫 `SimpleHarness.stop()`：設定 `_stop` 並叫醒正在等確認的 thread。解碼迴圈每個 token 前都會檢查 `_stop`，"
                "所以按下去之後最多再生成一個 token 就停。",
-         "en": "The stop button calls `Run.stop()`: it sets `_stop` and wakes a thread that is waiting for a confirmation. The decoding loop "
+         "en": "The stop button calls `SimpleHarness.stop()`: it sets `_stop` and wakes a thread that is waiting for a confirmation. The decoding loop "
                "checks `_stop` before every token, so after the press at most one more token is generated."},
-        Code("harness/agent.py", "def stop(self):", end="def decide(self, call_id"),
+        Code("harness/harnesses/simple_harness.py", "def stop(self):", end="def decide(self, call_id"),
+    )),
+    Section("pi", "harness",
+            {"zh": "換一個 harness：pi", "en": "Another harness: pi"},
+            {"zh": "同一張圖、同一套事件，迴圈換成 pi 跑：看得到它每一步做了什麼，看不到 token。",
+             "en": "The same diagram and the same events, with pi running the loop: what it does at each step shows, its tokens do not."}, (
+        {"zh": "pi 是一個 coding agent，有它自己的迴圈、system prompt 和工具（read、bash、edit、write…），問的是它在 provider 那邊登入過的模型（Claude、GPT…）。"
+               "側欄的「用什麼跑迴圈」選 pi 時，每個問題都由 `PiHarness` 用 RPC 模式啟動一個 pi 子行程：指令從 stdin 送進去，紀錄從 stdout 讀出來，一行一個 JSON。"
+               "它先選好模型和思考等級、關掉 pi 自己的自動重試，再把問題當成 prompt 送出；每一個指令都等到 pi 回應才送下一個，因為 pi 是同時處理指令的。",
+         "en": "pi is a coding agent with its own loop, system prompt and tools (read, bash, edit, write…), and it asks a model it is logged in to at a provider (Claude, GPT…). "
+               "With pi picked under What runs the loop, `PiHarness` starts pi in RPC mode as a child process for each question: commands go in on stdin, "
+               "records come out on stdout, one JSON object per line. It picks the model and the thinking level and turns pi's own retries off, then sends the question "
+               "as a prompt, each command only after pi has answered the last, since pi handles commands concurrently."},
+        Code("harness/harnesses/pi_harness.py", "self._pi = Process(self._args()", end="self._loop()"),
+        {"zh": "pi 的一個 turn（向模型送一次請求，加上回覆裡要執行的工具）就是頁面上的一個 step。`_on()` 把 pi 的紀錄翻成頁面的事件：",
+         "en": "One of pi's turns (one request to the model, and the tools its reply calls) is a step on the page. `_on()` turns pi's records into the page's events:"},
+        (
+            {"zh": "`turn_start` → `step_start`；pi 自己沒有步數上限，跑滿側欄的步數，`PiHarness` 就請 pi 中止，不再畫下一步。",
+             "en": "`turn_start` → `step_start`; pi has no step limit of its own, so once the sidebar's limit is reached `PiHarness` asks pi to abort and draws no further step."},
+            {"zh": "`message_update` 裡一段段的文字、思考和工具呼叫的參數 → `delta`，帶著它是哪一種（channel）。",
+             "en": "the pieces of text, thinking and tool-call arguments in `message_update` → `delta`, with which of them it is (its channel)."},
+            {"zh": "模型那則訊息的 `message_end` → `model_end`（provider 報的 token 數和 pi 估的費用）和 `parsed`（思考、回覆、工具呼叫）。",
+             "en": "the `message_end` of the model's message → `model_end` (the token counts the provider reported, and the cost by pi's prices) and `parsed` (the thinking, the reply, the tool calls)."},
+            {"zh": "`tool_execution_start` → `tool_call` 和 `tool_start`，`tool_execution_end` → `tool_result`；`agent_settled` → `run_end`。",
+             "en": "`tool_execution_start` → `tool_call` and `tool_start`, `tool_execution_end` → `tool_result`; `agent_settled` → `run_end`."},
+        ),
+        Code("harness/harnesses/pi_harness.py", "def _on(self, rec: dict) -> bool:"),
+        {"zh": "pi 問模型用的是 provider 的 API，拿回來的是文字，不是 token：沒有 token id、機率和候選，也不知道模型實際讀到什麼字串；pi 也不說它送出的 prompt。"
+               "所以 pi 的 step 沒有脈絡段，模型段畫的是一段段傳回來的文字，加上 provider 報的數字（[[app/render.py|def streamed_html(]]），"
+               "就像 backend 沒回報的 token 細節，畫面寧可少畫，也不拿別的數字湊（{{backends}}）。",
+         "en": "pi asks the model through its provider's API, which sends back text, not tokens: no token ids, probabilities or candidates, and nothing of the "
+               "string the model really read; nor does pi say which prompt it sends. So a step of pi's has no context section, and its model section is the text "
+               "as it came back, with the numbers the provider reported ([[app/render.py|def streamed_html(]]); as with the token details a backend does not report, "
+               "the page would rather show less than fill in a number of its own ({{backends}})."},
+        {"zh": "pi 執行工具前不會問人。打開「執行工具前先問我」時，`PiHarness` 讓 pi 多載入一個很小的 extension：pi 每次要執行工具，它就開一個確認對話框。"
+               "在 RPC 模式下，這個對話框是 stdout 上的一筆 `extension_ui_request`，`PiHarness` 把它變成 `approval_request`，你按的「允許」或「拒絕」再從 stdin 送回去；"
+               "被拒絕的呼叫不執行，模型讀到的結果就是拒絕的原因，用這一輪開始時頁面的語言寫。",
+         "en": "pi does not ask anyone before it runs a tool. With Ask me before running a tool on, `PiHarness` has pi load one small extension, which opens a confirm "
+               "dialog every time pi is about to run a tool. In RPC mode the dialog is an `extension_ui_request` on stdout, which `PiHarness` turns into an "
+               "`approval_request`, and your Allow or Reject goes back on stdin; a rejected call does not run, and the result the model reads is the refusal, in the "
+               "language the page was in when the turn started."},
+        Code("harness/harnesses/pi_approve.ts", 'pi.on("tool_call"', end="return undefined;"),
+        {"zh": "pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱：不像 `run_python` 在沒有網路、唯讀的 Docker 容器裡（{{execute}}），bash 碰得到你碰得到的一切。"
+               "網頁啟動 pi 時不載入你自己的 extension、skill、prompt 範本和 AGENTS.md，畫出來的就是 pi 本身的迴圈；模型和登入資訊還是你的。"
+               "pi 把對話存在這段對話資料夾裡的 session 檔，下一個問題用同一個 session 啟動 pi，模型就讀得到前面的全部。"
+               "另一個會把自己的迴圈報成事件的 agent，例如 Claude Agent SDK 或 Codex，也可以照這樣再寫一個 harness。",
+         "en": "pi's tools run on this computer, in the conversation's folder, without a sandbox: unlike `run_python` in a Docker container with no network and "
+               "read-only files ({{execute}}), bash reaches whatever you can. The page starts pi without your own extensions, skills, prompt templates and AGENTS.md, "
+               "so what it draws is pi's own loop; the models and the credentials are still yours. pi keeps the conversation in a session file in the "
+               "conversation's folder, and the next question starts pi on the same session, so the model reads all of it. Another agent that reports its loop as "
+               "events, such as the Claude Agent SDK or Codex, could be one more harness written the same way."},
     )),
 ]
 
 # (event, file, text on the line that sends it, what it carries, what the page does with it)
 EVENTS = [
-    ("run_start", "harness/agent.py", '"run_start", run_id=',
-     {"zh": "模型和 family、這一輪的設定、可用的工具", "en": "the model and family, the turn's settings, the available tools"},
+    ("run_start", "harness/harnesses/simple_harness.py", '"run_start", run_id=',
+     {"zh": "哪個 harness 跑的、模型和 family（pi 沒有）、這一輪的設定、可用的工具", "en": "which harness ran it, the model and family (none from pi), the turn's settings, the available tools"},
      {"zh": "用哪個模型的格式畫這一輪；步數上限、解碼說明", "en": "whose format to draw the turn in; the step limit, the decoding notes"}),
-    ("step_start", "harness/agent.py", 'self.emit("step_start"',
+    ("step_start", "harness/harnesses/simple_harness.py", 'self.emit("step_start"',
      {"zh": "step 編號", "en": "the step number"},
      {"zh": "開一張新的 step 卡片；迴圈圖亮起「脈絡」", "en": "opens a new step card; Context lights up in the loop diagram"}),
-    ("context", "harness/agent.py", '"context",',
+    ("context", "harness/harnesses/simple_harness.py", '"context",',
      {"zh": "模型讀到的完整 prompt（媒體已展開）、token 數、`added_from`、每種媒體佔的 token 數、脈絡上限、各角色訊息數",
       "en": "the whole prompt as the model reads it (media expanded), its token count, `added_from`, the tokens each kind of media takes, "
             "the context limit, the number of messages per role"},
@@ -1781,32 +1847,36 @@ EVENTS = [
       "en": "id, piece, text, channel, whether it is special, probability, rank, the top 5 candidates; with MTP, also `draft` (what the drafter guessed and whether it was kept). "
             "The fields from the probability on are there only when the backend knows them: `simple_backend.py` knows them all, a vLLM server the probability and the top 5, and more as its flags allow"},
      {"zh": "token 的熱度顏色、底線與浮窗、左邊逐字出現的回覆", "en": "the token's heat color, underline and popover; the reply appearing bit by bit on the left"}),
-    ("model_end", "harness/agent.py", 'self.emit("model_end"',
+    ("delta", "harness/harnesses/pi_harness.py", 'self.emit("delta"',
+     {"zh": "模型輸出的一段文字和它的 channel（思考、回覆、工具呼叫）；只有看不到 token 的 harness 送，也就是 pi",
+      "en": "a piece of the model's output and its channel (thinking, reply, tool call); only from a harness that sees no tokens, which is pi"},
+     {"zh": "step 卡片模型段一段段出現的文字、左邊逐字出現的回覆", "en": "the text appearing in the step card's model section, the reply appearing bit by bit on the left"}),
+    ("model_end", "harness/harnesses/simple_harness.py", 'self.emit("model_end"',
      {"zh": "停止原因、停止 token、token 數、tok/s、MTP 統計（vLLM 伺服器還可能說哪些 token 是猜中的）、原始輸出",
       "en": "why it stopped, the stop token, the token count, tok/s, the MTP counts (from a vLLM server, perhaps which tokens were guesses), the raw output"},
      {"zh": "「停在 …」、tok/s、MTP 收下幾個、模型分頁的表格", "en": "“stopped at …”, tok/s, how many MTP guesses were kept, the table in the Model tab"}),
-    ("parsed", "harness/agent.py", 'self.emit("parsed"',
+    ("parsed", "harness/harnesses/simple_harness.py", 'self.emit("parsed"',
      {"zh": "思考、回覆、工具呼叫", "en": "the thinking, the reply, the tool calls"},
      {"zh": "Harness 段開始出現", "en": "the Harness section appears"}),
-    ("tool_call", "harness/agent.py", '"tool_call",',
+    ("tool_call", "harness/harnesses/simple_harness.py", '"tool_call",',
      {"zh": "名稱、驗證後的參數、錯誤、是否重複、環境", "en": "the name, the validated arguments, errors, whether it repeats, the environment"},
      {"zh": "Harness 段的呼叫、驗證結果、重複警告", "en": "the call, the validation result and the repeat warning in the Harness section"}),
-    ("approval_request", "harness/agent.py", 'self.emit("approval_request"',
+    ("approval_request", "harness/harnesses/simple_harness.py", 'self.emit("approval_request"',
      {"zh": "等待確認的呼叫", "en": "the call waiting for a confirmation"},
      {"zh": "聊天區的「允許／拒絕」按鈕；迴圈圖閃爍", "en": "the Allow and Reject buttons in the chat; the loop diagram pulses"}),
-    ("approval", "harness/agent.py", 'self.emit("approval",',
+    ("approval", "harness/harnesses/simple_harness.py", 'self.emit("approval",',
      {"zh": "允許、拒絕、逾時或被停止", "en": "allowed, rejected, timed out or stopped"},
      {"zh": "Harness 段顯示你的決定", "en": "the Harness section shows your decision"}),
-    ("tool_start", "harness/agent.py", 'self.emit("tool_start"',
+    ("tool_start", "harness/harnesses/simple_harness.py", 'self.emit("tool_start"',
      {"zh": "工具名稱、環境", "en": "the tool name, the environment"},
      {"zh": "迴圈圖亮起「環境」", "en": "Environment lights up in the loop diagram"}),
-    ("tool_result", "harness/agent.py", 'self.emit("tool_result"',
+    ("tool_result", "harness/harnesses/simple_harness.py", 'self.emit("tool_result"',
      {"zh": "結果字串、成功與否、是否截斷、耗時、給你看的圖", "en": "the result string, whether it succeeded, whether it was cut, the time it took, the images for you"},
      {"zh": "環境段的結果、聊天區的工具標籤；圖畫在兩邊", "en": "the result in the Environment section, the tool chip in the chat; the charts in both"}),
-    ("error", "harness/agent.py", 'self.emit("error"',
+    ("error", "harness/harnesses/simple_harness.py", 'self.emit("error"',
      {"zh": "例外的類型和訊息；backend 的錯誤兩種語言都有（`text`）", "en": "the exception's type and message, and both languages of a backend's error (`text`)"},
      {"zh": "聊天區和停止卡片的錯誤訊息", "en": "the error message in the chat and on the stop card"}),
-    ("run_end", "harness/agent.py", 'self.emit("run_end"',
+    ("run_end", "harness/harnesses/simple_harness.py", 'self.emit("run_end"',
      {"zh": "停止原因、最終回覆、整份訊息列表", "en": "the stop reason, the final reply, the whole message list"},
      {"zh": "停止卡片；訊息列表成為下一輪的 `history`", "en": "the stop card; the message list becomes the next turn's `history`"}),
 ]

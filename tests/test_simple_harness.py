@@ -9,10 +9,10 @@ from pathlib import Path
 import pytest
 
 from fakes import MEDIA_TOKENS, FakeLLM, record_run, tool_call
-from harness import agent
-from harness.agent import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, Run, RunSettings, common_prefix
 from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
 from harness.families import GEMMA4, QWEN3_5
+from harness.harnesses import simple_harness
+from harness.harnesses.simple_harness import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, RunSettings, SimpleHarness, common_prefix
 from harness.media import Attachment
 from harness.tools import TOOLS, ToolError, ToolResult
 
@@ -192,7 +192,7 @@ def test_thinking_is_parsed_and_kept_as_reasoning():
 def test_without_tools_the_model_sees_none_and_calls_are_ignored():
     _, events, fake = record_run([tool_call("calculator", expression="1+1")], use_tools=False)
     assert fake.renders[0]["tools"] is None
-    assert fake.renders[0]["messages"][0]["content"] == agent.SYSTEM_NO_TOOLS
+    assert fake.renders[0]["messages"][0]["content"] == simple_harness.SYSTEM_NO_TOOLS
     assert events[0]["tools"] == []
     assert of_type(events, "parsed")[0]["tool_calls"] == []
     assert of_type(events, "tool_call") == []
@@ -202,7 +202,7 @@ def test_without_tools_the_model_sees_none_and_calls_are_ignored():
 def test_with_tools_the_model_sees_every_schema():
     _, _, fake = record_run([ANSWER])
     assert fake.renders[0]["tools"] == [t.schema() for t in TOOLS.values()]
-    assert fake.renders[0]["messages"][0]["content"] == agent.SYSTEM_WITH_TOOLS
+    assert fake.renders[0]["messages"][0]["content"] == simple_harness.SYSTEM_WITH_TOOLS
 
 
 def test_a_turn_can_leave_tools_out():
@@ -410,7 +410,7 @@ def test_model_crash_is_reported_and_the_run_still_ends():
 def test_stop_before_generation_ends_the_run():
     fake = FakeLLM([ANSWER])
     events = []
-    run = Run(fake, [], "hi", RunSettings(), events.append)
+    run = SimpleHarness(fake, [], "hi", RunSettings(), events.append)
     run.stop()
     run.run()
     assert of_type(events, "model_end")[0]["finish"] == "user_stopped"
@@ -422,7 +422,7 @@ def test_stop_before_generation_ends_the_run():
 def start_in_thread(outputs, **settings):
     fake = FakeLLM(list(outputs))
     events = []
-    run = Run(fake, [], "幾點？", RunSettings(**settings), events.append)
+    run = SimpleHarness(fake, [], "幾點？", RunSettings(**settings), events.append)
     thread = threading.Thread(target=run.run, daemon=True)
     thread.start()
     return run, events, thread
@@ -472,7 +472,7 @@ def test_stop_while_waiting_for_approval():
 
 
 def test_unanswered_approval_times_out(monkeypatch):
-    monkeypatch.setattr(agent, "APPROVAL_TIMEOUT", 0.1)
+    monkeypatch.setattr(simple_harness, "APPROVAL_TIMEOUT", 0.1)
     run, events, thread = start_in_thread([tool_call("get_current_time"), ANSWER], approve_tools=True)
     thread.join(5)
     assert not thread.is_alive()

@@ -15,9 +15,9 @@ import torch
 import samples
 from app import render
 from harness import families, media, tools
-from harness.agent import SYSTEM_WITH_TOOLS, Run, RunSettings
 from harness.backends.backend import Backend
 from harness.backends.simple_backend import SimpleBackend, Sampling
+from harness.harnesses.simple_harness import SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
 from harness.tools import TOOLS
 from html_check import assert_balanced
 from test_render import render_everything
@@ -69,7 +69,7 @@ def test_greedy_decoding_matches_generate(gemma):
 def test_agent_uses_a_tool_and_answers(gemma):
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=256), max_steps=4)
-    Run(gemma, [], "請用 calculator 工具計算 12345 * 6789。", settings, events.append).run()
+    SimpleHarness(gemma, [], "請用 calculator 工具計算 12345 * 6789。", settings, events.append).run()
 
     assert not [e for e in events if e["type"] == "error"]
     calls = [e for e in events if e["type"] == "tool_call"]
@@ -159,7 +159,7 @@ def test_mtp_with_an_image_writes_what_plain_decoding_writes(gemma):
 def test_the_model_reads_the_total_on_the_receipt(gemma):
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=64), use_tools=False)
-    Run(gemma, [], "What is the TOTAL printed on this receipt? Answer with the number only.", settings, events.append, [attach("receipt.png", gemma)]).run()
+    SimpleHarness(gemma, [], "What is the TOTAL printed on this receipt? Answer with the number only.", settings, events.append, [attach("receipt.png", gemma)]).run()
     assert not [e for e in events if e["type"] == "error"]
     assert "370" in events[-1]["final"]
     [context] = [e for e in events if e["type"] == "context"]
@@ -171,7 +171,7 @@ def test_the_model_writes_code_that_runs_in_the_sandbox(gemma, tmp_path):
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=512), max_steps=4, lang="en")
     question = "Use run_python to compute the sum of the squares of the integers from 1 to 100."
-    Run(gemma, [], question, settings, events.append, files=tmp_path).run()
+    SimpleHarness(gemma, [], question, settings, events.append, files=tmp_path).run()
     assert not [e for e in events if e["type"] == "error"]
     calls = [e for e in events if e["type"] == "tool_call" and e["name"] == "run_python"]
     results = [e for e in events if e["type"] == "tool_result" and e["name"] == "run_python"]
@@ -207,7 +207,7 @@ def test_the_model_reads_every_media_format_it_has_an_encoder_for(gemma, tmp_pat
     question, right = MEDIA_QUESTIONS[kind]
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=128), use_tools=False, lang="en")
-    Run(gemma, [], question, settings, events.append, [attachment], tmp_path).run()
+    SimpleHarness(gemma, [], question, settings, events.append, [attachment], tmp_path).run()
     assert not [e for e in events if e["type"] == "error"]
     assert next(e for e in events if e["type"] == "context")["media_tokens"][kind] > 0
     assert right(events[-1]["final"]), events[-1]["final"]
@@ -220,7 +220,7 @@ def test_the_model_opens_every_data_format_with_run_python(gemma, tmp_path, ext)
     attachment = media.Attachment(path.name, "file", str(path), path.stat().st_size)
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=512), max_steps=3, lang="en")
-    Run(gemma, [], f"Use run_python to open /data/{path.name} and print its first two rows.", settings, events.append, [attachment], tmp_path).run()
+    SimpleHarness(gemma, [], f"Use run_python to open /data/{path.name} and print its first two rows.", settings, events.append, [attachment], tmp_path).run()
     results = [e for e in events if e["type"] == "tool_result" and e["name"] == "run_python"]
     assert any(r["ok"] and "2025" in r["result"] for r in results), results
 

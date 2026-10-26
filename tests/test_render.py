@@ -5,6 +5,7 @@ import base64
 import dataclasses
 import json
 import re
+import tempfile
 import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -12,11 +13,13 @@ from pathlib import Path
 import pytest
 
 from app import render
+from fake_pi import FakePi
 from fakes import DRAFTER, INFO, MEDIA_TOKENS, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
-from harness import agent, families
-from harness.agent import Run, RunSettings
+from harness import families
 from harness.backends.backend import TOKEN_DETAILS, Sampling
 from harness.families import GEMMA4, QWEN3_5
+from harness.harnesses import pi_harness, simple_harness
+from harness.harnesses.simple_harness import RunSettings, SimpleHarness
 from harness.i18n import LANGS
 from harness.media import Attachment
 from harness.tools import TOOLS, ToolResult
@@ -34,7 +37,7 @@ def approved_run_events():
     """A thinking run that asks for approval, gets it, calls a tool and answers."""
     fake = FakeLLM(["要查時間<channel|>" + tool_call("get_current_time"), "好<channel|>" + ANSWER])
     events = []
-    run = Run(fake, [], "台北現在幾點？", RunSettings(thinking=True, approve_tools=True), events.append)
+    run = SimpleHarness(fake, [], "台北現在幾點？", RunSettings(thinking=True, approve_tools=True), events.append)
     thread = threading.Thread(target=run.run, daemon=True)
     thread.start()
     for _ in range(500):
@@ -58,6 +61,26 @@ def as_reported(events: list[dict], details: tuple[str, ...] = ()) -> list[dict]
 
 
 LOGPROBS = ("p", "logprob", "top")  # what an OpenAI-style API's log probabilities give
+BASH = {"tool": "bash", "args": {"command": "date"}, "result": "Mon Oct 26 14:00:00 CST 2026\n"}
+
+
+def pi_events(*turns, approve: bool | None = None, text: str = "現在幾點？", **settings) -> list[dict]:
+    """A turn run by pi (its stand-in, tests/fake_pi.py), as its events; with `approve`, the user answers the first call so."""
+    with pytest.MonkeyPatch.context() as mp, tempfile.TemporaryDirectory() as folder:
+        FakePi(mp, Path(folder)).say(*turns)
+        events = []
+        run = pi_harness.PiHarness(pi_harness.PiSettings("fake", "fake-model", approve_tools=approve is not None, **settings), [], text, events.append,
+                       folder=Path(folder) / "chat", session="c")
+        thread = threading.Thread(target=run.run, daemon=True)
+        thread.start()
+        if approve is not None:
+            for _ in range(1000):
+                if request := next((e for e in events if e["type"] == "approval_request"), None):
+                    run.decide(request["call_id"], approve)
+                    break
+                threading.Event().wait(0.01)
+        thread.join(20)
+    return events
 PHOTO = Attachment("photo.png", "image", "/chat/photo.png", 2048)
 CLIP = Attachment("clip.mp4", "video", "/chat/clip.mp4", 90_000)
 SALES = Attachment("sales.csv", "file", str(Path(__file__).resolve().parent.parent / "app/assets/examples/sales.csv"), 942)
@@ -82,6 +105,10 @@ SCENARIOS = {
     "qwen_thinking": lambda: record_run(
         ["要算一下\n</think>\n\n" + qwen_tool_call("calculator", expression="1"), "想好了\n</think>\n\n好。<|im_end|>"],
         family=QWEN3_5, thinking=True)[1],
+    "pi": lambda: pi_events({"say": [{"thinking": "用 date。"}, {"text": "我查一下。"}, BASH]}, {"say": [{"text": "下午兩點。"}]}),
+    "pi_rejected": lambda: pi_events({"say": [BASH]}, {"say": [{"text": "好吧。"}]}, approve=False),
+    "pi_max_steps": lambda: pi_events(*[{"say": [BASH]}] * 3, max_steps=2),
+    "pi_error": lambda: pi_events({"say": [], "stop": "error", "error": "Connection error."}),
 }
 
 
@@ -100,7 +127,10 @@ def render_everything(data: dict, live: bool, lang: str = "zh") -> list[str]:
             out.append(render.context_html(step, data["family"], lang=lang))
     if data["end"]:
         out.append(render.stop_html(data, lang=lang))
-    if data["settings"]:
+    if data["settings"] and data["harness"] == "pi":
+        out.append(render.pi_settings_html(data["settings"], lang=lang))
+        out.append(render.pi_tools_html(pi_harness.TOOLS, data["settings"]["tools"], lang=lang))
+    elif data["settings"]:
         out.append(render.knobs_html(data["settings"], INFO["defaults"], lang=lang))
         out.append(render.tools_html(TOOLS, data["settings"]["use_tools"], data["family"], lang=lang, offered=data["settings"]["tools"]))
     return [piece for piece in out if piece]
@@ -149,6 +179,10 @@ EN_SCENARIOS = {
     "no_details": lambda: as_reported(record_run([tool_call("calculator", expression="6*7"), "It is 42.<turn|>"], user="6*7?", lang="en")[1]),
     "logprobs": lambda: as_reported(
         record_run([tool_call("calculator", expression="6*7"), "It is 42.<turn|>"], user="6*7?", lang="en")[1], LOGPROBS),
+    "pi": lambda: pi_events({"say": [{"thinking": "Use date."}, BASH]}, {"say": [{"text": "It is 2 pm."}]}, text="Time?", lang="en"),
+    "pi_rejected": lambda: pi_events({"say": [BASH]}, {"say": [{"text": "OK."}]}, approve=False, text="Time?", lang="en"),
+    "pi_max_steps": lambda: pi_events(*[{"say": [BASH]}] * 3, max_steps=2, text="Time?", lang="en"),
+    "pi_error": lambda: pi_events({"say": [], "stop": "error", "error": "Connection error."}, text="Time?", lang="en"),
 }
 
 
@@ -194,7 +228,7 @@ def test_switching_language_redraws_a_finished_run():
 
 def test_build_of_nothing():
     data = render.build([])
-    assert data == {"model": None, "family": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+    assert data == {"model": None, "family": None, "harness": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
 
 
 def test_build_folds_a_tool_run_into_steps():
@@ -407,9 +441,9 @@ def test_step_card_approval_states():
 
 
 def test_approval_timeout_is_shown(monkeypatch):
-    monkeypatch.setattr(agent, "APPROVAL_TIMEOUT", 0.05)
+    monkeypatch.setattr(simple_harness, "APPROVAL_TIMEOUT", 0.05)
     events = []
-    Run(FakeLLM([tool_call("get_current_time"), ANSWER]), [], "幾點？", RunSettings(approve_tools=True), events.append).run()
+    SimpleHarness(FakeLLM([tool_call("get_current_time"), ANSWER]), [], "幾點？", RunSettings(approve_tools=True), events.append).run()
     data = render.build(events)
     assert list(data["steps"][0]["calls"].values())[0]["approval"] == "timeout"
     assert "等待確認逾時，harness 當作拒絕並停止迴圈" in render.step_html(data["steps"][0], data, live=False, lang="zh")
@@ -424,7 +458,7 @@ def test_approval_timeout_is_shown(monkeypatch):
 def test_stopping_is_not_shown_as_rejecting(answer, label, not_label):
     fake = FakeLLM([tool_call("get_current_time"), ANSWER])
     events = []
-    run = Run(fake, [], "幾點？", RunSettings(approve_tools=True), events.append)
+    run = SimpleHarness(fake, [], "幾點？", RunSettings(approve_tools=True), events.append)
     thread = threading.Thread(target=run.run, daemon=True)
     thread.start()
     for _ in range(500):
@@ -972,3 +1006,102 @@ def test_the_model_tab_lists_what_the_model_reads():
 def test_a_tool_left_out_of_the_turn_is_marked():
     html = render.tools_html(TOOLS, True, GEMMA4, "en", offered=["calculator"])
     assert html.count("not offered to the model in this turn") == len(TOOLS) - 1
+
+
+# ---------- a run pi ran ----------
+
+def test_a_pi_step_shows_the_text_it_streamed_by_channel_and_no_token_numbers():
+    data = render.build(SCENARIOS["pi"]())
+    assert data["harness"] == "pi" and data["family"] is None
+    step = data["steps"][0]
+    assert step["text"] == [{"channel": "thought", "text": "用 date。"}, {"channel": "content", "text": "我查一下。"},
+                            {"channel": "tool_call", "text": '\nbash {"command": "date"}'}]
+    card = render.step_html(step, data, lang="en", live=False)
+    assert '<span class="run ch-thought">用 date。</span>' in card and 'class="run ch-tool_call"' in card
+    assert "wrote <b>20</b> tokens" in card and "read <b>1,200</b> tokens, 200 from the cache" in card and "at pi&#x27;s prices" not in card
+    assert "about $0.0021 at pi's prices" in card
+    assert "the API returned it as JSON" in card and "shell on this computer · returned" in card
+    assert "Context <small>" not in card and 'class="tok ' not in card and "token id" not in card  # no context and no tokens
+
+
+def test_what_pi_streams_is_escaped():
+    data = render.build(pi_events({"say": [{"text": "<script>alert(1)</script>"}]}))
+    card = render.step_html(data["steps"][0], data, lang="en", live=False)
+    assert "<script>" not in card and "&lt;script&gt;alert(1)&lt;/script&gt;" in card
+
+
+def test_build_joins_what_pi_streams_into_one_run_per_channel_without_changing_the_events():
+    events = SCENARIOS["pi"]()
+    before = json.dumps(events)
+    render.build(events)
+    render.build(events)
+    assert json.dumps(events) == before
+
+
+def test_the_reply_streams_into_the_chat_as_pi_sends_it():
+    events = SCENARIOS["pi"]()
+    second = [i for i, e in enumerate(events) if e["type"] == "step_start"][1]
+    first_delta = next(i for i, e in enumerate(events) if i > second and e["type"] == "delta")
+    assert render.draft(render.build(events[:first_delta + 1])) == events[first_delta]["text"]
+    assert render.status(render.build(events[:first_delta + 1]), lang="en") == "Step 2 · the model is generating…"
+
+
+def test_the_diagram_says_pi_runs_the_loop_on_this_computer():
+    svg = svg_of(render.diagram_html(None, dark=False, lang="en", harness="pi"))
+    assert "pi · check · ask" in svg and "this computer" in svg and "text out" in svg and "tokens out" not in svg
+    assert "parse · check · ask" in svg_of(render.diagram_html(None, dark=False, lang="en"))
+    data = render.build(SCENARIOS["pi"]())  # a run says which harness ran it
+    assert "text out" in svg_of(render.diagram_html(data, dark=False, lang="en"))
+
+
+def test_a_pi_step_lights_the_way_into_the_model_while_pi_waits_for_it():
+    events = SCENARIOS["pi"]()
+    first = next(i for i, e in enumerate(events) if e["type"] == "step_start")
+    state = render.loop_state(render.build(events[:first + 1]), lang="en")
+    assert (state["active"], state["edge"]) == ("context", "context-model")
+
+
+def test_the_stop_card_says_the_page_asked_pi_to_abort():
+    data = render.build(SCENARIOS["pi_max_steps"]())
+    card = render.stop_html(data, lang="en")
+    assert "Stop: step limit reached" in card and "pi has no step limit of its own" in card
+    assert len(data["steps"]) == 2 and render.run_stats(data, lang="en").startswith("Step 2 / 2 · context 1,200 tokens · 40 tokens generated")
+
+
+def test_a_failed_request_to_pis_model_is_its_error():
+    data = render.build(SCENARIOS["pi_error"]())
+    assert render.error_text(data, "en") == "pi: Connection error."
+    assert "pi or the model's API reported an error" in render.stop_html(data, lang="en")
+
+
+def test_a_call_pi_did_not_run_because_it_was_rejected():
+    data = render.build(EN_SCENARIOS["pi_rejected"]())
+    card = render.step_html(data["steps"][0], data, lang="en", live=False)
+    assert "you rejected it" in card and "not run: the harness reports the error itself" in card
+    assert "The user refused to run this tool call" in card
+
+
+def test_the_step_table_has_a_row_per_pi_request():
+    rows = render.step_rows(render.build(SCENARIOS["pi"]()), lang="en")
+    assert [(r["step"], r["context tokens"], r["generated tokens"], r["prefill ms"]) for r in rows] == [(1, 1200, 20, None), (2, 1200, 20, None)]
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_pis_cards_in_each_language(lang):
+    model = {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "provider": "anthropic", "api": "anthropic-messages",
+             "reasoning": True, "input": ["text", "image"], "contextWindow": 200000, "maxTokens": 64000,
+             "cost": {"input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75}}
+    pieces = [render.pi_model_html(model, "1.4.0", lang), render.pi_settings_html({"thinking": "high", "approve_tools": True, "max_steps": 6}, lang),
+              render.pi_tools_html(pi_harness.TOOLS, ["read", "bash"], lang), render.PI_INTRO[lang]]
+    for piece in pieces:
+        assert_balanced(piece)
+        if lang == "en":
+            assert not CJK.search(piece), piece[:200]
+    assert "200,000 tokens" in pieces[0] and "anthropic/claude-sonnet-5-5" in pieces[0]
+    assert pieces[2].count('class="check warn"') == len(pi_harness.TOOLS) - 2  # the tools not offered are marked
+
+
+def test_pis_card_escapes_what_pi_says_of_its_model():
+    model = {"id": "<b>x</b>", "name": "<img src=x>", "provider": "p<i>", "api": "a", "input": ["text"]}
+    card = render.pi_model_html(model, "<1.4>", "en")
+    assert "<img" not in card and "<b>x" not in card and "&lt;1.4&gt;" in card

@@ -1,4 +1,4 @@
-"""The harness: the program around the model.
+"""SimpleHarness: this project's own harness, the program around the model.
 
 Each step renders the conversation into one prompt, lets the model generate, and
 reads what came out. A tool call is parsed, validated, optionally approved by the
@@ -6,7 +6,8 @@ user, executed, and its result goes back into the conversation for the next step
 A reply without a tool call ends the run; so do the step limit, the per-step token
 limit, repeated malformed calls and the stop button. Every stage is emitted as an
 event so the browser can draw it. The model is whatever Backend (backend.py) the page
-hands it, so the loop is the same whichever runs the model.
+hands it, so the loop is the same whichever runs the model. It is one Harness
+(harness.py); the page can hand a turn to pi instead (pi_harness.py).
 
 A run keeps the page's language from when it started: the errors and refusals the model reads come
 back in it. The system prompt is the same in both languages.
@@ -62,7 +63,7 @@ def common_prefix(a: str, b: str) -> int:
     return i
 
 
-class Run:
+class SimpleHarness:
     def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
                  attachments: list[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
@@ -102,7 +103,7 @@ class Run:
         schemas = {t.name: t.parameters for t in TOOLS.values()}
         system = {"role": "system", "content": SYSTEM_WITH_TOOLS if tools else SYSTEM_NO_TOOLS}
         self.emit(
-            "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+            "run_start", run_id=self.id, harness="simple", model=self.llm.model_id, family=family.key,
             settings=_settings_dict(s), tools=list(self.tools),
         )
 
