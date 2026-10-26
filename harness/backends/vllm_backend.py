@@ -32,6 +32,10 @@ time to the first token, the network included. Speculative decoding is set when 
 sidebar's MTP switch, which starts the server again (vllm_docker.py). With --per-request-spec-decode-metrics summary
 (which vLLM takes only with --speculative-config), each step says how many guesses were kept; with `detailed`, it says
 how many in each verify step, from which the page underlines the guesses once the step is done (drafted_tokens).
+
+The model menu asks family_of which of the models a server serves the page can run, from each one's config.json
+alone. Loading one of a family the page does not know raises UnsupportedModel, which names it and its model_type, so
+that the page can offer a GitHub issue asking for it.
 """
 
 import base64
@@ -48,7 +52,8 @@ from typing import Callable, Iterator
 import av
 import httpx
 import numpy as np
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub.errors import RemoteEntryNotFoundError
 from PIL import Image
 from transformers import AutoConfig, AutoProcessor, GenerationConfig
 
@@ -76,6 +81,15 @@ class ServerError(Exception):
         super().__init__(en)
         self.text = {"zh": zh, "en": en}
         self.status = status
+
+
+class UnsupportedModel(ServerError):
+    """A model of a family the page does not know (families.FAMILIES): `model_id` is the name the server was started
+    with, and `model_type` the one in its config.json, or None when it has none or it could not be read."""
+
+    def __init__(self, zh: str, en: str, model_id: str, model_type: str | None):
+        super().__init__(zh, en)
+        self.model_id, self.model_type = model_id, model_type
 
 
 def connect(url: str, transport: httpx.BaseTransport | None = None) -> httpx.Client:
@@ -152,6 +166,31 @@ def _checkpoint_files(model_id: str) -> str:
     return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR, ignore_patterns=WEIGHTS)
 
 
+def _model_type(config_json: str) -> str | None:
+    """The model_type a config.json names, which says which family its checkpoint is of; None without one."""
+    try:
+        with open(config_json) as f:
+            return json.load(f).get("model_type")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def family_of(model_id: str) -> families.Family | None:
+    """The family of a model the server serves, from its config.json alone, which is all the model menu downloads for
+    it (the rest of its files only when it is picked): None for a family the page does not know, or a checkpoint without
+    a config.json (a repo of GGUF files). Raises OSError or ValueError when that cannot be told: no way to the Hub, a
+    repository it may not read, or a folder that is only on the server."""
+    if os.path.isdir(model_id):
+        config_json = os.path.join(model_id, "config.json")
+    else:
+        try:
+            config_json = hf_hub_download(model_id, "config.json", revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
+        except RemoteEntryNotFoundError:
+            return None
+    model_type = _model_type(config_json)
+    return next((f for f in families.FAMILIES.values() if model_type in f.model_types), None)
+
+
 def _generation_config(folder: str, config) -> GenerationConfig:
     """The checkpoint's generation_config.json, or, when it ships none (Qwen3.5), one made from its config.json, as
     transformers makes it for the model SimpleBackend loads."""
@@ -161,11 +200,11 @@ def _generation_config(folder: str, config) -> GenerationConfig:
         return GenerationConfig.from_model_config(config)
 
 
-def unsupported(model_id: str, why: str) -> ServerError:
+def unsupported(model_id: str, why: str, model_type: str | None = None) -> UnsupportedModel:
     """The error for a model of a family the page does not know (families.FAMILIES)."""
     names = [f.name for f in families.FAMILIES.values()]
-    return ServerError(f"這個網頁還不支援 {model_id}（{why}）；目前支援 {'、'.join(names)}。",
-                       f"This page does not support {model_id} yet ({why}); it supports {', '.join(names)}.")
+    return UnsupportedModel(f"這個網頁還不支援 {model_id}（{why}）；目前支援 {'、'.join(names)}。",
+                            f"This page does not support {model_id} yet ({why}); it supports {', '.join(names)}.", model_id, model_type)
 
 
 def checkpoint_modalities(config, processor) -> tuple[str, ...]:
@@ -299,9 +338,9 @@ class VLLMBackend:
         try:
             config = AutoConfig.from_pretrained(files)
         except (ValueError, OSError) as e:  # a model_type this transformers does not know, or no config.json (a repo of GGUF files)
-            raise unsupported(model_id, str(e)) from e
+            raise unsupported(model_id, str(e), _model_type(os.path.join(files, "config.json"))) from e
         if not any(config.model_type in f.model_types for f in families.FAMILIES.values()):
-            raise unsupported(model_id, f"model_type {config.model_type!r}")
+            raise unsupported(model_id, f"model_type {config.model_type!r}", config.model_type)
         self.family = families.for_model_type(config.model_type)
         # The same tokenizer and chat template SimpleBackend loads, so the prompt is the same string and the same tokens.
         self.processor = AutoProcessor.from_pretrained(files)

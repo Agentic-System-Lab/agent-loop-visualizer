@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from huggingface_hub import try_to_load_from_cache
+from huggingface_hub.errors import LocalEntryNotFoundError, RemoteEntryNotFoundError
 from huggingface_hub.utils import validate_repo_id
 from transformers import AutoProcessor
 
@@ -31,7 +32,7 @@ from harness.agent import Run, RunSettings
 from harness.backends import vllm_backend
 from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
 from harness.backends.simple_backend import MODELS_DIR
-from harness.backends.vllm_backend import GENERATE, UNREPORTED, ServerError, VLLMBackend
+from harness.backends.vllm_backend import GENERATE, UNREPORTED, ServerError, UnsupportedModel, VLLMBackend
 from harness.families import GEMMA4, QWEN3_5
 from harness.i18n import LANGS, pick
 from html_check import assert_balanced
@@ -662,28 +663,94 @@ def test_a_server_started_from_a_folder_of_its_own_is_said_in_both_languages_not
 
 def test_a_model_of_a_family_the_page_does_not_know_is_said_in_both_languages(hub, monkeypatch):
     monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=lambda folder: SimpleNamespace(model_type="llama")))
-    with pytest.raises(ServerError) as refused:
+    with pytest.raises(UnsupportedModel) as refused:
         connect(Server([]))
     assert refused.value.text == {"zh": "這個網頁還不支援 google/gemma-4-E2B-it（model_type 'llama'）；目前支援 Gemma 4、Qwen3.5。",
                                   "en": "This page does not support google/gemma-4-E2B-it yet (model_type 'llama'); it supports Gemma 4, Qwen3.5."}
+    assert isinstance(refused.value, ServerError)  # which the page catches as any other
+    assert (refused.value.model_id, refused.value.model_type) == ("google/gemma-4-E2B-it", "llama")  # what the page's GitHub issue names
 
 
-def test_a_model_newer_than_this_transformers_is_said_in_both_languages(hub, monkeypatch):
+def test_a_model_newer_than_this_transformers_is_said_in_both_languages(hub, monkeypatch, tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "gemma9"}))
+    monkeypatch.setattr(vllm_backend, "snapshot_download", lambda *args, **kwargs: str(tmp_path))
+
     def unknown(folder):  # what transformers says of a config.json whose model_type it does not know
         raise ValueError("The checkpoint you are trying to load has model type `gemma9` but Transformers does not recognize this architecture.")
     monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=unknown))
-    with pytest.raises(ServerError) as refused:
+    with pytest.raises(UnsupportedModel) as refused:
         connect(Server([]))
     assert "這個網頁還不支援 google/gemma-4-E2B-it" in refused.value.text["zh"] and "model type `gemma9`" in refused.value.text["en"]
+    assert refused.value.model_type == "gemma9"  # read from config.json all the same
 
 
 def test_a_checkpoint_without_a_config_is_said_in_both_languages(hub, monkeypatch):
     def missing(folder):  # what transformers says of a folder without config.json, a repo of GGUF files say
         raise OSError("google/gemma-4-E2B-it does not appear to have a file named config.json.")
     monkeypatch.setattr(vllm_backend, "AutoConfig", SimpleNamespace(from_pretrained=missing))
-    with pytest.raises(ServerError) as refused:
+    with pytest.raises(UnsupportedModel) as refused:
         connect(Server([]))
     assert "這個網頁還不支援 google/gemma-4-E2B-it" in refused.value.text["zh"] and "a file named config.json" in refused.value.text["en"]
+    assert refused.value.model_type is None
+
+
+# ---------- which models the page supports, for the model menu ----------
+
+@pytest.fixture
+def config_hub(monkeypatch, tmp_path):
+    """The Hub as family_of downloads from it: put a repo's config.json in `repos` (None for a repo without one, a repo
+    of GGUF files say); a repo not there is one the Hub cannot be reached for. `asked` holds the downloads."""
+    hub = {"repos": {}, "asked": []}
+
+    def hf_hub_download(repo_id, filename, revision=None, cache_dir=None):
+        validate_repo_id(repo_id)  # as the real one does first: a folder on the server is no Hugging Face id
+        hub["asked"].append({"repo_id": repo_id, "filename": filename, "revision": revision, "cache_dir": cache_dir})
+        if repo_id not in hub["repos"]:  # what it raises with no way to the Hub and nothing in the cache
+            raise LocalEntryNotFoundError("Cannot find the requested files in the disk cache and outgoing traffic has been disabled.")
+        if hub["repos"][repo_id] is None:
+            url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+            raise RemoteEntryNotFoundError(f"404 Client Error. Entry Not Found for url: {url}.", response=httpx.Response(404, request=httpx.Request("GET", url)))
+        path = tmp_path / repo_id / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(hub["repos"][repo_id]))
+        return str(path)
+
+    monkeypatch.setattr(vllm_backend, "hf_hub_download", hf_hub_download)
+    monkeypatch.setattr(vllm_backend, "snapshot_download", lambda *args, **kwargs: pytest.fail("the menu downloads config.json alone"))
+    return hub
+
+
+def test_the_family_of_a_served_model_comes_from_its_config_json_alone(config_hub):
+    config_hub["repos"] = {"Qwen/Qwen3.5-4B": {"model_type": "qwen3_5"}, "google/gemma-4-E2B-it": {"model_type": "gemma4"}}
+    assert vllm_backend.family_of("Qwen/Qwen3.5-4B") is QWEN3_5  # a checkpoint MODELS does not list, of a family the page knows
+    assert vllm_backend.family_of("google/gemma-4-E2B-it") is GEMMA4
+    assert config_hub["asked"] == [
+        {"repo_id": "Qwen/Qwen3.5-4B", "filename": "config.json", "revision": None, "cache_dir": MODELS_DIR},  # main, as the server loads it
+        {"repo_id": "google/gemma-4-E2B-it", "filename": "config.json", "revision": families.REVISIONS["google/gemma-4-E2B-it"], "cache_dir": MODELS_DIR},
+    ]
+
+
+def test_a_served_model_of_another_family_or_without_a_config_json_is_of_no_family(config_hub):
+    config_hub["repos"] = {"meta-llama/Llama-3.2-1B-Instruct": {"model_type": "llama"}, "unsloth/Qwen3.5-0.8B-GGUF": None, "someone/odd": {}}
+    assert vllm_backend.family_of("meta-llama/Llama-3.2-1B-Instruct") is None
+    assert vllm_backend.family_of("unsloth/Qwen3.5-0.8B-GGUF") is None
+    assert vllm_backend.family_of("someone/odd") is None  # a config.json without a model_type
+
+
+def test_what_family_a_served_model_is_cannot_be_told_without_the_hub_or_from_a_folder_only_on_the_server(config_hub):
+    with pytest.raises(OSError):
+        vllm_backend.family_of("google/gemma-4-E2B-it")
+    with pytest.raises(ValueError):
+        vllm_backend.family_of("/data/gemma")
+
+
+def test_a_served_folder_on_this_machine_is_read_where_it_is(config_hub, tmp_path):
+    (tmp_path / "qwen").mkdir()
+    (tmp_path / "qwen" / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+    (tmp_path / "gguf").mkdir()
+    assert vllm_backend.family_of(str(tmp_path / "qwen")) is QWEN3_5
+    assert vllm_backend.family_of(str(tmp_path / "gguf")) is None
+    assert config_hub["asked"] == []
 
 
 def test_the_context_limit_and_the_specs_come_from_the_server_and_the_config(hub):
