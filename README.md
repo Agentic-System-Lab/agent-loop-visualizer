@@ -251,7 +251,7 @@ The page can also hand the loop to [pi](https://pi.dev), a coding agent with a l
 - **pi's own models**: one pi has credentials for (Claude, GPT, Gemini, or any compatible endpoint in its `models.json`); no model loads here. An API sends back text, not tokens, so there are no token probabilities, candidates or special tokens, and how the API writes the request out for the model nobody says: a step shows pi's request, the text as it streams, the token counts the provider reported (with how many came from the cache) and the cost at pi's prices.
 
 ```bash
-nvm use                                          # with nvm: Node 22, from .nvmrc; install pi under it, since nvm keeps global packages per version
+nvm install                                      # with nvm: installs the newest Node 22 (.nvmrc) and switches to it; nvm use could pick an older 22 already installed, too old for pi. Install pi under it, since nvm keeps global packages per version
 npm install -g @earendil-works/pi-coding-agent   # pi 1.4 needs Node.js 22.19 or newer
 pi                                               # then /login, once; or set an API key such as ANTHROPIC_API_KEY before starting the app
 PI_COMMAND=/path/to/pi uv run streamlit run streamlit_app.py   # if pi is not on the PATH (any command works, npx included)
@@ -321,7 +321,7 @@ Most tests use the fake model in `tests/fakes.py`: it replays scripted output on
 
 Every file format the page accepts has a test: `tests/samples.py` makes a small file of each one from the examples' files (the receipt in every image format, the recording in every audio format, the rolling ball in every video container, the sales data in every data format). `test_media.py` fails if `media.py` accepts a format without a sample, and `test_real_model.py` asks both models about each one. The tests that need Docker run only when Docker and the sandbox image are there.
 
-On every push and pull request, `.github/workflows/checks.yml` runs `ruff check`, `mypy` and `uv run pytest` on Ubuntu; the tests that need the models, the sandbox image, a vLLM server or pi skip there.
+On every pull request and every push to main, `.github/workflows/checks.yml` runs `ruff check`, `mypy` and `uv run pytest` on Ubuntu; the tests that need the models, the sandbox image, a vLLM server or pi skip there. Beside them it runs `tests/test_guide.py` and builds How it works with pygments alone, as `pages.yml` does on main, so a pull request that has the page's code import torch or the rest of the app fails before it is merged, not when the page is published.
 
 How it works quotes code, and `tests/guide_excerpts.txt` keeps everything it quotes, without line numbers. When a change touches quoted code, `test_guide.py` fails and names the sections that quote it: reread them, fix what they say if it is no longer true, then rewrite the file with `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py`.
 

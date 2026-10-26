@@ -251,7 +251,7 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 - **pi 自己的模型**：pi 登入過的模型（Claude、GPT、Gemini，或它 `models.json` 裡任何相容的端點），這台電腦不載入模型。API 傳回來的是文字，不是 token，所以沒有 token 的機率、候選和特殊 token，API 那邊怎麼把請求寫成模型讀的字串也沒有人說：一個 step 顯示 pi 的請求、一段段傳回來的文字、provider 報的 token 數（以及其中多少來自 cache），和照 pi 的價目估的費用。
 
 ```bash
-nvm use                                          # 用 nvm 的話：照 .nvmrc 換成 Node 22，pi 也要裝在它底下，因為 nvm 的全域套件是每個版本各裝各的
+nvm install                                      # 用 nvm 的話：照 .nvmrc 裝好最新的 Node 22 再換過去；nvm use 可能挑到已經裝好、但對 pi 來說太舊的 22。pi 也要裝在它底下，因為 nvm 的全域套件是每個版本各裝各的
 npm install -g @earendil-works/pi-coding-agent   # pi 1.4 需要 Node.js 22.19 以上
 pi                                               # 再輸入 /login 登入一次；或在啟動 app 之前設好 API key，例如 ANTHROPIC_API_KEY
 PI_COMMAND=/path/to/pi uv run streamlit run streamlit_app.py   # pi 不在 PATH 上的話（任何指令都行，npx 也可以）
@@ -321,7 +321,7 @@ RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real                   
 
 網頁收的每一種檔案格式都有測試：`tests/samples.py` 用範例的檔案做出每種格式的小檔案（收據的每種圖片格式、錄音的每種聲音格式、滾動的球的每種影片格式、銷售資料的每種資料格式）。`media.py` 多收了一種格式卻沒有對應的範例檔，`test_media.py` 就會失敗；`test_real_model.py` 拿每一種格式問兩個模型。需要 Docker 的測試只在 Docker 和沙箱 image 都在時才跑。
 
-每次 push 和 pull request，`.github/workflows/checks.yml` 都會在 Ubuntu 上跑 `ruff check`、`mypy` 和 `uv run pytest`；需要模型、沙箱 image、vLLM 伺服器或 pi 的測試在那裡會跳過。
+每個 pull request 和每次推上 main，`.github/workflows/checks.yml` 都會在 Ubuntu 上跑 `ruff check`、`mypy` 和 `uv run pytest`；需要模型、沙箱 image、vLLM 伺服器或 pi 的測試在那裡會跳過。同時它也像 `pages.yml` 在 main 上那樣，只裝 pygments 跑 `tests/test_guide.py` 並產生運作說明，所以 pull request 讓這個頁面的程式 import 了 torch 或 app 其他的套件，合併前就會失敗，不會等到發佈頁面時才發現。
 
 運作說明會引用程式碼，`tests/guide_excerpts.txt` 存著它引用的每一段程式，不含行號。改到被引用的程式時，`test_guide.py` 會失敗，並列出引用它的段落：重讀那幾段，把不再正確的說明改掉，再用 `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py` 重寫這個檔案。
 

@@ -32,8 +32,9 @@ jobs:
       # The page needs only pygments, not torch and the rest of the app, and its tests only pytest
       # besides. They fail when an edit moved or removed a line the page points at, or changed code it
       # quotes since its text was last reread (tests/guide_excerpts.txt); the page already up then stays.
-      - run: uv run --no-project --with pygments --with pytest pytest tests/test_guide.py
-      - run: uv run --no-project --with pygments python -m app.guide _site
+      # checks.yml's guide job runs these two on every pull request, so keep the two the same.
+      - run: uv run --isolated --no-project --with pygments --with pytest pytest tests/test_guide.py
+      - run: uv run --isolated --no-project --with pygments python -m app.guide _site
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

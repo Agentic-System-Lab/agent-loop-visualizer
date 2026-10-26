@@ -26,15 +26,16 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py   # the mod
 VLLM_TEST_URL=http://localhost:8000 uv run pytest tests/test_vllm_backend.py -k real_server   # vllm_backend.py against that real server
 docker compose -f docker-compose/compose.yaml up -d        # the vLLM server the sidebar's vLLM (Docker) starts, by hand (+ -f docker-compose/compose.gpu.yaml on NVIDIA GPUs)
 RUN_VLLM_DOCKER_TESTS=1 uv run pytest tests/test_vllm_docker.py -k real   # starts that server with Qwen3.5 and asks it through VLLMBackend, ~2 min
-RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real   # the real pi (on the PATH, or PI_COMMAND; pi 1.4 needs Node 22.19+, which .nvmrc picks with nvm) against a scripted model on 127.0.0.1
+RUN_PI_TESTS=1 uv run pytest tests/test_pi_harness.py -k real   # the real pi (on the PATH, or PI_COMMAND; pi 1.4 needs Node 22.19+: `nvm install` installs the newest 22 .nvmrc names and switches to it) against a scripted model on 127.0.0.1
 uv run python -m app.guide _site                           # the guide: _site/zh/, _site/en/ and a redirecting _site/index.html
 UPDATE_GUIDE_SNAPSHOT=1 uv run pytest tests/test_guide.py  # after rereading the guide sections a code change touched
+uv run --isolated --no-project --with pygments --with pytest pytest tests/test_guide.py   # the guide's tests as the Pages build runs them: pygments and pytest alone, not .venv
 ```
 
 Ruff lints and mypy checks types (both set up in pyproject.toml), and .github/workflows/checks.yml runs them and
-`uv run pytest` on every push and pull request. No formatter is configured: match the surrounding code by hand and
-don't reformat lines you are not changing. Fix what the two report rather than silencing it; an ignore needs a reason
-beside it.
+`uv run pytest` on every pull request and every push to main, and in a job of its own tests and builds the guide with
+pygments alone, as the Pages workflow does. No formatter is configured: match the surrounding code by hand and don't
+reformat lines you are not changing. Fix what the two report rather than silencing it; an ignore needs a reason beside it.
 
 ## Layout
 
@@ -125,11 +126,13 @@ import Backend`, `from app import render`); pytest puts that folder on the path 
   what is no longer true, then rewrite the file with `UPDATE_GUIDE_SNAPSHOT=1 uv run pytest
   tests/test_guide.py` and commit it with the change. Never regenerate it without rereading.
 - **app/guide.py builds with pygments alone.** The Pages workflow runs
-  `uv run --no-project --with pygments python -m app.guide _site`, and guide.py imports app.render and
+  `uv run --isolated --no-project --with pygments python -m app.guide _site`, and guide.py imports app.render and
   agent.i18n, and render imports agent.model_families. Keep those (and the packages' `__init__.py`) free of torch,
   transformers, streamlit and httpx. Before building, it runs tests/test_guide.py with pygments and pytest alone,
   so that file imports only app.guide, agent.i18n and tests/html_check.py (not test_render.py, which imports the
-  agent's harnesses and with them PyAV, NumPy, Pillow and httpx).
+  agent's harnesses and with them PyAV, NumPy, Pillow and httpx). `uv run pytest` has every package installed and
+  cannot see a heavy import there, so checks.yml's `guide` job runs those two commands on every pull request;
+  keep it the same as pages.yml.
 - **Every word a person sees exists in both languages, side by side.** In code it is
   `pick(lang, "中文", "English")`; in data (special-token notes, stop reasons, tool environments,
   guide paragraphs, the guide's event table) it is a `{"zh": ..., "en": ...}` dict. Never add a
