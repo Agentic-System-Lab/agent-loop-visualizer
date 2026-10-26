@@ -12,7 +12,8 @@ tests/test_guide.py, then builds and publishes them.
 
 The content points at code by text, not by line number: Code("harness/agent.py", "def run(self):") is
 looked up in the file every time the page is built, so the line numbers on the page follow the
-code when it changes. A start text must match exactly one line of its file; tests/test_guide.py
+code when it changes, and each file:line chip and excerpt links to its lines on GitHub at the commit
+the page was built from. A start text must match exactly one line of its file; tests/test_guide.py
 checks every reference, so an edit that breaks one fails the tests instead of the page. It also
 compares the code the page quotes with tests/guide_excerpts.txt, so an edit to quoted code fails
 too, naming the sections whose text to reread before writing that file again.
@@ -168,11 +169,27 @@ def esc(value) -> str:
     return html.escape(str(value), quote=True)
 
 
-def ref_html(file: str, text: str) -> str:
-    """An inline file:line chip; hovering it shows the line itself."""
+def lines_text(lo: int, hi: int, lang: str) -> str:
+    return pick(lang, f"第 {lo} 行", f"line {lo}") if lo == hi else pick(lang, f"第 {lo}–{hi} 行", f"lines {lo}–{hi}")
+
+
+def github_html(file: str, lo: int, hi: int, lang: str, commit: str) -> str:
+    """An icon that opens the lines on GitHub, at the commit their numbers were looked up in, in a new tab, so the
+    reader keeps their place on the page. guide.css draws it."""
+    anchor = f"L{lo}" if lo == hi else f"L{lo}-L{hi}"
+    title = pick(lang, "在 GitHub 上看這一行", "See this line on GitHub") if lo == hi else pick(lang, "在 GitHub 上看這幾行", "See these lines on GitHub")
+    label = pick(lang, f"在 GitHub 上看 {file} {lines_text(lo, hi, lang)}", f"{file}, {lines_text(lo, hi, lang)}, on GitHub")
+    return (
+        f'<a class="g-gh" href="{REPO}/blob/{esc(commit)}/{esc(file)}#{anchor}" target="_blank" rel="noopener" '
+        f'title="{title}" aria-label="{esc(label)}"></a>'
+    )
+
+
+def ref_html(file: str, text: str, lang: str, commit: str) -> str:
+    """An inline file:line chip, whose hover shows the line itself, and the icon that opens it on GitHub."""
     line = find_line(file, text)
     src = source(file)[0][line - 1].strip()
-    return f'<code class="ref" title="{esc(src)}">{esc(file)}:{line}</code>'
+    return f'<code class="ref" title="{esc(src)}">{esc(file)}:{line}</code>{github_html(file, line, line, lang, commit)}'
 
 
 def xref_html(key: str, lang: str) -> str:
@@ -189,36 +206,32 @@ def _inline(text: str, lang: str) -> str:
     return re.sub(r"\{\{(\w+)\}\}", lambda m: xref_html(m.group(1), lang), out)
 
 
-def prose_html(text: str, lang: str) -> str:
-    """Escape a paragraph and mark it up: `code`, **bold**, [[file|text]] becomes a file:line chip,
-    {{key}} a link to that section."""
+def prose_html(text: str, lang: str, commit: str) -> str:
+    """Escape a paragraph and mark it up: `code`, **bold**, [[file|text]] becomes a file:line chip
+    linked to that line at `commit` on GitHub, {{key}} a link to that section."""
     out, last = [], 0
     for m in REF_RE.finditer(text):
         out.append(_inline(text[last:m.start()], lang))
-        out.append(ref_html(m.group(1), m.group(2)))
+        out.append(ref_html(m.group(1), m.group(2), lang, commit))
         last = m.end()
     out.append(_inline(text[last:], lang))
     return "".join(out)
 
 
-def code_html(code: Code, lang: str) -> str:
+def code_html(code: Code, lang: str, commit: str) -> str:
     lo, hi = span(code)
     lines = source(code.file)[0][lo - 1:hi]
     body = highlight(textwrap.dedent("\n".join(lines)), get_lexer_for_filename(code.file), HtmlFormatter(nowrap=True))
     rows = body.split("\n")[: hi - lo + 1]
     gutter = "".join(f'<span class="ln">{n}</span>{row}\n' for n, row in zip(range(lo, hi + 1), rows))
-    if lo == hi:
-        where = pick(lang, f"第 {lo} 行", f"line {lo}")
-    else:
-        where = pick(lang, f"第 {lo}–{hi} 行", f"lines {lo}–{hi}")
-    caption = f'<span class="src-cap">{prose_html(code.caption[lang], lang)}</span>' if code.caption else ""
+    caption = f'<span class="src-cap">{prose_html(code.caption[lang], lang, commit)}</span>' if code.caption else ""
     return (
-        f'<figure class="src"><figcaption><b>{esc(code.file)}</b><span class="src-lines">{where}</span>{caption}</figcaption>'
-        f"<pre>{gutter}</pre></figure>"
+        f'<figure class="src"><figcaption><b>{esc(code.file)}</b><span class="src-lines">{lines_text(lo, hi, lang)}</span>'
+        f"{github_html(code.file, lo, hi, lang, commit)}{caption}</figcaption><pre>{gutter}</pre></figure>"
     )
 
 
-def tabs_html(tabs: Tabs, name: str, lang: str) -> str:
+def tabs_html(tabs: Tabs, name: str, lang: str, commit: str) -> str:
     """A tab per backend or per model: radio buttons named `name`, the first one checked, then a panel for each.
     guide.css shows the panel of the one checked, so they switch without guide.js; with it, every set of tabs of the
     same kind follows the reader's pick."""
@@ -229,7 +242,7 @@ def tabs_html(tabs: Tabs, name: str, lang: str) -> str:
         for i, key in enumerate(tabs.panels)
     )
     panels = "".join(
-        f'<div class="g-panel">{"".join(body_html(item, lang) for item in body)}</div>' for body in tabs.panels.values()
+        f'<div class="g-panel">{"".join(body_html(item, lang, commit) for item in body)}</div>' for body in tabs.panels.values()
     )
     return (
         f'<div class="g-tabs" data-kind="{tabs.kind}"><div class="g-tab-bar" role="radiogroup" aria-label="{esc(title[lang])}">'
@@ -237,23 +250,23 @@ def tabs_html(tabs: Tabs, name: str, lang: str) -> str:
     )
 
 
-def body_html(item, lang: str, name: str = "") -> str:
+def body_html(item, lang: str, commit: str, name: str = "") -> str:
     if isinstance(item, Code):
-        return code_html(item, lang)
+        return code_html(item, lang, commit)
     if isinstance(item, Tabs):
-        return tabs_html(item, name, lang)
+        return tabs_html(item, name, lang, commit)
     if isinstance(item, tuple):
-        return "<ul>" + "".join(f"<li>{prose_html(i[lang], lang)}</li>" for i in item) + "</ul>"
-    return f"<p>{prose_html(item[lang], lang)}</p>"
+        return "<ul>" + "".join(f"<li>{prose_html(i[lang], lang, commit)}</li>" for i in item) + "</ul>"
+    return f"<p>{prose_html(item[lang], lang, commit)}</p>"
 
 
-def section_html(n: int, sec: Section, lang: str) -> str:
+def section_html(n: int, sec: Section, lang: str, commit: str) -> str:
     label, color = STAGES[sec.stage]
     return (
         f'<section class="g-sec" id="g-{sec.key}" style="--stage: {color}">'
         f'<header class="g-head"><span class="g-num">{n}</span><div><p class="g-stage">{label[lang]}</p>'
-        f'<h2>{esc(sec.title[lang])}</h2><p class="g-lead">{prose_html(sec.lead[lang], lang)}</p></div></header>'
-        f'{"".join(body_html(item, lang, f"g-{sec.key}-{i}") for i, item in enumerate(sec.body))}</section>'
+        f'<h2>{esc(sec.title[lang])}</h2><p class="g-lead">{prose_html(sec.lead[lang], lang, commit)}</p></div></header>'
+        f'{"".join(body_html(item, lang, commit, f"g-{sec.key}-{i}") for i, item in enumerate(sec.body))}</section>'
     )
 
 
@@ -280,10 +293,10 @@ def toc_html(lang: str) -> str:
     )
 
 
-def events_html(lang: str) -> str:
+def events_html(lang: str, commit: str) -> str:
     rows = "".join(
-        f"<tr><td><code>{esc(kind)}</code></td><td>{ref_html(file, text)}</td>"
-        f"<td>{prose_html(carries[lang], lang)}</td><td>{prose_html(shows[lang], lang)}</td></tr>"
+        f"<tr><td><code>{esc(kind)}</code></td><td>{ref_html(file, text, lang, commit)}</td>"
+        f"<td>{prose_html(carries[lang], lang, commit)}</td><td>{prose_html(shows[lang], lang, commit)}</td></tr>"
         for kind, file, text, carries, shows in EVENTS
     )
     heads = pick(lang, ("事件", "在哪裡送出", "帶了什麼", "畫面上的用途"), ("Event", "Sent from", "Carries", "What the page does with it"))
@@ -344,17 +357,17 @@ def logo_url() -> str:
 
 
 def page_html(commit: str, lang: str) -> str:
-    """The page body; `commit` is the commit its line numbers were looked up in."""
-    sections = "".join(section_html(n, sec, lang) for n, sec in enumerate(SECTIONS, 1))
+    """The page body; `commit` is the commit its line numbers were looked up in, and which its links to GitHub open."""
+    sections = "".join(section_html(n, sec, lang, commit) for n, sec in enumerate(SECTIONS, 1))
     link = f'<a href="{REPO}/tree/{esc(commit)}"><code>{esc(commit[:7])}</code></a>'
     return (
         f'{lang_switch_html(lang)}<main class="guide"><header class="g-hero"><img class="g-logo" src="{logo_url()}" alt="">'
         f'<p class="g-kicker">{pick(lang, "運作說明", "HOW IT WORKS")}</p>'
         f'<h1>{pick(lang, "一個問題在 agent 迴圈裡怎麼走", "How one question travels through the agent loop")}</h1>'
-        f'<p class="g-intro">{prose_html(INTRO[lang], lang)}</p>'
+        f'<p class="g-intro">{prose_html(INTRO[lang], lang, commit)}</p>'
         f'<p class="g-meta"><a href="{REPO}">{pick(lang, "原始碼和執行方式在 GitHub", "The source and how to run it are on GitHub")}</a> · '
         f'{pick(lang, "行號對應 commit", "line numbers from commit")} {link}</p></header>'
-        f'<div class="g-diagram">{diagram_html(lang)}</div>{toc_html(lang)}{sections}{events_html(lang)}</main>'
+        f'<div class="g-diagram">{diagram_html(lang)}</div>{toc_html(lang)}{sections}{events_html(lang, commit)}</main>'
     )
 
 
@@ -405,15 +418,17 @@ INTRO = {
     "兩個模型跑的是同一個迴圈。問題可以附上圖片、聲音或影片（{{media}}），打開「讓模型寫程式」時，"
     "模型還能在 Docker 沙箱裡執行 Python（{{execute}}）。模型可以在這台電腦上用 transformers 跑，也可以交給一台 vLLM 伺服器（{{backends}}）。"
     "兩個模型或兩種跑法不一樣的地方，分成頁籤（tab）各自說明，一個模型或一種 backend 一個；在任何一段選了一個，整頁同一類的頁籤都跟著換。每段都附上做這件事的程式碼；`harness/agent.py:98` 這類標記是檔案的路徑和行號，"
-    "滑過去會顯示那一行。行號是產生這一頁時從原始碼查出來的；每次推上 main，GitHub Actions 都會重新產生，程式改了也會跟著更新。",
+    "滑過去會顯示那一行，點旁邊的 GitHub 圖示會在新分頁打開那個檔案、跳到那一行，程式片段標題上的圖示也一樣。"
+    "行號是產生這一頁時從原始碼查出來的，連結也指向那個 commit；每次推上 main，GitHub Actions 都會重新產生，程式改了也會跟著更新。",
     "en": "Everything that happens between pressing send and seeing the reply, in the order it really runs. The app's sidebar picks "
     "Gemma 4 E2B or Qwen3.5 0.8B; both models run the same loop. "
     "A question can carry images, sound or video ({{media}}), and with Let the model write code on, the model can also run Python in a Docker sandbox ({{execute}}). "
     "The model runs on this machine with transformers, or on a vLLM server ({{backends}}). Where the two models, or the two ways of running "
     "them, differ, a section tells each in a tab of its own, one per model or per backend, and picking one in any section switches every tab "
     "of that kind on the page. "
-    "Every part comes with the code that does it; a mark like `harness/agent.py:98` is a file's path and a line number, and hovering over it shows that line. "
-    "The line numbers are looked up in the source when this page is built; GitHub Actions rebuilds it on every push to main, so they follow the code as it changes.",
+    "Every part comes with the code that does it; a mark like `harness/agent.py:98` is a file's path and a line number, hovering over it shows that line, "
+    "and the GitHub icon beside it opens the file at that line in a new tab, as the icon on an excerpt's title does for its lines. "
+    "The line numbers are looked up in the source when this page is built, and the links go to that commit; GitHub Actions rebuilds it on every push to main, so they follow the code as it changes.",
 }
 
 SECTIONS = [

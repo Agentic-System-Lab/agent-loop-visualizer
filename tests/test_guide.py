@@ -109,7 +109,7 @@ def test_every_excerpt_starts_and_ends_where_it_says(code):
     if code.end:
         assert any(code.end in line for line in lines[lo - 1:hi])
     excerpt = "\n".join(lines[lo - 1:hi])
-    html = guide.code_html(code, "zh")
+    html = guide.code_html(code, "zh", "0123456789abcdef")
     assert html.count('class="ln"') == hi - lo + 1
     assert f'<span class="ln">{lo}</span>' in html and f'<span class="ln">{hi}</span>' in html
     assert len(excerpt) > 0
@@ -222,6 +222,29 @@ def test_page_html(lang):
         assert not CJK.search(words), words[CJK.search(words).start() - 80:][:160]
 
 
+@pytest.mark.parametrize("lang", LANGS)
+def test_every_file_and_line_on_the_page_links_to_it_on_github(lang):
+    """A chip's icon opens its line, and an excerpt's its lines, at the commit the page was built from."""
+    html = guide.page_html("0123456789abcdef", lang)
+    link = (
+        rf'<a class="g-gh" href="{re.escape(guide.REPO)}/blob/0123456789abcdef/([\w./-]+)#L(\d+)(?:-L(\d+))?" '
+        r'target="_blank" rel="noopener" title="([^"]+)" aria-label="([^"]+)"></a>'
+    )
+    chips = re.findall(rf'<code class="ref" title="[^"]*">([\w./-]+):(\d+)</code>{link}', html)
+    assert len(chips) == html.count('<code class="ref"') > 50  # every chip, in the text and in the event table
+    excerpts = re.findall(rf'<figcaption><b>([\w./-]+)</b><span class="src-lines">[^<]+</span>{link}', html)
+    assert len(excerpts) == html.count('<figure class="src">') == len(CODES)
+    for file, line, linked, lo, hi, title, label in chips:
+        assert (linked, lo, hi) == (file, line, "")
+        assert file in label and line in label
+    for code, (file, linked, lo, hi, title, label) in zip(CODES, excerpts):
+        assert file == linked == code.file and (int(lo), int(hi or lo)) == span(code)
+    for *_, title, label in chips + excerpts:
+        assert "GitHub" in title and "GitHub" in label
+        if lang == "en":
+            assert not CJK.search(title + label), label
+
+
 def test_every_set_of_tabs_is_one_tab_per_backend_or_per_model():
     kinds = [set(tabs) for _, tabs in guide.TAB_KINDS.values()]
     assert not set.intersection(*kinds)  # a key says which kind its set of tabs is
@@ -269,7 +292,9 @@ def test_an_excerpt_of_a_file_other_than_python_ends_where_it_says():
     assert guide.source(code.file)[1] is None
     assert 'HF_HUB_OFFLINE: "1"' in lines[hi - 1] and hi - lo < 10
     assert span(Code(code.file, code.start)) == (lo, lo)
-    assert '<span class="nt">' in guide.code_html(code, "en")  # highlighted as YAML
+    html = guide.code_html(code, "en", "0123456789abcdef")
+    assert '<span class="nt">' in html  # highlighted as YAML
+    assert f'href="{guide.REPO}/blob/0123456789abcdef/docker-compose/compose.yaml#L{lo}-L{hi}"' in html
 
 
 def test_stylesheet_has_both_palettes():
@@ -305,9 +330,10 @@ def test_the_root_page_sends_a_reader_to_their_language(tmp_path):
 
 
 def test_prose_markup_is_escaped():
-    html = guide.prose_html("a <b> `x<y>` **粗** [[harness/agent.py|def run(self):]] {{stop}}", "zh")
+    html = guide.prose_html("a <b> `x<y>` **粗** [[harness/agent.py|def run(self):]] {{stop}}", "zh", "0123456789abcdef")
     assert html.startswith("a &lt;b&gt; <code>x&lt;y&gt;</code> <b>粗</b> ")
-    assert f'>harness/agent.py:{guide.find_line("harness/agent.py", "def run(self):")}</code>' in html
+    line = guide.find_line("harness/agent.py", "def run(self):")
+    assert f'>harness/agent.py:{line}</code><a class="g-gh" href="{guide.REPO}/blob/0123456789abcdef/harness/agent.py#L{line}"' in html
     assert 'title="def run(self):"' in html and 'href="#g-stop"' in html
 
 
