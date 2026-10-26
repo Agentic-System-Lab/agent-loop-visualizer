@@ -1,4 +1,4 @@
-"""Starting vLLM in Docker for the page (harness/backends/vllm_docker.py), and the compose files it starts it from.
+"""Starting vLLM in Docker for the page (agent/model_backends/vllm_docker.py), and the compose files it starts it from.
 
 Docker is faked at the level of subprocess: each `docker` command the module runs is recorded and answered as Docker
 would, so every way a start can go (no Docker, Docker not running, no Compose, `docker compose up` failing, a container
@@ -17,16 +17,16 @@ import re
 import runpy
 import shutil
 import subprocess
-from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
 
-from harness import families
-from harness.backends import simple_backend, vllm_docker
-from harness.backends.backend import Sampling
-from harness.backends.simple_backend import MODELS_DIR
-from harness.tools import DOCKER_INSTALL
+from agent import model_families
+from agent.model_backends import simple_backend, vllm_docker
+from agent.model_backends.backend import Sampling
+from agent.model_backends.simple_backend import MODELS_DIR
+from agent.tools import DOCKER_INSTALL
 
 COMPOSE_DIR = vllm_docker.COMPOSE_DIR  # docker-compose/
 QWEN = "Qwen/Qwen3.5-0.8B"
@@ -39,11 +39,11 @@ class FakeDocker:
     `compose` (the Compose plugin), `runtimes`, `up` (exit code and lines of `docker compose up`), `state` (the
     container's, once up), `log`, and `answers_after` (how many looks before the server answers)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.installed, self.daemon, self.compose = True, True, True
-        self.runtimes = {"io.containerd.runc.v2": {}, "runc": {}}
+        self.runtimes: dict = {"io.containerd.runc.v2": {}, "runc": {}}
         self.up = (0, [" Container agent-loop-vllm-vllm-1  Started"])
-        self.state = {"Running": True, "OOMKilled": False, "ExitCode": 0}
+        self.state: dict = {"Running": True, "OOMKilled": False, "ExitCode": 0}
         self.log = "(APIServer pid=1) INFO 10-25 14:28:31 [model.py:2152] Using max model len 131072\n"
         self.answers_after = 2
         self.commands: list[list[str]] = []
@@ -106,14 +106,14 @@ class FakeDocker:
 
     def serves(self, address: str, model_id: str) -> bool:
         self.looks += 1
-        return self.state.get("Running") and self.served == model_id and self.looks > self.answers_after
+        return bool(self.state.get("Running")) and self.served == model_id and self.looks > self.answers_after
 
     def compose_calls(self, what: str) -> list[list[str]]:
         return [c for c in self.commands if c[1] == "compose" and what in c]
 
     def models_up(self) -> list[str]:
         """The model of each `docker compose up`, in order."""
-        return [env["VLLM_MODEL"] for c, env in zip(self.commands, self.envs) if c[1] == "compose" and "up" in c]
+        return [(env or {})["VLLM_MODEL"] for c, env in zip(self.commands, self.envs) if c[1] == "compose" and "up" in c]
 
 
 @pytest.fixture
@@ -153,12 +153,12 @@ def failure(model_id=QWEN) -> vllm_docker.DockerError:
 def test_the_server_starts_from_compose_yaml_with_the_model_at_its_pinned_revision(docker):
     server, said = start()
     assert server == {"model": QWEN, "url": "http://127.0.0.1:8000", "device": "cpu", "mtp": False}
-    assert docker.downloads == [(QWEN, {"revision": families.REVISIONS[QWEN], "cache_dir": MODELS_DIR})]  # the weights, before the server
+    assert docker.downloads == [(QWEN, {"revision": model_families.REVISIONS[QWEN], "cache_dir": MODELS_DIR})]  # the weights, before the server
     (up,) = docker.compose_calls("up")
     assert up == ["docker", "compose", "--progress", "plain", "-p", "agent-loop-vllm", "-f", str(COMPOSE_DIR / "compose.yaml"), "up", "--detach"]
     env = docker.envs[docker.commands.index(up)]
     assert docker.models_up() == [QWEN]
-    assert (env["VLLM_MODEL"], env["VLLM_REVISION"], env["AGENT_LOOP_MODELS"]) == (QWEN, families.REVISIONS[QWEN], str(MODELS_DIR))
+    assert (env["VLLM_MODEL"], env["VLLM_REVISION"], env["AGENT_LOOP_MODELS"]) == (QWEN, model_families.REVISIONS[QWEN], str(MODELS_DIR))
     assert [stage for stage, _ in said] == ["download", "up", "load", "load"]
     assert said[1] == ("up", "Container agent-loop-vllm-vllm-1  Started") and "Using max model len" in said[2][1]
 
@@ -300,16 +300,16 @@ def speculative_env(docker) -> list[str]:
 def test_on_the_gpu_mtp_runs_gemma_with_its_drafter_at_its_pinned_commit(docker):
     docker.runtimes["nvidia"] = {}
     server, _ = start(GEMMA, mtp=True)
-    drafter = families.DRAFTERS[GEMMA]
-    assert server["mtp"] and json.loads(speculative_env(docker)[0]) == {**families.VLLM_SPECULATIVE[GEMMA], "revision": families.REVISIONS[drafter]}
-    assert (drafter, {"revision": families.REVISIONS[drafter], "cache_dir": MODELS_DIR}) in docker.downloads  # into models/, which the server reads offline
+    drafter = model_families.DRAFTERS[GEMMA]
+    assert server["mtp"] and json.loads(speculative_env(docker)[0]) == {**model_families.VLLM_SPECULATIVE[GEMMA], "revision": model_families.REVISIONS[drafter]}
+    assert (drafter, {"revision": model_families.REVISIONS[drafter], "cache_dir": MODELS_DIR}) in docker.downloads  # into models/, which the server reads offline
     assert vllm_docker.chosen() == {"model": GEMMA, "mtp": True}
 
 
 def test_on_the_gpu_mtp_runs_qwen_with_the_mtp_layer_in_its_own_checkpoint(docker):
     docker.runtimes["nvidia"] = {}
     server, _ = start(QWEN, mtp=True)
-    assert server["mtp"] and json.loads(speculative_env(docker)[0]) == families.VLLM_SPECULATIVE[QWEN]
+    assert server["mtp"] and json.loads(speculative_env(docker)[0]) == model_families.VLLM_SPECULATIVE[QWEN]
     assert [repo for repo, _ in docker.downloads] == [QWEN]
 
 
@@ -328,7 +328,7 @@ def test_switching_mtp_on_the_gpu_starts_the_server_again_and_the_same_setting_d
     assert vllm_docker.serving(QWEN, mtp=True) and vllm_docker.serving(QWEN) is None
     start(QWEN, mtp=False)
     start(QWEN, mtp=False)
-    assert [json.loads(c) if c != "None" else None for c in speculative_env(docker)] == [families.VLLM_SPECULATIVE[QWEN], None]
+    assert [json.loads(c) if c != "None" else None for c in speculative_env(docker)] == [model_families.VLLM_SPECULATIVE[QWEN], None]
     assert vllm_docker.speculative(QWEN, "cpu") is None and vllm_docker.speculative("someone/else", "gpu") is None
 
 
@@ -356,7 +356,7 @@ class ComposeLoader(yaml.SafeLoader):
 
 
 ComposeLoader.add_constructor("!reset", lambda loader, node: None)
-ComposeLoader.add_constructor("!override", lambda loader, node: loader.construct_sequence(node) if isinstance(node, yaml.SequenceNode) else loader.construct_mapping(node))
+ComposeLoader.add_constructor("!override", lambda loader, node: loader.construct_sequence(node) if isinstance(node, yaml.SequenceNode) else loader.construct_mapping(cast(yaml.MappingNode, node)))
 
 
 def service(name: str) -> dict:
@@ -382,7 +382,7 @@ def test_the_server_reads_the_projects_models_read_only_and_never_downloads():
 
 def test_by_default_the_server_serves_qwen_at_its_pinned_revision_under_its_own_id():
     model, revision, served, *_ = (default(arg) for arg in service("compose.yaml")["command"])
-    assert model == QWEN and revision == f"--revision={families.REVISIONS[QWEN]}" and served == f"--served-model-name={QWEN}"
+    assert model == QWEN and revision == f"--revision={model_families.REVISIONS[QWEN]}" and served == f"--served-model-name={QWEN}"
 
 
 # The flags only the GPU file has: on its memory, and on speculative decoding, which vLLM's CPU image cannot do here.
@@ -442,7 +442,7 @@ def test_docker_compose_hands_vllm_the_speculative_config_the_page_sets_as_it_is
     found = subprocess.run(["docker", *vllm_docker._compose("gpu", "config", "--format", "json")], capture_output=True, text=True, env=env)
     assert found.returncode == 0, found.stderr
     command = json.loads(found.stdout)["services"]["vllm"]["command"]
-    assert f"--speculative-config={env['VLLM_SPECULATIVE_CONFIG']}" in command and json.loads(env["VLLM_SPECULATIVE_CONFIG"])["model"] == families.DRAFTERS[GEMMA]
+    assert f"--speculative-config={env['VLLM_SPECULATIVE_CONFIG']}" in command and json.loads(env["VLLM_SPECULATIVE_CONFIG"])["model"] == model_families.DRAFTERS[GEMMA]
 
 
 @compose
@@ -463,7 +463,7 @@ def test_a_relative_agent_loop_models_mounts_the_folder_the_weights_went_to(monk
 
 @pytest.mark.skipif(os.environ.get("RUN_VLLM_DOCKER_TESTS") != "1", reason="set RUN_VLLM_DOCKER_TESTS=1 to start vLLM in Docker for real")
 def test_real_server_in_docker_answers_through_vllm_backend():
-    from harness.backends.vllm_backend import VLLMBackend
+    from agent.model_backends.vllm_backend import VLLMBackend
 
     vllm_docker._server.clear()
     try:

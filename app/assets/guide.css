@@ -157,7 +157,7 @@ body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.6 "So
   .guide h1 { font-size: 24px; }
   .g-head .g-num { width: 28px; height: 28px; font-size: 13px; }
   .src pre { font-size: 11.5px; }
-  /* A chip between full-width brackets, （harness/…:123）, cannot move to the next line on its own; let it break instead. */
+  /* A chip between full-width brackets, （agent/…:123）, cannot move to the next line on its own; let it break instead. */
   .guide code.ref { white-space: normal; }
   .g-table code.ref { white-space: nowrap; }  /* the table scrolls sideways anyway */
   .g-tab-bar small { display: none; }  /* the class names; without them more of the row fits on the screen */

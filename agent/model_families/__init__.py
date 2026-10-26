@@ -1,6 +1,6 @@
 """Model families: everything that changes when the model changes.
 
-The harness (agent.py), the decoding loop (simple_backend.py) and the page (render.py) are written once.
+This project's harness (harnesses/simple_harness.py), the decoding loop (simple_backend.py) and the page (render.py) are written once.
 What differs between Gemma 4 and Qwen3.5 is how the model writes its turns, its thinking and its
 tool calls, which tokens stop it, and what its control tokens mean. A family module describes all
 of that in one Family, and everything else asks the family.
@@ -14,9 +14,9 @@ notes on its control tokens and on the files of its checkpoints) and add its Fam
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Callable
 
 # The models in the page's model menu: Hugging Face id -> label. A label is the same in both of the page's
 # languages: Streamlit's selectbox sends its label back, and one that changed with the language would become the value.
@@ -123,8 +123,8 @@ class Family:
         return re.compile("|".join(re.escape(p) for p in pieces))
 
 
-from harness.families.gemma4 import GEMMA4  # noqa: E402  (the family modules import Family from here)
-from harness.families.qwen3_5 import QWEN3_5  # noqa: E402
+from agent.model_families.gemma4 import GEMMA4  # noqa: E402  (the family modules import Family from here)
+from agent.model_families.qwen3_5 import QWEN3_5  # noqa: E402
 
 FAMILIES = {f.key: f for f in (GEMMA4, QWEN3_5)}
 
@@ -139,6 +139,6 @@ def for_model_type(model_type: str) -> Family:
             return family
     known = ", ".join(t for f in FAMILIES.values() for t in f.model_types)
     raise ValueError(
-        f"Models of model_type {model_type!r} are not supported; supported: {known}. families/__init__.py says how to add a family. "
-        f"（不支援 model_type {model_type!r} 的模型；目前支援：{known}。新增模型家族的方法見 families/__init__.py。）"
+        f"Models of model_type {model_type!r} are not supported; supported: {known}. model_families/__init__.py says how to add a family. "
+        f"（不支援 model_type {model_type!r} 的模型；目前支援：{known}。新增模型家族的方法見 model_families/__init__.py。）"
     )

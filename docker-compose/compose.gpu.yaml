@@ -21,7 +21,7 @@ services:
       # shares the machine's memory (a DGX Spark, say), never is.
       - --kv-cache-memory-bytes=${VLLM_KV_CACHE_MEMORY_BYTES:-2G}
       - --gpu-memory-utilization=${VLLM_GPU_MEMORY_UTILIZATION:-0.3}
-      # Speculative decoding (MTP): the page sets the model's --speculative-config from families.VLLM_SPECULATIVE, as
+      # Speculative decoding (MTP): the page sets the model's --speculative-config from model_families.VLLM_SPECULATIVE, as
       # JSON, unless the sidebar's MTP switch is off; by hand it is off ("None"). vLLM's CPU image runs neither model's,
       # so compose.yaml has neither flag. With a config, each step's counts in detail are what the page marks the guesses
       # from; without one vLLM refuses any but "none".

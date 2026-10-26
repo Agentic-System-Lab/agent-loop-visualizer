@@ -12,11 +12,11 @@ import httpx
 import pytest
 
 import samples
-from harness import tools
-from harness.tools import TOOLS, ToolError, ToolResult, calculator, get_current_time, read_wikipedia, run_python, search_wikipedia
+from agent import tools
+from agent.tools import TOOLS, ToolError, ToolResult, calculator, get_current_time, read_wikipedia, run_python, search_wikipedia
 
 CJK = re.compile(r"[\u4e00-\u9fff\uff00-\uffef]")
-SANDBOX = Path(__file__).resolve().parent.parent / "harness" / "sandbox"
+SANDBOX = Path(__file__).resolve().parent.parent / "agent" / "sandbox"
 
 
 # ---------- schema and validation ----------
@@ -417,7 +417,7 @@ def test_the_sandbox_image_agrees_with_tools():
 
 def test_the_sandbox_image_installs_a_pip_without_the_revoked_certificates_by_hash():
     """pip below 26.2.2 also trusts its own copy of certifi, which still has eMudhra's compromised emSign certificates."""
-    [line] = [l for l in (SANDBOX / "Dockerfile").read_text().splitlines() if '"pip @ ' in l]
+    [line] = [text for text in (SANDBOX / "Dockerfile").read_text().splitlines() if '"pip @ ' in text]
     version = re.search(r"/pip-([\d.]+)-py3-none-any\.whl#sha256=[0-9a-f]{64}\"", line).group(1)
     assert tuple(map(int, version.split("."))) >= (26, 2, 2)
 
@@ -426,7 +426,7 @@ def test_the_sandbox_image_installs_a_pip_without_the_revoked_certificates_by_ha
     (FakeDocker(returncode=0, stdout=f"{tools.SANDBOX_VERSION}\n"), None),
     (FakeDocker(returncode=0, stdout="\n"), ("舊版", "out of date")),  # built before the image had a version
     (FakeDocker(returncode=0, stdout="1\n"), ("舊版", "out of date")),
-    (FakeDocker(returncode=1, stderr="Error: No such image: agent-loop-sandbox"), ("docker build -t agent-loop-sandbox harness/sandbox",) * 2),
+    (FakeDocker(returncode=1, stderr="Error: No such image: agent-loop-sandbox"), ("docker build -t agent-loop-sandbox agent/sandbox",) * 2),
     (FakeDocker(returncode=1, stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock."), ("沒有在執行", "not running")),
 ])
 def test_sandbox_problem_says_what_is_missing(monkeypatch, docker, words):
@@ -446,7 +446,7 @@ def test_sandbox_problem_without_docker_links_to_its_installation(monkeypatch):
     monkeypatch.setattr(tools.subprocess, "run", missing)
     problem = tools.sandbox_problem()
     for lang in ("zh", "en"):
-        assert f"]({tools.DOCKER_INSTALL})" in problem[lang] and "docker build -t agent-loop-sandbox harness/sandbox" in problem[lang]
+        assert f"]({tools.DOCKER_INSTALL})" in problem[lang] and "docker build -t agent-loop-sandbox agent/sandbox" in problem[lang]
 
 
 @pytest.mark.skipif(tools.sandbox_problem() is not None, reason="needs Docker and the agent-loop-sandbox image")

@@ -1,8 +1,8 @@
 """The interface between the harness and whatever runs the model.
 
-The harness (agent.Run) and the page (app/page.py) reach the model only through a Backend. It renders the
-conversation into a prompt with the model's chat template, encodes the prompt into the tokens the model reads,
-and generates, yielding the events render.py draws. The app runs one of two: simple_backend.SimpleBackend, transformers
+This project's harness (harnesses/simple_harness.SimpleHarness) and the page (app/page.py) reach the model only through
+a Backend. It renders the conversation into a prompt with the model's chat template, encodes the prompt into the tokens
+the model reads, and generates, yielding the events render.py draws. The app runs one of two: simple_backend.SimpleBackend, transformers
 on this machine, with a hand-written decoding loop that sees the whole distribution at every token, or
 vllm_backend.VLLMBackend, a vLLM server. tests/fakes.FakeLLM replays scripted replies. A backend that asks another
 serving engine, such as SGLang or Ollama, would be one more; this module says what it has to provide.
@@ -17,10 +17,11 @@ never shows a number nobody measured.
 Nothing here imports torch, so a backend can be written, and the interface read, without it.
 """
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Callable, Iterator, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-from harness import families
+from agent import model_families
 
 
 @dataclass
@@ -37,7 +38,7 @@ class Encoded:
     """A prompt as the model reads it (Backend.encode)."""
 
     text: str  # the prompt, with each placeholder of an image, clip or video expanded into the tokens it takes
-    ids: object  # its token ids, in the form the backend's generate() takes (SimpleBackend: a tensor of shape (1, n_tokens))
+    ids: Any  # its token ids, in the form the backend's generate() takes (SimpleBackend: a tensor of shape (1, n_tokens))
     n_tokens: int
     # what generate() needs to read the media: the processor's inputs for the encoders (SimpleBackend), or the files
     # and the server's expansion of the ids (VLLMBackend)
@@ -67,11 +68,11 @@ class Backend(Protocol):
     """What runs the model. The page holds one at a time (app.page.current_llm) and runs one turn on it at a time."""
 
     model_id: str
-    family: families.Family  # how the model writes its turns, thinking and tool calls (families/)
+    family: model_families.Family  # how the model writes its turns, thinking and tool calls (model_families/)
     modalities: tuple[str, ...]  # what it reads besides text: "image", "audio", "video"
     context_length: int  # the most tokens it reads at once
     info: dict  # what the Model tab shows, and in "defaults" the recommended temperature, top_p and top_k
-    drafter_id: str | None  # the MTP drafter that goes with the model (families.DRAFTERS), if any
+    drafter_id: str | None  # the MTP drafter that goes with the model (model_families.DRAFTERS), if any
     drafter: object | None  # that drafter once load_drafter() has loaded it; Sampling.mtp turns it on only then
 
     def warmup(self) -> None:

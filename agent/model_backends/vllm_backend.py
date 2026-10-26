@@ -5,7 +5,7 @@ model through VLLMBackend, a Backend (backend.py) like simple_backend.SimpleBack
 same; what changes is how much of the model the page can see, which depends on how the server was started.
 
 The prompt stays exact. Everything of the checkpoint but its weights (the config, the tokenizer, the chat
-template) is downloaded into models/ at the revision families.REVISIONS pins, the prompt is rendered and
+template) is downloaded into models/ at the revision model_families.REVISIONS pins, the prompt is rendered and
 tokenized here as SimpleBackend does it, and the server gets the token ids, so it reads exactly what the Context tab
 shows. Each token comes back as its id with its log probability and those of the most likely tokens at its
 position. What those numbers are depends on the server's --logprobs-mode, which no route tells, so the backend
@@ -46,8 +46,8 @@ import os
 import time
 import wave
 from collections import Counter
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
-from typing import Callable, Iterator
 
 import av
 import httpx
@@ -57,9 +57,9 @@ from huggingface_hub.errors import RemoteEntryNotFoundError
 from PIL import Image
 from transformers import AutoConfig, AutoProcessor, GenerationConfig
 
-from harness import families, media
-from harness.backends.backend import Encoded, Sampling
-from harness.backends.simple_backend import MODELS_DIR, TOP_N, describe_folder
+from agent import media, model_families
+from agent.model_backends.backend import Encoded, Sampling
+from agent.model_backends.simple_backend import MODELS_DIR, TOP_N, describe_folder
 
 # The weights stay on the server; downloading them here as well would only take up space.
 WEIGHTS = ["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"]
@@ -84,7 +84,7 @@ class ServerError(Exception):
 
 
 class UnsupportedModel(ServerError):
-    """A model of a family the page does not know (families.FAMILIES): `model_id` is the name the server was started
+    """A model of a family the page does not know (model_families.FAMILIES): `model_id` is the name the server was started
     with, and `model_type` the one in its config.json, or None when it has none or it could not be read."""
 
     def __init__(self, zh: str, en: str, model_id: str, model_type: str | None):
@@ -158,12 +158,12 @@ def _unreachable(client: httpx.Client, error: Exception) -> ServerError:
 
 
 def _checkpoint_files(model_id: str) -> str:
-    """The model's folder in MODELS_DIR with everything but its weights, at the revision families.REVISIONS pins.
+    """The model's folder in MODELS_DIR with everything but its weights, at the revision model_families.REVISIONS pins.
     The server should load the same revision (vllm serve <model> --revision <commit>) so that both read the same
     tokenizer and chat template."""
     if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
         return model_id
-    return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR, ignore_patterns=WEIGHTS)
+    return snapshot_download(model_id, revision=model_families.REVISIONS.get(model_id), cache_dir=MODELS_DIR, ignore_patterns=WEIGHTS)
 
 
 def _model_type(config_json: str) -> str | None:
@@ -175,7 +175,7 @@ def _model_type(config_json: str) -> str | None:
         return None
 
 
-def family_of(model_id: str) -> families.Family | None:
+def family_of(model_id: str) -> model_families.Family | None:
     """The family of a model the server serves, from its config.json alone, which is all the model menu downloads for
     it (the rest of its files only when it is picked): None for a family the page does not know, or a checkpoint without
     a config.json (a repo of GGUF files). Raises OSError or ValueError when that cannot be told: no way to the Hub, a
@@ -184,11 +184,11 @@ def family_of(model_id: str) -> families.Family | None:
         config_json = os.path.join(model_id, "config.json")
     else:
         try:
-            config_json = hf_hub_download(model_id, "config.json", revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
+            config_json = hf_hub_download(model_id, "config.json", revision=model_families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
         except RemoteEntryNotFoundError:
             return None
     model_type = _model_type(config_json)
-    return next((f for f in families.FAMILIES.values() if model_type in f.model_types), None)
+    return next((f for f in model_families.FAMILIES.values() if model_type in f.model_types), None)
 
 
 def _generation_config(folder: str, config) -> GenerationConfig:
@@ -201,8 +201,8 @@ def _generation_config(folder: str, config) -> GenerationConfig:
 
 
 def unsupported(model_id: str, why: str, model_type: str | None = None) -> UnsupportedModel:
-    """The error for a model of a family the page does not know (families.FAMILIES)."""
-    names = [f.name for f in families.FAMILIES.values()]
+    """The error for a model of a family the page does not know (model_families.FAMILIES)."""
+    names = [f.name for f in model_families.FAMILIES.values()]
     return UnsupportedModel(f"這個網頁還不支援 {model_id}（{why}）；目前支援 {'、'.join(names)}。",
                             f"This page does not support {model_id} yet ({why}); it supports {', '.join(names)}.", model_id, model_type)
 
@@ -286,7 +286,8 @@ def drafted_tokens(accepted: list[int], drafted: list[int], n_tokens: int) -> di
     from the prefill; after it, each verify step gives the guesses it kept and then one token of the model's own,
     which replaces the next guess when it kept fewer than were drafted. vLLM does not count a step without guesses,
     so when the steps do not account for every token, nobody can tell which tokens were guessed: None."""
-    kept, turned_down, at = [], [], 1
+    kept: list[int] = []
+    turned_down, at = [], 1
     for n_kept, n_drafted in zip(accepted, drafted):
         kept += range(at, at + n_kept)
         if n_kept < n_drafted:
@@ -339,9 +340,9 @@ class VLLMBackend:
             config = AutoConfig.from_pretrained(files)
         except (ValueError, OSError) as e:  # a model_type this transformers does not know, or no config.json (a repo of GGUF files)
             raise unsupported(model_id, str(e), _model_type(os.path.join(files, "config.json"))) from e
-        if not any(config.model_type in f.model_types for f in families.FAMILIES.values()):
+        if not any(config.model_type in f.model_types for f in model_families.FAMILIES.values()):
             raise unsupported(model_id, f"model_type {config.model_type!r}", config.model_type)
-        self.family = families.for_model_type(config.model_type)
+        self.family = model_families.for_model_type(config.model_type)
         # The same tokenizer and chat template SimpleBackend loads, so the prompt is the same string and the same tokens.
         self.processor = AutoProcessor.from_pretrained(files)
         self.tokenizer = getattr(self.processor, "tokenizer", self.processor)
@@ -353,8 +354,8 @@ class VLLMBackend:
         self.context_length = card.get("max_model_len") or text_cfg.max_position_embeddings  # the server's limit (--max-model-len)
         self.audio_rate = getattr(getattr(self.processor, "feature_extractor", None), "sampling_rate", AUDIO_RATE)
         self.media_token_ids = {kind: getattr(config, f"{kind}_token_id", None) for kind in media.MEDIA}
-        self.drafter_id = None  # speculative decoding is the server's (--speculative-config): nothing to switch here
-        self.drafter = None
+        self.drafter_id: str | None = None  # speculative decoding is the server's (--speculative-config): nothing to switch here
+        self.drafter: object | None = None
         # What the server does beyond /v1/completions, and so which of the checkpoint's media the model reads here.
         readable = checkpoint_modalities(config, self.processor)
         hi = self.encode(self.render([{"role": "user", "content": "Hi"}], None, False), []).ids
@@ -622,7 +623,7 @@ class VLLMBackend:
         except httpx.HTTPError as e:
             raise _unreachable(self.client, e) from e
 
-    def _stream(self, body: dict, s: Sampling, end: dict) -> Iterator[tuple[int, dict]]:
+    def _stream(self, body: dict, s: Sampling, end: dict) -> Generator[tuple[int, dict], None, None]:
         """Each token /v1/completions sends, with what it says about the token. `end` gets the finish reason and, from a
         server started with --per-request-spec-decode-metrics summary or detailed, the speculative decoding counts."""
         for chunk in self._lines("/v1/completions", body):
@@ -649,7 +650,7 @@ class VLLMBackend:
         rank = 1 + sum(v > logprob for _, v in top) if any(i == token_id for i, _ in top) else None
         return self._token_details(token_id, logprob, listed, rank, None, s)
 
-    def _stream_generate(self, prompt: Encoded, s: Sampling, end: dict) -> Iterator[tuple[int, dict]]:
+    def _stream_generate(self, prompt: Encoded, s: Sampling, end: dict) -> Generator[tuple[int, dict], None, None]:
         """Each token /inference/v1/generate sends for the step, with what it says about the token, and `end` as in
         _stream. With media, the server's first chunk has the prompt as it expanded it, which must be the one encode()
         was told and the Context tab shows."""
@@ -708,7 +709,7 @@ class VLLMBackend:
         depends on the server's --logprobs-mode. Only the model's own log probabilities are p, logprob and the top 5.
         Processed ones are the distribution the token was drawn from, so the token's is its sampling probability, and
         the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
-        details = {"rank": rank} if rank else {}
+        details: dict = {"rank": rank} if rank else {}
         if self.logprobs_mode == "raw_logprobs":
             # Equally likely tokens go lowest id first, as in SimpleBackend.
             ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))

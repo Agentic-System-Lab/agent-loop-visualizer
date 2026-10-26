@@ -5,6 +5,7 @@ Opt in with:  RUN_MODEL_TESTS=1 uv run pytest -m model   (add  -k Qwen  for one 
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,12 +14,13 @@ import pytest
 import torch
 
 import samples
+from agent import media, model_families, tools
+from agent.harnesses import model_endpoint, pi_harness
+from agent.harnesses.simple_harness import SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
+from agent.model_backends.backend import Backend
+from agent.model_backends.simple_backend import Sampling, SimpleBackend
+from agent.tools import TOOLS
 from app import render
-from harness import families, media, tools
-from harness.agent import SYSTEM_WITH_TOOLS, Run, RunSettings
-from harness.backends.backend import Backend
-from harness.backends.simple_backend import SimpleBackend, Sampling
-from harness.tools import TOOLS
 from html_check import assert_balanced
 from test_render import render_everything
 
@@ -30,7 +32,7 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module", params=list(families.MODELS))
+@pytest.fixture(scope="module", params=list(model_families.MODELS))
 def gemma(request):
     return SimpleBackend(request.param)
 
@@ -66,10 +68,28 @@ def test_greedy_decoding_matches_generate(gemma):
     assert ours == theirs[: len(ours)]
 
 
+def test_the_real_pi_asks_the_model_through_the_endpoint_and_every_token_is_drawn(gemma, tmp_path, monkeypatch):
+    """pi (on the PATH, or PI_COMMAND) asking this model through model_endpoint, with no credentials of its own."""
+    if not (shutil.which(pi_harness.PI_COMMAND[0]) or Path(pi_harness.PI_COMMAND[0]).exists()):
+        pytest.skip(f"{pi_harness.PI_COMMAND[0]} is not installed")
+    (tmp_path / "agent").mkdir()
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "agent"))
+    events = []
+    run = pi_harness.PiHarness(pi_harness.PiSettings(model_endpoint.PROVIDER, gemma.model_id, tools=("bash",), max_steps=4, lang="en"), [],
+                               "Use the bash tool to print today's date, then tell me the date.", events.append, folder=tmp_path / "chat",
+                               session="c", page=pi_harness.PageModel(gemma, Sampling(temperature=0, max_new_tokens=256)))
+    run.run()
+    calls = [e for e in events if e["type"] == "tool_call"]
+    assert calls and calls[0]["name"] == "bash" and "date" in calls[0]["arguments"]["command"], [e for e in events if e["type"] in ("model_end", "error")]
+    assert events[-1]["stop_reason"] == "no_tool_call" and events[-1]["final"]
+    assert [e["step"] for e in events if e["type"] == "context"] == [1, 2]
+    assert all(e["rank"] == 1 for e in events if e["type"] == "token")  # greedy, and every token drawn with its rank
+
+
 def test_agent_uses_a_tool_and_answers(gemma):
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=256), max_steps=4)
-    Run(gemma, [], "請用 calculator 工具計算 12345 * 6789。", settings, events.append).run()
+    SimpleHarness(gemma, [], "請用 calculator 工具計算 12345 * 6789。", settings, events.append).run()
 
     assert not [e for e in events if e["type"] == "error"]
     calls = [e for e in events if e["type"] == "tool_call"]
@@ -159,7 +179,7 @@ def test_mtp_with_an_image_writes_what_plain_decoding_writes(gemma):
 def test_the_model_reads_the_total_on_the_receipt(gemma):
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=64), use_tools=False)
-    Run(gemma, [], "What is the TOTAL printed on this receipt? Answer with the number only.", settings, events.append, [attach("receipt.png", gemma)]).run()
+    SimpleHarness(gemma, [], "What is the TOTAL printed on this receipt? Answer with the number only.", settings, events.append, [attach("receipt.png", gemma)]).run()
     assert not [e for e in events if e["type"] == "error"]
     assert "370" in events[-1]["final"]
     [context] = [e for e in events if e["type"] == "context"]
@@ -171,7 +191,7 @@ def test_the_model_writes_code_that_runs_in_the_sandbox(gemma, tmp_path):
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=512), max_steps=4, lang="en")
     question = "Use run_python to compute the sum of the squares of the integers from 1 to 100."
-    Run(gemma, [], question, settings, events.append, files=tmp_path).run()
+    SimpleHarness(gemma, [], question, settings, events.append, files=tmp_path).run()
     assert not [e for e in events if e["type"] == "error"]
     calls = [e for e in events if e["type"] == "tool_call" and e["name"] == "run_python"]
     results = [e for e in events if e["type"] == "tool_result" and e["name"] == "run_python"]
@@ -207,7 +227,7 @@ def test_the_model_reads_every_media_format_it_has_an_encoder_for(gemma, tmp_pat
     question, right = MEDIA_QUESTIONS[kind]
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=128), use_tools=False, lang="en")
-    Run(gemma, [], question, settings, events.append, [attachment], tmp_path).run()
+    SimpleHarness(gemma, [], question, settings, events.append, [attachment], tmp_path).run()
     assert not [e for e in events if e["type"] == "error"]
     assert next(e for e in events if e["type"] == "context")["media_tokens"][kind] > 0
     assert right(events[-1]["final"]), events[-1]["final"]
@@ -220,7 +240,7 @@ def test_the_model_opens_every_data_format_with_run_python(gemma, tmp_path, ext)
     attachment = media.Attachment(path.name, "file", str(path), path.stat().st_size)
     events = []
     settings = RunSettings(sampling=Sampling(temperature=0, max_new_tokens=512), max_steps=3, lang="en")
-    Run(gemma, [], f"Use run_python to open /data/{path.name} and print its first two rows.", settings, events.append, [attachment], tmp_path).run()
+    SimpleHarness(gemma, [], f"Use run_python to open /data/{path.name} and print its first two rows.", settings, events.append, [attachment], tmp_path).run()
     results = [e for e in events if e["type"] == "tool_result" and e["name"] == "run_python"]
     assert any(r["ok"] and "2025" in r["result"] for r in results), results
 
@@ -233,7 +253,7 @@ def test_letting_a_warmed_up_model_go_hands_its_gpu_memory_back():
     script = """
 import gc, sys, torch
 sys.path.insert(0, sys.argv[1])
-from harness.backends.simple_backend import SimpleBackend, empty_cache
+from agent.model_backends.simple_backend import SimpleBackend, empty_cache
 llm = SimpleBackend("Qwen/Qwen3.5-0.8B")
 llm.warmup()
 loaded = torch.cuda.memory_reserved()

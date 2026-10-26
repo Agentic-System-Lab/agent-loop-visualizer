@@ -8,10 +8,14 @@ What the model reads in a run (tool errors, refusals) is written in the language
 the system prompt is the same in both, so the model behaves the same whichever language the page is in.
 """
 
+from typing import TypeVar
+
+T = TypeVar("T")
+
 LANGS = {"zh": "中文", "en": "English"}  # language -> its name on the switch
 
 
-def pick(lang: str, zh: str, en: str) -> str:
+def pick(lang: str, zh: T, en: T) -> T:
     return en if lang == "en" else zh
 
 

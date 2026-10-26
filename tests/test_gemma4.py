@@ -1,6 +1,6 @@
 import pytest
 
-from harness.families.gemma4 import ParseError, parse_args, parse_output
+from agent.model_families.gemma4 import ParseError, parse_args, parse_output
 
 S = '<|"|>'
 

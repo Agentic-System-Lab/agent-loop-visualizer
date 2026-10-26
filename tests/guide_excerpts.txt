@@ -10,42 +10,68 @@
 [[app/page.py|self.thread = threading.Thread]]
     self.thread = threading.Thread(target=self._work, daemon=True)
 
-[[harness/agent.py|def emit(self, event_type]]
+[[agent/harnesses/simple_harness.py|def emit(self, event_type]]
     def emit(self, event_type: str, **data):
 
-[[harness/agent.py|def stop(self):]]
+[[agent/harnesses/simple_harness.py|def stop(self):]]
     def stop(self):
 
-[[harness/agent.py|def decide(self, call_id]]
+[[agent/harnesses/simple_harness.py|def decide(self, call_id]]
     def decide(self, call_id: str, approved: bool):
 
-[[harness/agent.py|def run(self):]]
+[[agent/harnesses/harness.py|class Harness(Protocol):]]
+    class Harness(Protocol):
+
+[[agent/harnesses/simple_harness.py|def run(self):]]
     def run(self):
 
-[[harness/backends/backend.py|class Backend(Protocol):]]
+[[agent/harnesses/pi_harness.py|class Process:]]
+    class Process:
+
+agent/harnesses/pi_harness.py: def _on(self, rec: dict) -> bool:
+    def _on(self, rec: dict) -> bool:
+        """Turn one of pi's records into the page's events; True once pi has settled."""
+        kind = rec.get("type")
+        if kind == "turn_start":
+            self._turn_start()
+        elif kind == "message_start" and self._open and rec["message"].get("role") == "assistant":
+            self._stream_t, self._wrote = time.perf_counter(), False
+        elif kind == "message_update" and self._open:
+            self._update(rec["assistantMessageEvent"])
+        elif kind == "message_end" and self._open and rec["message"].get("role") == "assistant":
+            self._message_end(rec["message"])
+        elif kind == "tool_execution_start" and self._open and not rec.get("parentToolCallId"):
+            self._tool_start(rec["toolCallId"], rec["toolName"], rec.get("args") or {})
+        elif kind == "tool_execution_end" and rec.get("toolCallId") in self._calls and not rec.get("parentToolCallId"):
+            self._tool_end(rec["toolCallId"], rec.get("result") or {}, rec.get("isError", False), rec.get("durationMs"))
+        elif kind == "extension_ui_request":
+            self._dialog(rec)
+        return kind == "agent_settled"
+
+[[agent/model_backends/backend.py|class Backend(Protocol):]]
     class Backend(Protocol):
 
-[[harness/backends/simple_backend.py|def generate(self, prompt]]
+[[agent/model_backends/simple_backend.py|def generate(self, prompt]]
     def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
 
-[[harness/backends/vllm_backend.py|class VLLMBackend:]]
+[[agent/model_backends/vllm_backend.py|class VLLMBackend:]]
     class VLLMBackend:
 
-[[harness/backends/vllm_docker.py|def start(model_id]]
+[[agent/model_backends/vllm_docker.py|def start(model_id]]
     def start(model_id: str, say: Callable[[str, str], None], mtp: bool = False) -> dict:
 
-[[harness/tools.py|TOOLS = {]]
+[[agent/tools.py|TOOLS = {]]
     TOOLS = {
 
-[[harness/i18n.py|def pick(]]
-    def pick(lang: str, zh: str, en: str) -> str:
+[[agent/i18n.py|def pick(]]
+    def pick(lang: str, zh: T, en: T) -> T:
 
 [[app/render.py|def build(events: list[dict])]]
     def build(events: list[dict]) -> dict:
 
 == families ==
 
-harness/families/__init__.py: class Family: … def special_re(self)
+agent/model_families/__init__.py: class Family: … def special_re(self)
     class Family:
         key: str
         name: str
@@ -100,8 +126,8 @@ harness/families/__init__.py: class Family: … def special_re(self)
             pieces = sorted(self.special_tokens, key=len, reverse=True)
             return re.compile("|".join(re.escape(p) for p in pieces))
 
-harness/backends/simple_backend.py: self.family = families.for_model_type( … self.special_ids = set(
-    self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
+agent/model_backends/simple_backend.py: self.family = model_families.for_model_type( … self.special_ids = set(
+    self.family = model_families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
     files = self.folder = _download(model_id)
     # The processor holds the tokenizer and, for a model that reads more than text, what turns files into its inputs.
     self.processor = AutoProcessor.from_pretrained(files)
@@ -119,13 +145,13 @@ harness/backends/simple_backend.py: self.family = families.for_model_type( … s
     # Control tokens count as special even when the tokenizer does not mark them (Qwen's <think>).
     self.special_ids = set(self.tokenizer.all_special_ids) | self.eos_ids | self.token_ids(self.family.special_tokens)
 
-[[harness/families/__init__.py|MODELS = {]]
+[[agent/model_families/__init__.py|MODELS = {]]
     MODELS = {
 
-[[harness/families/__init__.py|FAMILIES = {]]
+[[agent/model_families/__init__.py|FAMILIES = {]]
     FAMILIES = {f.key: f for f in (GEMMA4, QWEN3_5)}
 
-harness/families/qwen3_5.py: QWEN3_5 = Family(
+agent/model_families/qwen3_5.py: QWEN3_5 = Family(
     QWEN3_5 = Family(
         key="qwen3_5",
         name="Qwen3.5",
@@ -168,16 +194,16 @@ harness/families/qwen3_5.py: QWEN3_5 = Family(
 
 == files ==
 
-[[harness/backends/simple_backend.py|MODELS_DIR = Path(]]
+[[agent/model_backends/simple_backend.py|MODELS_DIR = Path(]]
     MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expanduser().absolute()
 
-[[harness/families/__init__.py|REVISIONS = {]]
+[[agent/model_families/__init__.py|REVISIONS = {]]
     REVISIONS = {
 
-harness/backends/simple_backend.py: def _download(
+agent/model_backends/simple_backend.py: def _download(
     def _download(model_id: str, only: str | None = None) -> str:
         """The model's folder in MODELS_DIR, after fetching the files it lacks (only `only`, if given), at the revision
-        families.REVISIONS pins it to.
+        model_families.REVISIONS pins it to.
 
         from_pretrained(local_files_only=True) is no test of the cache: once config.json is cached, a tokenizer whose
         own files are missing raises a ValueError (Gemma 4) or loads empty (Qwen3.5) rather than an OSError.
@@ -185,15 +211,15 @@ harness/backends/simple_backend.py: def _download(
         can't be reached it returns the cached folder, so a downloaded model still starts offline."""
         if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
             return model_id
-        return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
+        return snapshot_download(model_id, revision=model_families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
 
-harness/backends/vllm_docker.py: say("download", "") … snapshot_download(drafter
+agent/model_backends/vllm_docker.py: say("download", "") … snapshot_download(drafter
     say("download", "")
-    snapshot_download(model_id, revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
+    snapshot_download(model_id, revision=model_families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
     if config and (drafter := config.get("model")):  # the server reads models/ offline, its drafter's weights too
         snapshot_download(drafter, revision=config["revision"], cache_dir=MODELS_DIR)
 
-[[harness/backends/vllm_docker.py|"AGENT_LOOP_MODELS": str(MODELS_DIR)]]
+[[agent/model_backends/vllm_docker.py|"AGENT_LOOP_MODELS": str(MODELS_DIR)]]
     "AGENT_LOOP_MODELS": str(MODELS_DIR), "VLLM_SPECULATIVE_CONFIG": json.dumps(config) if config else "None",
 
 docker-compose/compose.yaml: - ${AGENT_LOOP_MODELS:-../models}:/models:ro … HF_HUB_OFFLINE: "1"
@@ -210,73 +236,73 @@ docker-compose/compose.yaml: - ${VLLM_MODEL:-Qwen/Qwen3.5-0.8B} … --served-mod
     # Offline, vLLM names the model by its folder in models/; the page asks for it by its id.
     - --served-model-name=${VLLM_MODEL:-Qwen/Qwen3.5-0.8B}
 
-[[harness/backends/vllm_backend.py|WEIGHTS = []]
+[[agent/model_backends/vllm_backend.py|WEIGHTS = []]
     WEIGHTS = ["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"]
 
-harness/backends/vllm_backend.py: def _checkpoint_files(
+agent/model_backends/vllm_backend.py: def _checkpoint_files(
     def _checkpoint_files(model_id: str) -> str:
-        """The model's folder in MODELS_DIR with everything but its weights, at the revision families.REVISIONS pins.
+        """The model's folder in MODELS_DIR with everything but its weights, at the revision model_families.REVISIONS pins.
         The server should load the same revision (vllm serve <model> --revision <commit>) so that both read the same
         tokenizer and chat template."""
         if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
             return model_id
-        return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR, ignore_patterns=WEIGHTS)
+        return snapshot_download(model_id, revision=model_families.REVISIONS.get(model_id), cache_dir=MODELS_DIR, ignore_patterns=WEIGHTS)
 
-[[harness/backends/vllm_backend.py|def family_of(]]
-    def family_of(model_id: str) -> families.Family | None:
+[[agent/model_backends/vllm_backend.py|def family_of(]]
+    def family_of(model_id: str) -> model_families.Family | None:
 
-[[harness/backends/simple_backend.py|def pick_device()]]
+[[agent/model_backends/simple_backend.py|def pick_device()]]
     def pick_device() -> str:
 
-[[harness/backends/simple_backend.py|self.family = families.for_model_type(]]
-    self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
+[[agent/model_backends/simple_backend.py|self.family = model_families.for_model_type(]]
+    self.family = model_families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
 
-[[harness/backends/simple_backend.py|self.processor = AutoProcessor.from_pretrained(files)]]
+[[agent/model_backends/simple_backend.py|self.processor = AutoProcessor.from_pretrained(files)]]
     self.processor = AutoProcessor.from_pretrained(files)
 
-[[harness/backends/simple_backend.py|def render(self, messages]]
+[[agent/model_backends/simple_backend.py|def render(self, messages]]
     def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
 
-[[harness/backends/simple_backend.py|self.model = AutoModelForMultimodalLM.from_pretrained(]]
+[[agent/model_backends/simple_backend.py|self.model = AutoModelForMultimodalLM.from_pretrained(]]
     self.model = AutoModelForMultimodalLM.from_pretrained(files, dtype=self.dtype, device_map=self.device).eval()
 
-[[harness/backends/simple_backend.py|eos = self.model.generation_config.eos_token_id]]
+[[agent/model_backends/simple_backend.py|eos = self.model.generation_config.eos_token_id]]
     eos = self.model.generation_config.eos_token_id
 
-[[harness/backends/simple_backend.py|def _sampling_defaults(self)]]
+[[agent/model_backends/simple_backend.py|def _sampling_defaults(self)]]
     def _sampling_defaults(self) -> dict:
 
-[[harness/backends/vllm_backend.py|self.family = families.for_model_type(config.model_type)]]
-    self.family = families.for_model_type(config.model_type)
+[[agent/model_backends/vllm_backend.py|self.family = model_families.for_model_type(config.model_type)]]
+    self.family = model_families.for_model_type(config.model_type)
 
-[[harness/backends/vllm_backend.py|self.context_length = card.get(]]
+[[agent/model_backends/vllm_backend.py|self.context_length = card.get(]]
     self.context_length = card.get("max_model_len") or text_cfg.max_position_embeddings  # the server's limit (--max-model-len)
 
-[[harness/backends/vllm_backend.py|self.processor = AutoProcessor.from_pretrained(files)]]
+[[agent/model_backends/vllm_backend.py|self.processor = AutoProcessor.from_pretrained(files)]]
     self.processor = AutoProcessor.from_pretrained(files)
 
-[[harness/backends/vllm_backend.py|def _generation_config(]]
+[[agent/model_backends/vllm_backend.py|def _generation_config(]]
     def _generation_config(folder: str, config) -> GenerationConfig:
 
-[[harness/families/qwen3_5.py|sampling={]]
+[[agent/model_families/qwen3_5.py|sampling={]]
     sampling={"temperature": 1.0, "top_p": 1.0, "top_k": 20},
 
-[[harness/backends/simple_backend.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]]
+[[agent/model_backends/simple_backend.py|self.draft_tokens = self.drafter.generation_config.num_assistant_tokens]]
     self.draft_tokens = self.drafter.generation_config.num_assistant_tokens  # guesses per forward pass
 
-[[harness/backends/simple_backend.py|def describe_folder(]]
+[[agent/model_backends/simple_backend.py|def describe_folder(]]
     def describe_folder(folder: str, notes: dict) -> dict:
 
-[[harness/families/gemma4.py|file_notes=FILES,]]
+[[agent/model_families/gemma4.py|file_notes=FILES,]]
     file_notes=FILES,
 
-[[harness/families/qwen3_5.py|file_notes=FILES,]]
+[[agent/model_families/qwen3_5.py|file_notes=FILES,]]
     file_notes=FILES,
 
 [[app/render.py|elif served and kind == "model.safetensors":]]
     elif served and kind == "model.safetensors":
 
-harness/families/__init__.py: class FileNote:
+agent/model_families/__init__.py: class FileNote:
     class FileNote:
         """What one file in a checkpoint's folder holds in this family. The Model tab shows the note next to the file,
         with the values in this checkpoint of `fields`, dotted paths into a JSON file (text_config.sliding_window)."""
@@ -286,11 +312,11 @@ harness/families/__init__.py: class FileNote:
 
 == submit ==
 
-[[harness/backends/simple_backend.py|def _sampling_defaults(self)]]
+[[agent/model_backends/simple_backend.py|def _sampling_defaults(self)]]
     def _sampling_defaults(self) -> dict:
 
 [[app/page.py|key="model_id", on_change=switch_model]]
-    st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy, help=about)
+    st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.__getitem__, key="model_id", on_change=switch_model, disabled=busy, help=about)
 
 app/page.py: @st.cache_resource(max_entries=1 … def release_model():
     @st.cache_resource(max_entries=1, show_spinner=False)  # one model in memory: switching models frees the last one
@@ -306,10 +332,18 @@ app/page.py: @st.cache_resource(max_entries=1 … def release_model():
         gc.collect()
         empty_cache()
 
-[[harness/backends/simple_backend.py|torch._C._cuda_clearCublasWorkspaces()]]
+[[agent/harnesses/pi_harness.py|def probe()]]
+    def probe() -> dict:
+
+app/page.py: if st.session_state.pi_source == "page": … llm=current_llm())
+    if st.session_state.pi_source == "page":
+        model_picker(model_menu(), busy)
+        return PiAgent(st.session_state.model_id, found["version"], llm=current_llm())
+
+[[agent/model_backends/simple_backend.py|torch._C._cuda_clearCublasWorkspaces()]]
     torch._C._cuda_clearCublasWorkspaces()
 
-[[harness/backends/simple_backend.py|def load_drafter(self):]]
+[[agent/model_backends/simple_backend.py|def load_drafter(self):]]
     def load_drafter(self):
 
 [[app/page.py|if not st.session_state.get("engine_picked"):]]
@@ -350,15 +384,15 @@ app/page.py: def current_llm() -> Backend:
     if not slot.lock.acquire(blocking=False):
 
 app/page.py: def start_run(
-    def start_run(llm: Backend, text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
+    def start_run(who: "Backend | PiAgent", text: str, uploads: Sequence[tuple[str, bytes]] = ()) -> bool:
         """Ask the question in a new run, with `uploads` (file name, contents) saved in the conversation's folder first."""
         slot = generation_slot()
         if not slot.lock.acquire(blocking=False):
             st.toast(tr("另一個 agent 正在執行（可能在別的分頁），請稍等。", "Another agent is running (maybe in another tab). Please wait."))
             return False
         try:
-            attachments = [media.save(chat_folder(), name, data, llm.modalities) for name, data in uploads]
-            run = LiveRun(llm, st.session_state.history, text, attachments, chat_folder(), current_settings(llm), slot)
+            attachments = [media.save(chat_folder(), name, data, who.modalities) for name, data in uploads]
+            run = LiveRun(harness_for(who, text, attachments), text, attachments, slot)
         except Exception:
             slot.lock.release()
             raise
@@ -379,17 +413,28 @@ app/page.py: def current_settings(
             lang=s.lang,
         )
 
+app/page.py: def harness_for(
+    def harness_for(who: "Backend | PiAgent", text: str, attachments: list[media.Attachment]) -> Callable[[Callable[[dict], None]], Harness]:
+        """What runs the turn: pi, or this project's harness on the model in memory, with the sidebar's settings now."""
+        history, folder = st.session_state.history, chat_folder()
+        if isinstance(who, PiAgent):
+            settings, session = pi_settings(who), st.session_state.chat_id
+            page = pi_harness.PageModel(who.llm, current_settings(who.llm).sampling) if who.llm else None
+            return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session, page)
+        run_settings = current_settings(who)
+        return lambda emit: SimpleHarness(who, history, text, run_settings, emit, attachments, folder)
+
 app/page.py: class LiveRun:
     class LiveRun:
-        """One user turn: the harness thread and the events it has emitted so far."""
+        """One user turn: the harness thread and the events it has emitted so far. `make` makes the harness (simple_harness.SimpleHarness
+        or pi_harness.PiHarness) given the function it sends its events to."""
 
-        def __init__(self, llm: Backend, history: list[dict], text: str, attachments: list[media.Attachment], files: Path,
-                     settings: RunSettings, slot: Slot):
+        def __init__(self, make: Callable[[Callable[[dict], None]], Harness], text: str, attachments: list[media.Attachment], slot: Slot):
             self.text = text
             self.attachments = attachments
             self.events: list[dict] = []
             self.absorbed = False
-            self.run = Run(llm, history, text, settings, self.events.append, attachments, files)
+            self.run = make(self.events.append)
             self._slot = slot
             slot.run = self
             self.thread = threading.Thread(target=self._work, daemon=True)
@@ -412,12 +457,12 @@ app/page.py: class LiveRun:
 
 == prepare ==
 
-[[harness/agent.py|self.messages = [*history,]]
+[[agent/harnesses/simple_harness.py|self.messages = [*history,]]
     self.messages = [*history, {"role": "user", "content": media.user_content(user_text, list(attachments))}]
 
-harness/agent.py: def __init__(self, llm: Backend, history
+agent/harnesses/simple_harness.py: def __init__(self, llm: Backend, history
     def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
-                 attachments: list[media.Attachment] = (), files: Path | None = None):
+                 attachments: Sequence[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.llm = llm
         self.settings = settings
@@ -431,10 +476,10 @@ harness/agent.py: def __init__(self, llm: Backend, history
         self._decisions: dict[str, bool] = {}
         self._decided = threading.Condition()
 
-[[harness/agent.py|SYSTEM_WITH_TOOLS = ]]
+[[agent/harnesses/simple_harness.py|SYSTEM_WITH_TOOLS = ]]
     SYSTEM_WITH_TOOLS = """You are a helpful assistant running inside an agent loop.
 
-harness/agent.py: def run(self): … stop_reason, final = "max_steps", ""
+agent/harnesses/simple_harness.py: def run(self): … stop_reason, final = "max_steps", ""
     def run(self):
         s = self.settings
         family = self.llm.family  # how this model writes its turns, thinking and tool calls
@@ -442,7 +487,7 @@ harness/agent.py: def run(self): … stop_reason, final = "max_steps", ""
         schemas = {t.name: t.parameters for t in TOOLS.values()}
         system = {"role": "system", "content": SYSTEM_WITH_TOOLS if tools else SYSTEM_NO_TOOLS}
         self.emit(
-            "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+            "run_start", run_id=self.id, harness="simple", model=self.llm.model_id, family=family.key,
             settings=_settings_dict(s), tools=list(self.tools),
         )
 
@@ -451,16 +496,34 @@ harness/agent.py: def run(self): … stop_reason, final = "max_steps", ""
         prev_sequence = ""
         stop_reason, final = "max_steps", ""
 
-harness/tools.py: def schema(self) -> dict:
+agent/tools.py: def schema(self) -> dict:
     def schema(self) -> dict:
         return {
             "type": "function",
             "function": {"name": self.name, "description": self.description, "parameters": self.parameters},
         }
 
+agent/harnesses/pi_harness.py: self._pi = Process(self._args() … self._loop()
+    self._pi = Process(self._args(), self.folder, self._inbox, self._env())
+    # Each waits for its answer: pi handles commands concurrently, and a prompt must not go to the model it starts on.
+    self._pi.request({"type": "set_model", "provider": s.provider, "modelId": s.model})
+    self._pi.request({"type": "set_thinking_level", "level": s.thinking})
+    # A failed request is retried by pi as a new turn, which would be a step of its own; the page shows the error instead.
+    self._pi.request({"type": "set_auto_retry", "enabled": False})
+    message, images = self._message()
+    if not self._stopped_meanwhile():
+        self._pi.request({"type": "prompt", "message": message, **({"images": images} if images else {})})
+        self._loop()
+
+[[agent/harnesses/pi_harness.py|FLAGS = ]]
+    FLAGS = ["--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"]
+
+[[agent/harnesses/pi_harness.py|def _message(self)]]
+    def _message(self) -> tuple[str, list[dict]]:
+
 == context ==
 
-harness/agent.py: for step in range(1, s.max_steps + 1): … roles=_role_counts([system, *self.messages])
+agent/harnesses/simple_harness.py: for step in range(1, s.max_steps + 1): … roles=_role_counts([system, *self.messages])
     for step in range(1, s.max_steps + 1):
         self.emit("step_start", step=step)
         prompt = self.llm.render([system, *self.messages], tools, s.thinking)
@@ -479,7 +542,38 @@ harness/agent.py: for step in range(1, s.max_steps + 1): … roles=_role_counts(
             roles=_role_counts([system, *self.messages]),
         )
 
-harness/backends/simple_backend.py: def render(self, messages
+[[agent/harnesses/model_endpoint.py|def conversation(]]
+    def conversation(body: dict, llm: Backend, folder: Path) -> list[dict]:
+
+[[agent/harnesses/model_endpoint.py|def seen_before(]]
+    def seen_before(messages: list[dict]) -> list[dict]:
+
+agent/harnesses/model_endpoint.py: messages = conversation(body, llm, serving.folder) … emit("context",
+        messages = conversation(body, llm, serving.folder)
+        prompt = llm.render(messages, tools, thinking)
+        encoded = llm.encode(prompt, media.parts(messages))
+    except Exception as e:  # pi shows it as the request's error
+        self._json(400, {"error": {"message": f"{type(e).__name__}: {e}"}})
+        return
+    before = seen_before(messages)
+    # Media sit in user messages, all before what is new; so the new part is the same text, further along (SimpleHarness).
+    if before:
+        previous = llm.render(before, tools, thinking, generation_prompt=False)
+        added_from = len(encoded.text) - len(prompt) + common_prefix(prompt, previous)
+    else:
+        added_from = 0
+    emit("context", prompt=encoded.text, n_tokens=encoded.n_tokens, added_from=added_from, media_tokens=encoded.media_tokens,
+         context_length=llm.context_length, roles={role: sum(m["role"] == role for m in messages) for role in dict.fromkeys(m["role"] for m in messages)})
+
+[[agent/harnesses/pi_harness.py|def _request(self, payload)]]
+    def _request(self, payload):
+
+agent/harnesses/pi_extension.ts: pi.on("before_provider_request" … });
+    pi.on("before_provider_request", (event, ctx) => {
+    	ctx.ui.notify(REQUEST_MARK + JSON.stringify(event.payload), "info");
+    });
+
+agent/model_backends/simple_backend.py: def render(self, messages
     def render(self, messages: list[dict], tools: list[dict] | None, thinking: bool, generation_prompt: bool = True) -> str:
         """The chat template turns messages and tool schemas into the one string the model reads.
         With `generation_prompt` it also opens the model's turn, so the model writes next."""
@@ -487,10 +581,10 @@ harness/backends/simple_backend.py: def render(self, messages
             messages, tools=tools or None, tokenize=False, add_generation_prompt=generation_prompt, enable_thinking=thinking
         )
 
-[[harness/agent.py|encoded = self.llm.encode(]]
+[[agent/harnesses/simple_harness.py|encoded = self.llm.encode(]]
     encoded = self.llm.encode(prompt, media.parts(self.messages))
 
-harness/agent.py: def common_prefix(
+agent/harnesses/simple_harness.py: def common_prefix(
     def common_prefix(a: str, b: str) -> int:
         n = min(len(a), len(b))
         i = 0
@@ -499,11 +593,14 @@ harness/agent.py: def common_prefix(
         return i
 
 [[app/render.py|def context_html(]]
-    def context_html(step: dict, family: families.Family, lang: str) -> str:
+    def context_html(step: dict, family: model_families.Family, lang: str) -> str:
+
+[[app/render.py|def request_html(]]
+    def request_html(step: dict) -> str:
 
 == media ==
 
-harness/backends/simple_backend.py: def _modalities(self)
+agent/model_backends/simple_backend.py: def _modalities(self)
     def _modalities(self) -> tuple[str, ...]:
         """What the checkpoint reads besides text: each kind needs an encoder in the config and a part of the processor
         to feed it. It is asked of the checkpoint, not the family, since checkpoints of one family can differ."""
@@ -515,13 +612,13 @@ harness/backends/simple_backend.py: def _modalities(self)
         }
         return tuple(kind for kind, ok in reads.items() if ok)
 
-[[harness/backends/vllm_backend.py|self.modalities = tuple(kind for kind in readable if kind not in refused)]]
+[[agent/model_backends/vllm_backend.py|self.modalities = tuple(kind for kind in readable if kind not in refused)]]
     self.modalities = tuple(kind for kind in readable if kind not in refused)
 
 [[app/render.py|def refused_html(]]
     def refused_html(server: dict | None, lang: str) -> str:
 
-harness/backends/vllm_backend.py: def _probe(
+agent/model_backends/vllm_backend.py: def _probe(
     def _probe(self, hi: list[int], kinds: tuple[str, ...]) -> tuple[bool, bool, dict]:
         """Ask the server, with one-token requests that start from `hi` (a short prompt's ids), whether it has
         /inference/v1/generate (--enable-scale-out), whether it sends sampling masks (--return-sampling-mask), and which
@@ -552,10 +649,10 @@ harness/backends/vllm_backend.py: def _probe(
                 refused[kind] = {"zh": f"伺服器不收：{e.text['en']}", "en": f"the server refused it: {e.text['en']}"}
         return True, masks, refused
 
-[[harness/media.py|def save(]]
+[[agent/media.py|def save(]]
     def save(folder: Path, name: str, data: bytes, modalities: tuple[str, ...]) -> Attachment:
 
-harness/media.py: def user_content(
+agent/media.py: def user_content(
     def user_content(text: str, attachments: list[Attachment]) -> str | list[dict]:
         """The user's message: the text alone, or the media first (as their models are trained to read them), then the
         text, and a note on the files only run_python can open: where they are and how a text file begins. The note is
@@ -568,7 +665,7 @@ harness/media.py: def user_content(
         words = "\n\n".join(t for t in (text, note) if t)
         return [a.part() for a in attachments if a.kind != "file"] + ([{"type": "text", "text": words}] if words else [])
 
-harness/backends/simple_backend.py: def encode(self, prompt
+agent/model_backends/simple_backend.py: def encode(self, prompt
     def encode(self, prompt: str, parts: list[dict]) -> Encoded:
         """The prompt as the model reads it. Without media that is the prompt's tokens. With media (`parts`, the
         conversation's media in the order of their placeholders), the processor replaces each placeholder with the
@@ -577,7 +674,7 @@ harness/backends/simple_backend.py: def encode(self, prompt
             ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids
             return Encoded(prompt, ids, ids.shape[-1])
         files = {kind: [p["path"] for p in parts if p["type"] == kind] for kind in media.MEDIA}
-        inputs = {}
+        inputs: dict = {}
         if files["image"]:
             inputs["images"] = [media.load_image(path) for path in files["image"]]
         if files["audio"]:
@@ -597,10 +694,10 @@ harness/backends/simple_backend.py: def encode(self, prompt
         text = self.tokenizer.decode(ids[0], skip_special_tokens=False)
         return Encoded(text, ids, ids.shape[-1], dict(out.to(self.device, dtype=self.dtype)), {k: n for k, n in counts.items() if n})
 
-[[harness/media.py|def load_video(]]
+[[agent/media.py|def load_video(]]
     def load_video(path: str) -> tuple[np.ndarray, dict]:
 
-harness/backends/simple_backend.py: def _encoded_media(
+agent/model_backends/simple_backend.py: def _encoded_media(
     def _encoded_media(self, inputs: dict) -> dict:
         """Run the vision encoder over the prompt's images and videos before the prefill, as generate() does, and pass
         its output in their place. Leaving it to the forward pass breaks videos on Gemma 4: transformers 5.20's
@@ -611,17 +708,17 @@ harness/backends/simple_backend.py: def _encoded_media(
         for kind in ("image", "video"):
             encoder = getattr(base, f"get_{kind}_features", None)
             args = {k: inputs[k] for k in inspect.signature(encoder).parameters if k in inputs} if encoder else {}
-            if any(k.startswith("pixel_values") for k in args):
+            if encoder and any(k.startswith("pixel_values") for k in args):
                 encoded[kind] = encoder(**args, return_dict=True)
         if not encoded:
             return inputs
         # The pixels go; the rest stays, such as the grid sizes Qwen3.5's positions are computed from.
         return {**{k: v for k, v in inputs.items() if not k.startswith("pixel_values")}, "mm_encoder_outputs": encoded}
 
-[[harness/backends/vllm_backend.py|def content_part(]]
+[[agent/model_backends/vllm_backend.py|def content_part(]]
     def content_part(part: dict, audio_rate: int) -> dict:
 
-harness/backends/vllm_backend.py: def encode(self, prompt
+agent/model_backends/vllm_backend.py: def encode(self, prompt
     def encode(self, prompt: str, parts: list[dict]) -> Encoded:
         """The prompt's token ids, which are what the server reads. With media (`parts`, in the order of their
         placeholders), the server expands each placeholder into the tokens its file takes, so it is asked how first, with
@@ -640,7 +737,7 @@ harness/backends/vllm_backend.py: def encode(self, prompt
 
 == model ==
 
-harness/agent.py: done = None … self.emit("model_end"
+agent/harnesses/simple_harness.py: done = None … self.emit("model_end"
     done = None
     for ev in self.llm.generate(encoded, s.sampling, self._stop.is_set):
         kind = ev.pop("type")
@@ -648,13 +745,48 @@ harness/agent.py: done = None … self.emit("model_end"
             done = ev
         else:
             self.emit(kind, step=step, **ev)
+    assert done is not None  # generate() always ends with done
     raw = done.pop("raw")
     self.emit("model_end", step=step, raw=raw, **done)
 
-[[harness/backends/simple_backend.py|def _forward(]]
+[[agent/harnesses/pi_harness.py|def _serving_step(self)]]
+    def _serving_step(self) -> int | None:
+
+agent/harnesses/model_endpoint.py: for ev in llm.generate(encoded, serving.sampling
+    for ev in llm.generate(encoded, serving.sampling, lambda: gone or serving.stopped()):
+        kind = ev.pop("type")
+        if kind == "done":
+            done = ev
+            continue
+        emit(kind, **ev)
+        if kind == "token" and ev["channel"] in ("thought", "content"):
+            send({"reasoning_content" if ev["channel"] == "thought" else "content": ev["text"]})
+
+[[agent/harnesses/pi_harness.py|def _update(self, e: dict)]]
+    def _update(self, e: dict):
+
+[[app/render.py|def streamed_html(]]
+    def streamed_html(step: dict, lang: str) -> str:
+
+[[agent/harnesses/pi_harness.py|def _message_end(self, message: dict)]]
+    def _message_end(self, message: dict):
+
+agent/harnesses/pi_harness.py: def _update(self, e: dict):
+    def _update(self, e: dict):
+        kind = e.get("type")
+        if kind == "text_delta":
+            self._delta("content", e.get("delta", ""))
+        elif kind == "thinking_delta":
+            self._delta("thought", e.get("delta", ""))
+        elif kind == "toolcall_start":
+            self._delta("tool_call", ("\n" if self._wrote else "") + e.get("toolName", "") + " ")
+        elif kind == "toolcall_delta":
+            self._delta("tool_call", e.get("delta", ""))
+
+[[agent/model_backends/simple_backend.py|def _forward(]]
     def _forward(self, ids: torch.Tensor, past, keep: int, drafting: bool = False, **media):
 
-harness/backends/simple_backend.py: def generate(self, prompt … yield {"type": "prefill"
+agent/model_backends/simple_backend.py: def generate(self, prompt … yield {"type": "prefill"
     def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
         """Yield a prefill event, one event per token, then a done event."""
         ids = prompt.ids.to(self.device)
@@ -675,15 +807,15 @@ harness/backends/simple_backend.py: def generate(self, prompt … yield {"type":
             prefill_ms = (time.perf_counter() - start) * 1000
             yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
 
-[[harness/families/gemma4.py|channel_switch={]]
+[[agent/model_families/gemma4.py|channel_switch={]]
     channel_switch={"<|channel>": "thought", "<channel|>": "content", "<|tool_call>": "tool_call", "<tool_call|>": "content"},
 
-[[harness/families/qwen3_5.py|channel_switch={]]
+[[agent/model_families/qwen3_5.py|channel_switch={]]
     channel_switch={"<think>": "thought", "</think>": "content", "<tool_call>": "tool_call", "</tool_call>": "content"},
 
-harness/backends/simple_backend.py: decode_start = time.perf_counter() … **details,
+agent/model_backends/simple_backend.py: decode_start = time.perf_counter() … **details,
     decode_start = time.perf_counter()
-    tokens = self._drafted(out, sampling, mtp) if drafting else self._one_at_a_time(out, sampling)
+    tokens = self._drafted(out, sampling, mtp) if mtp is not None else self._one_at_a_time(out, sampling)
     for token_id, details in tokens:
         if should_stop():
             finish = "user_stopped"
@@ -714,14 +846,14 @@ harness/backends/simple_backend.py: decode_start = time.perf_counter() … **det
             **details,
         }
 
-harness/backends/simple_backend.py: if token_id in self.eos_ids: … if len(generated) == sampling.max_new_tokens:
+agent/model_backends/simple_backend.py: if token_id in self.eos_ids: … if len(generated) == sampling.max_new_tokens:
     if token_id in self.eos_ids:
         finish = "stop_token"
         break
     if len(generated) == sampling.max_new_tokens:
         break
 
-harness/backends/simple_backend.py: def _one_at_a_time(
+agent/model_backends/simple_backend.py: def _one_at_a_time(
     def _one_at_a_time(self, out, s: Sampling) -> Iterator[tuple[int, dict]]:
         """Plain decoding: sample a token, feed it back with the cache for the next position's logits, repeat."""
         while True:
@@ -729,7 +861,7 @@ harness/backends/simple_backend.py: def _one_at_a_time(
             yield token_id, details
             out = self._forward(torch.tensor([[token_id]], device=self.device), out.past_key_values, 1)
 
-harness/backends/simple_backend.py: decode_s = time.perf_counter() - decode_start … "raw": self.tokenizer.decode(generated
+agent/model_backends/simple_backend.py: decode_s = time.perf_counter() - decode_start … "raw": self.tokenizer.decode(generated
     decode_s = time.perf_counter() - decode_start
     yield {
         "type": "done",
@@ -742,7 +874,7 @@ harness/backends/simple_backend.py: decode_s = time.perf_counter() - decode_star
         "raw": self.tokenizer.decode(generated, skip_special_tokens=False),
     }
 
-harness/backends/vllm_backend.py: def generate(self, prompt … yield {"type": "prefill"
+agent/model_backends/vllm_backend.py: def generate(self, prompt … yield {"type": "prefill"
     def generate(self, prompt: Encoded, sampling: Sampling, should_stop: Callable[[], bool]) -> Iterator[dict]:
         """Yield the events SimpleBackend.generate yields, from the server's stream: prefill once the first token is back
         (its time is the time to the first token), one event per token, then done."""
@@ -765,13 +897,13 @@ harness/backends/vllm_backend.py: def generate(self, prompt … yield {"type": "
                     decode_start = time.perf_counter()
                     yield {"type": "prefill", "n_tokens": prompt.n_tokens, "ms": round((decode_start - start) * 1000, 1)}
 
-[[harness/backends/vllm_backend.py|# From here on, as in SimpleBackend.generate.]]
+[[agent/model_backends/vllm_backend.py|# From here on, as in SimpleBackend.generate.]]
     # From here on, as in SimpleBackend.generate.
 
-[[harness/backends/vllm_backend.py|tokens.close()]]
+[[agent/model_backends/vllm_backend.py|tokens.close()]]
     tokens.close()  # closing the stream early tells the server to stop generating
 
-harness/backends/vllm_backend.py: if finish is None: … "raw": self.tokenizer.decode(generated
+agent/model_backends/vllm_backend.py: if finish is None: … "raw": self.tokenizer.decode(generated
     if finish is None:
         reason = end.get("finish_reason")
         if reason not in ("stop", "length"):
@@ -792,7 +924,7 @@ harness/backends/vllm_backend.py: if finish is None: … "raw": self.tokenizer.d
 
 == sampling ==
 
-harness/backends/simple_backend.py: def _sample(self, logits
+agent/model_backends/simple_backend.py: def _sample(self, logits
     def _sample(self, logits: torch.Tensor, s: Sampling, draft: int | None = None) -> tuple[int, dict]:
         """Pick the next token and report the model's distribution and what the settings did to it.
         A `draft` (the MTP drafter's guess) is kept with the probability the settings give it, which in greedy
@@ -818,7 +950,7 @@ harness/backends/simple_backend.py: def _sample(self, logits
             kept = int(((cand_probs.cumsum(-1) - cand_probs) < s.top_p).sum())
             cand_ids, cand_probs = cand_ids[:kept], cand_probs[:kept] / cand_probs[:kept].sum()
             weights = cand_probs
-            at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+            at: torch.Tensor | list = (cand_ids == draft).nonzero().flatten() if draft is not None else []
             if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
                 pick = int(at[0])
             else:
@@ -843,7 +975,7 @@ harness/backends/simple_backend.py: def _sample(self, logits
             ],
         }
 
-harness/backends/vllm_backend.py: def _sampling_params(
+agent/model_backends/vllm_backend.py: def _sampling_params(
     def _sampling_params(self, prompt: Encoded, s: Sampling) -> dict:
         """Each sidebar setting, and every other sampling setting set to do nothing, so that a default the server took
         from the checkpoint (a repetition penalty, say) cannot change the distribution the page shows."""
@@ -859,7 +991,7 @@ harness/backends/vllm_backend.py: def _sampling_params(
             "stop_token_ids": sorted(self.eos_ids),
         }
 
-harness/backends/vllm_backend.py: def _details(
+agent/model_backends/vllm_backend.py: def _details(
     def _details(self, token_id: int, logprobs: dict, n: int, s: Sampling) -> dict:
         """What /v1/completions said about the n-th token of a chunk: its log probability, and those of the 5 most likely
         tokens, keyed "token_id:<id>". The token's rank is known only when it is one of those 5."""
@@ -874,10 +1006,10 @@ harness/backends/vllm_backend.py: def _details(
         rank = 1 + sum(v > logprob for _, v in top) if any(i == token_id for i, _ in top) else None
         return self._token_details(token_id, logprob, listed, rank, None, s)
 
-[[harness/backends/vllm_backend.py|def logprobs_mode(]]
+[[agent/model_backends/vllm_backend.py|def logprobs_mode(]]
     def logprobs_mode(listed: list[float]) -> str:
 
-harness/backends/vllm_backend.py: def _token_details(
+agent/model_backends/vllm_backend.py: def _token_details(
     def _token_details(self, token_id: int, logprob: float, listed: dict[int, float], rank: int | None,
                        mask: list[int] | None, s: Sampling) -> dict:
         """The details of a token event, from what the server said about the token: its log probability, those of the
@@ -885,7 +1017,7 @@ harness/backends/vllm_backend.py: def _token_details(
         depends on the server's --logprobs-mode. Only the model's own log probabilities are p, logprob and the top 5.
         Processed ones are the distribution the token was drawn from, so the token's is its sampling probability, and
         the tokens top-k and top-p cut come back as UNREPORTED. Logits are neither."""
-        details = {"rank": rank} if rank else {}
+        details: dict = {"rank": rank} if rank else {}
         if self.logprobs_mode == "raw_logprobs":
             # Equally likely tokens go lowest id first, as in SimpleBackend.
             ranked = sorted(listed.items(), key=lambda c: (-c[1], c[0]))
@@ -902,26 +1034,26 @@ harness/backends/vllm_backend.py: def _token_details(
             details["kept"] = sum(v > UNREPORTED for v in listed.values())
         return self._greedy(details, token_id, s)
 
-[[harness/backends/vllm_backend.py|def _refuses_greedy(]]
+[[agent/model_backends/vllm_backend.py|def _refuses_greedy(]]
     def _refuses_greedy(self, ids: list[int]) -> bool:
 
-[[harness/backends/vllm_backend.py|def _greedy(]]
+[[agent/model_backends/vllm_backend.py|def _greedy(]]
     def _greedy(self, details: dict, token_id: int, s: Sampling) -> dict:
 
 [[app/render.py|def heat(p: float)]]
     def heat(p: float) -> str:
 
-[[harness/backends/backend.py|TOKEN_DETAILS = (]]
+[[agent/model_backends/backend.py|TOKEN_DETAILS = (]]
     TOKEN_DETAILS = ("p", "logprob", "rank", "p_sampled", "kept", "top", "draft")
 
 == mtp ==
 
-[[harness/families/__init__.py|DRAFTERS = {]]
+[[agent/model_families/__init__.py|DRAFTERS = {]]
     DRAFTERS = {
 
-harness/backends/simple_backend.py: def load_drafter(self):
+agent/model_backends/simple_backend.py: def load_drafter(self):
     def load_drafter(self):
-        """Load the MTP drafter that goes with this model (families.DRAFTERS), if any, and warm it up."""
+        """Load the MTP drafter that goes with this model (model_families.DRAFTERS), if any, and warm it up."""
         with self._drafter_lock:
             if self.drafter is not None or self.drafter_id is None:
                 return
@@ -941,14 +1073,14 @@ harness/backends/simple_backend.py: def load_drafter(self):
                 "folder": describe_folder(folder, self.family.drafter_file_notes),
             }
 
-harness/backends/simple_backend.py: def _draft(
+agent/model_backends/simple_backend.py: def _draft(
     def _draft(self, token_id: int, hidden: torch.Tensor, shared: dict, position: int) -> list[int]:
         """The drafter's greedy guesses for the tokens after `token_id`. It has no cache of its own: it attends to the
         model's keys and values, so every guess sits at the position of `token_id`, and what it has guessed so far
         comes in through its input, the embedding of the last guess next to the drafter's last hidden state."""
         embed = self.model.get_input_embeddings()
         positions = torch.tensor([[position]], device=self.device)
-        guesses = []
+        guesses: list[int] = []
         while len(guesses) < self.draft_tokens and token_id not in self.eos_ids:
             x = torch.cat([embed(torch.tensor([[token_id]], device=self.device)), hidden], -1)
             out = self.drafter(inputs_embeds=x, position_ids=positions, shared_kv_states=shared)
@@ -956,7 +1088,7 @@ harness/backends/simple_backend.py: def _draft(
             guesses.append(token_id)
         return guesses
 
-harness/backends/simple_backend.py: def _drafted(
+agent/model_backends/simple_backend.py: def _drafted(
     def _drafted(self, out, s: Sampling, stats: dict) -> Iterator[tuple[int, dict]]:
         """MTP decoding. After each token the drafter guesses the next few, and one forward pass over the token and the
         guesses gives the model's distribution at every guessed position. _sample checks the guesses in order: each
@@ -990,8 +1122,8 @@ harness/backends/simple_backend.py: def _drafted(
             shared = {k: (key[:, :, : key.shape[2] - dropped], value[:, :, : value.shape[2] - dropped])
                       for k, (key, value) in out.shared_kv_states.items()}
 
-harness/backends/simple_backend.py: at = (cand_ids == draft) … pick = int(torch.multinomial(weights, 1))
-    at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+agent/model_backends/simple_backend.py: at: torch.Tensor | list = (cand_ids == draft) … pick = int(torch.multinomial(weights, 1))
+    at: torch.Tensor | list = (cand_ids == draft).nonzero().flatten() if draft is not None else []
     if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
         pick = int(at[0])
     else:
@@ -1000,23 +1132,24 @@ harness/backends/simple_backend.py: at = (cand_ids == draft) … pick = int(torc
             weights[at[0]] = 0
         pick = int(torch.multinomial(weights, 1))
 
-[[harness/families/__init__.py|VLLM_SPECULATIVE = {]]
+[[agent/model_families/__init__.py|VLLM_SPECULATIVE = {]]
     VLLM_SPECULATIVE = {
 
-[[harness/backends/vllm_docker.py|def speculative(model_id]]
+[[agent/model_backends/vllm_docker.py|def speculative(model_id]]
     def speculative(model_id: str, where: str) -> dict | None:
 
 [[app/render.py|def with_drafts(]]
     def with_drafts(tokens: list[dict], mtp: dict) -> list[dict]:
 
-harness/backends/vllm_backend.py: def drafted_tokens(
+agent/model_backends/vllm_backend.py: def drafted_tokens(
     def drafted_tokens(accepted: list[int], drafted: list[int], n_tokens: int) -> dict | None:
         """Which of a step's tokens were guesses the model kept (kept_at) and which replace a guess it turned down
         (turned_down_at), from vLLM's per-step counts (--per-request-spec-decode-metrics detailed). The first token comes
         from the prefill; after it, each verify step gives the guesses it kept and then one token of the model's own,
         which replaces the next guess when it kept fewer than were drafted. vLLM does not count a step without guesses,
         so when the steps do not account for every token, nobody can tell which tokens were guessed: None."""
-        kept, turned_down, at = [], [], 1
+        kept: list[int] = []
+        turned_down, at = [], 1
         for n_kept, n_drafted in zip(accepted, drafted):
             kept += range(at, at + n_kept)
             if n_kept < n_drafted:
@@ -1029,19 +1162,19 @@ harness/backends/vllm_backend.py: def drafted_tokens(
 
 == backends ==
 
-[[harness/backends/backend.py|class Backend(Protocol):]]
+[[agent/model_backends/backend.py|class Backend(Protocol):]]
     class Backend(Protocol):
 
-harness/backends/backend.py: class Backend(Protocol):
+agent/model_backends/backend.py: class Backend(Protocol):
     class Backend(Protocol):
         """What runs the model. The page holds one at a time (app.page.current_llm) and runs one turn on it at a time."""
 
         model_id: str
-        family: families.Family  # how the model writes its turns, thinking and tool calls (families/)
+        family: model_families.Family  # how the model writes its turns, thinking and tool calls (model_families/)
         modalities: tuple[str, ...]  # what it reads besides text: "image", "audio", "video"
         context_length: int  # the most tokens it reads at once
         info: dict  # what the Model tab shows, and in "defaults" the recommended temperature, top_p and top_k
-        drafter_id: str | None  # the MTP drafter that goes with the model (families.DRAFTERS), if any
+        drafter_id: str | None  # the MTP drafter that goes with the model (model_families.DRAFTERS), if any
         drafter: object | None  # that drafter once load_drafter() has loaded it; Sampling.mtp turns it on only then
 
         def warmup(self) -> None:
@@ -1073,7 +1206,7 @@ harness/backends/backend.py: class Backend(Protocol):
 [[app/page.py|llm = vllm_backend.VLLMBackend(model_id, url) if url else SimpleBackend(model_id)]]
     llm = vllm_backend.VLLMBackend(model_id, url) if url else SimpleBackend(model_id)
 
-harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
+agent/model_backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
     TOKEN_FIELDS = ("index", "id", "piece", "text", "special", "channel")
     # What a token event carries only when the backend knows it:
     #   p, logprob  the token's probability in the model's own distribution (temperature 1, nothing cut off), and its log
@@ -1091,24 +1224,24 @@ harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
     def known(item: dict, key: str) -> bool:
 
 [[app/render.py|def candidates_html(]]
-    def candidates_html(tok: dict, family: families.Family, lang: str) -> str:
+    def candidates_html(tok: dict, family: model_families.Family, lang: str) -> str:
 
 [[tests/fakes.py|class FakeLLM:]]
     class FakeLLM:
 
-[[harness/backends/vllm_docker.py|def start(model_id]]
+[[agent/model_backends/vllm_docker.py|def start(model_id]]
     def start(model_id: str, say: Callable[[str, str], None], mtp: bool = False) -> dict:
 
-[[harness/backends/vllm_docker.py|def device()]]
+[[agent/model_backends/vllm_docker.py|def device()]]
     def device() -> str:
 
 [[app/page.py|def release_model():]]
     def release_model():
 
-[[harness/backends/vllm_docker.py|def stop():]]
+[[agent/model_backends/vllm_docker.py|def stop():]]
     def stop():
 
-[[harness/backends/vllm_docker.py|def _stop_at_exit():]]
+[[agent/model_backends/vllm_docker.py|def _stop_at_exit():]]
     def _stop_at_exit():
 
 [[app/page.py|def model_menu()]]
@@ -1116,16 +1249,33 @@ harness/backends/backend.py: TOKEN_FIELDS = ( … TOKEN_DETAILS = (
 
 == parse ==
 
-harness/agent.py: prefix = family.thought_prefix if … self.emit("parsed"
+agent/harnesses/simple_harness.py: prefix = family.thought_prefix if … self.emit("parsed"
     prefix = family.thought_prefix if prompt.endswith(family.thought_prefix) else ""
     parsed = family.parse(prefix + raw, schemas, s.lang)
     calls = parsed["tool_calls"] if tools else []
     self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
 
-[[harness/families/gemma4.py|CALL_RE = re.compile]]
+agent/harnesses/model_endpoint.py: prefix = family.thought_prefix if … send(finish=finish)
+    prefix = family.thought_prefix if prompt.endswith(family.thought_prefix) else ""
+    calls = [c for c in family.parse(prefix + raw, schemas, serving.lang)["tool_calls"] if not c["error"]] if tools else []
+    if calls:
+        send({"tool_calls": [{"index": i, "id": f"call_{uuid.uuid4().hex[:8]}", "type": "function",
+                              "function": {"name": c["name"], "arguments": json.dumps(c["arguments"] or {}, ensure_ascii=False)}}
+                             for i, c in enumerate(calls)]})
+    finish = "length" if done["finish"] == "max_new_tokens" else "tool_calls" if calls else "stop"
+    send(finish=finish)
+
+agent/harnesses/pi_harness.py: blocks = message.get("content") or [] … self.emit("parsed"
+    blocks = message.get("content") or []
+    calls = [{"name": b.get("name", ""), "arguments": b.get("arguments") or {}, "raw_args": json.dumps(b.get("arguments") or {}, ensure_ascii=False),
+              "error": None} for b in blocks if b.get("type") == "toolCall"]
+    thinking = "\n\n".join(b["thinking"] for b in blocks if b.get("type") == "thinking" and b.get("thinking"))
+    self.emit("parsed", step=self._step, thinking=thinking, content=self._text(message), tool_calls=calls)
+
+[[agent/model_families/gemma4.py|CALL_RE = re.compile]]
     CALL_RE = re.compile(r"<\|tool_call>call:(\w+)(.*?)<tool_call\|>", re.S)
 
-harness/families/gemma4.py: def parse_output(
+agent/model_families/gemma4.py: def parse_output(
     def parse_output(raw: str, schemas: dict | None = None, lang: str = "zh") -> dict:
         """Split one model turn into thinking, tool calls and visible content. Gemma marks each value's
         type itself, so the tool schemas are not needed. Errors are worded in `lang`."""
@@ -1162,7 +1312,7 @@ harness/families/gemma4.py: def parse_output(
             rest = rest.replace(marker, "")
         return {"thinking": thinking, "tool_calls": calls, "content": rest.strip()}
 
-harness/families/gemma4.py: def value(self):
+agent/model_families/gemma4.py: def value(self):
     def value(self):
         self.skip_ws()
         if self.text.startswith(STR, self.pos):
@@ -1176,7 +1326,7 @@ harness/families/gemma4.py: def value(self):
             return self.json_string()
         return self.scalar()
 
-harness/families/qwen3_5.py: def parse_output(
+agent/model_families/qwen3_5.py: def parse_output(
     def parse_output(raw: str, schemas: dict | None = None, lang: str = "zh") -> dict:
         """Split one model turn into thinking, tool calls and visible content. `schemas` maps a tool
         name to its parameters schema, which says what type each plain-text value is. Errors are worded in `lang`."""
@@ -1201,7 +1351,7 @@ harness/families/qwen3_5.py: def parse_output(
             rest = rest.replace(marker, "")
         return {"thinking": thinking, "tool_calls": calls, "content": rest.strip()}
 
-harness/families/qwen3_5.py: def convert(value: str, kind
+agent/model_families/qwen3_5.py: def convert(value: str, kind
     def convert(value: str, kind: str | None):
         """Turn a plain-text value into the schema's type. If it does not fit, keep the text and let
         the schema check report the wrong type to the model."""
@@ -1217,7 +1367,7 @@ harness/families/qwen3_5.py: def convert(value: str, kind
 
 == stop ==
 
-harness/agent.py: if done["finish"] == "user_stopped": … if not calls:
+agent/harnesses/simple_harness.py: if done["finish"] == "user_stopped": … if not calls:
     if done["finish"] == "user_stopped":
         stop_reason, final = "user_stopped", parsed["content"]
         self.messages.append({"role": "assistant", "content": final})
@@ -1228,10 +1378,10 @@ harness/agent.py: if done["finish"] == "user_stopped": … if not calls:
         self.messages.append({"role": "assistant", "content": final})
         break
 
-[[harness/agent.py|stop_reason = "approval_timeout" if self._timed_out]]
+[[agent/harnesses/simple_harness.py|stop_reason = "approval_timeout" if self._timed_out]]
     stop_reason = "approval_timeout" if self._timed_out else "user_stopped"
 
-harness/agent.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
+agent/harnesses/simple_harness.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
             if format_errors >= MAX_FORMAT_ERRORS:
                 stop_reason = "format_errors"
                 break
@@ -1245,9 +1395,36 @@ harness/agent.py: if format_errors >= MAX_FORMAT_ERRORS: … self.emit("run_end"
 
     self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)
 
+agent/harnesses/pi_harness.py: def _turn_start(self):
+    def _turn_start(self):
+        if self._aborting:  # pi goes on to the turn its tool results start before the abort reaches it
+            self._open = False
+            return
+        if self._step >= self.settings.max_steps:  # pi has no step limit of its own; the page's is kept by stopping it
+            self._abort("max_steps")
+            self._open = False
+            return
+        self._step += 1
+        self._open = True
+        self._turn_t = self._stream_t = time.perf_counter()
+        self.emit("step_start", step=self._step)
+        with self._unserved:
+            self._waiting = self._step
+            self._unserved.notify_all()
+
+agent/harnesses/pi_harness.py: def _stop_reason(self) -> str:
+    def _stop_reason(self) -> str:
+        if self._aborting:
+            return self._aborting
+        if self._error:
+            return "error"
+        if self._last and self._last.get("stopReason") == "length":
+            return "max_new_tokens"
+        return "no_tool_call"
+
 == record ==
 
-harness/agent.py: ids = [f"call_{step}_{i}" … prev_sequence = self.llm.render(
+agent/harnesses/simple_harness.py: ids = [f"call_{step}_{i}" … prev_sequence = self.llm.render(
     ids = [f"call_{step}_{i}" for i in range(len(calls))]
     assistant = {
         "role": "assistant",
@@ -1267,7 +1444,7 @@ harness/agent.py: ids = [f"call_{step}_{i}" … prev_sequence = self.llm.render(
 
 == check ==
 
-harness/agent.py: def _handle_call( … args, errors = tool.validate(args, lang)
+agent/harnesses/simple_harness.py: def _handle_call( … args, errors = tool.validate(args, lang)
     def _handle_call(self, step: int, cid: str, call: dict, seen: list) -> str:
         """Validate, approve and execute one tool call. Returns the observation text for the model."""
         lang = self.settings.lang
@@ -1281,7 +1458,7 @@ harness/agent.py: def _handle_call( … args, errors = tool.validate(args, lang)
         else:
             args, errors = tool.validate(args, lang)
 
-harness/tools.py: def validate(self, args: dict
+agent/tools.py: def validate(self, args: dict
     def validate(self, args: dict, lang: str = "zh") -> tuple[dict, list[str]]:
         """Check arguments against the schema; return them with defaults filled in, plus any errors in `lang`."""
         props = self.parameters.get("properties", {})
@@ -1299,7 +1476,7 @@ harness/tools.py: def validate(self, args: dict
         filled.update(args)
         return filled, errors
 
-harness/agent.py: key = (call["name"], json.dumps … {"error": "; ".join(errors)}
+agent/harnesses/simple_harness.py: key = (call["name"], json.dumps … {"error": "; ".join(errors)}
     key = (call["name"], json.dumps(args, sort_keys=True, ensure_ascii=False))
     repeated = key in seen
     seen.append(key)
@@ -1317,7 +1494,7 @@ harness/agent.py: key = (call["name"], json.dumps … {"error": "; ".join(errors
     if errors:
         return self._observe(step, cid, call["name"], {"error": "; ".join(errors)}, ok=False, ms=0)
 
-harness/agent.py: if self.settings.approve_tools: … return self._observe(step, cid, call["name"], {"error": error}
+agent/harnesses/simple_harness.py: if self.settings.approve_tools: … return self._observe(step, cid, call["name"], {"error": error}
     if self.settings.approve_tools:
         self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)
         approved = self._wait_for_decision(cid)
@@ -1333,10 +1510,10 @@ harness/agent.py: if self.settings.approve_tools: … return self._observe(step,
                 error = pick(lang, "使用者拒絕執行這個工具呼叫", "The user refused to run this tool call")
             return self._observe(step, cid, call["name"], {"error": error}, ok=False, ms=0)
 
-[[harness/agent.py|APPROVAL_TIMEOUT = ]]
+[[agent/harnesses/simple_harness.py|APPROVAL_TIMEOUT = ]]
     APPROVAL_TIMEOUT = 300  # seconds; an unanswered request (say, from a closed tab) must not hold the model forever
 
-harness/agent.py: def _wait_for_decision(
+agent/harnesses/simple_harness.py: def _wait_for_decision(
     def _wait_for_decision(self, cid: str) -> bool:
         deadline = time.monotonic() + APPROVAL_TIMEOUT
         with self._decided:
@@ -1348,6 +1525,23 @@ harness/agent.py: def _wait_for_decision(
                     break
                 self._decided.wait(timeout=min(left, 0.5))
             return self._decisions.get(cid, False)
+
+[[agent/harnesses/pi_harness.py|def _tool_start(self]]
+    def _tool_start(self, call_id: str, name: str, args: dict):
+
+[[agent/harnesses/pi_harness.py|def _dialog(self, rec: dict)]]
+    def _dialog(self, rec: dict):
+
+[[agent/harnesses/pi_harness.py|def _decided(self]]
+    def _decided(self, call_id: str, approved: bool):
+
+agent/harnesses/pi_extension.ts: pi.on("tool_call" … return undefined;
+    pi.on("tool_call", async (event, ctx) => {
+    	const call = JSON.stringify({ toolCallId: event.toolCallId, toolName: event.toolName, input: event.input });
+    	if (!(await ctx.ui.confirm(APPROVE_TITLE, call))) {
+    		return { block: true, reason: env.AGENT_LOOP_REFUSAL || "The user refused to run this tool call" };
+    	}
+    	return undefined;
 
 app/page.py: for call in render.pending_approvals(data):
     for call in render.pending_approvals(data):
@@ -1366,7 +1560,7 @@ app/page.py: for call in render.pending_approvals(data):
 
 == execute ==
 
-harness/agent.py: self.emit("tool_start" … return self._observe(step, cid, call["name"], result, ok=ok
+agent/harnesses/simple_harness.py: self.emit("tool_start" … return self._observe(step, cid, call["name"], result, ok=ok
     self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
     start = time.perf_counter()
     try:
@@ -1377,16 +1571,16 @@ harness/agent.py: self.emit("tool_start" … return self._observe(step, cid, cal
         result, ok = {"error": f"{type(e).__name__}: {e}"}, False
     return self._observe(step, cid, call["name"], result, ok=ok, ms=(time.perf_counter() - start) * 1000)
 
-[[harness/tools.py|def get_current_time(]]
+[[agent/tools.py|def get_current_time(]]
     def get_current_time(timezone: str = "Asia/Taipei") -> dict:
 
-[[harness/tools.py|def search_wikipedia(]]
+[[agent/tools.py|def search_wikipedia(]]
     def search_wikipedia(query: str, lang: str = "en") -> dict:
 
-[[harness/tools.py|def run_python(]]
+[[agent/tools.py|def run_python(]]
     def run_python(code: str, files: Path | None = None) -> dict | ToolResult:
 
-harness/tools.py: def _eval(node):
+agent/tools.py: def _eval(node):
     def _eval(node):
         if isinstance(node, ast.Expression):
             return _eval(node.body)
@@ -1412,10 +1606,10 @@ harness/tools.py: def _eval(node):
             return FUNCS[node.func.id](*args)
         raise ToolError(f"不支援的運算：{ast.unparse(node)}", f"Unsupported operation: {ast.unparse(node)}")
 
-[[harness/tools.py|def sandbox_user(]]
+[[agent/tools.py|def sandbox_user(]]
     def sandbox_user() -> str:
 
-harness/tools.py: def sandbox_command(
+agent/tools.py: def sandbox_command(
     def sandbox_command(name: str, files: Path | None) -> list[str]:
         """docker run for one piece of code, read from stdin. The container has no network, a read-only file system
         except a small /tmp, a cap on memory, CPU and processes, no Linux capabilities, the host's own user (never root),
@@ -1431,15 +1625,27 @@ harness/tools.py: def sandbox_command(
             cmd += ["-v", f"{Path(files).resolve()}:/data:ro"]
         return cmd + [SANDBOX_IMAGE, "python", "-I", "-"]
 
-[[harness/tools.py|def save_figures(]]
+[[agent/tools.py|def save_figures(]]
     def save_figures(charts: str, folder: Path | None) -> list[Path]:
 
-[[harness/tools.py|def sandbox_problem(]]
+[[agent/tools.py|def sandbox_problem(]]
     def sandbox_problem() -> dict[str, str] | None:
+
+agent/harnesses/pi_harness.py: def _tool_start(self
+    def _tool_start(self, call_id: str, name: str, args: dict):
+        key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+        repeated = key in self._seen
+        self._seen.append(key)
+        self._calls[call_id] = {"name": name, "arguments": args, "step": self._step}
+        environment = environment_of(name)
+        self.emit("tool_call", step=self._step, call_id=call_id, name=name, arguments=args, raw_args=json.dumps(args, ensure_ascii=False),
+                  errors=[], repeated=repeated, environment=environment)
+        if not self.settings.approve_tools:  # otherwise it starts once the user allows it (_decided)
+            self.emit("tool_start", step=self._step, call_id=call_id, name=name, environment=environment)
 
 == observe ==
 
-harness/agent.py: def _observe(
+agent/harnesses/simple_harness.py: def _observe(
     def _observe(self, step: int, cid: str, name: str, result: dict | ToolResult, ok: bool, ms: float) -> str:
         # The model reads a ToolResult's data; its images (run_python's charts) are only for the page to show.
         result, images = (result.data, result.images) if isinstance(result, ToolResult) else (result, [])
@@ -1450,7 +1656,7 @@ harness/agent.py: def _observe(
         self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1), images=images)
         return text
 
-harness/agent.py: for cid, call in zip(ids, calls): … if format_errors >= MAX_FORMAT_ERRORS:
+agent/harnesses/simple_harness.py: for cid, call in zip(ids, calls): … if format_errors >= MAX_FORMAT_ERRORS:
     for cid, call in zip(ids, calls):
         result = self._handle_call(step, cid, call, seen)
         if call["error"]:
@@ -1467,6 +1673,9 @@ harness/agent.py: for cid, call in zip(ids, calls): … if format_errors >= MAX_
     if format_errors >= MAX_FORMAT_ERRORS:
         stop_reason = "format_errors"
         break
+
+[[agent/harnesses/pi_harness.py|def _tool_end(self]]
+    def _tool_end(self, call_id: str, result: dict, is_error: bool, ms: float | None):
 
 == ui ==
 
@@ -1489,17 +1698,18 @@ app/page.py: @st.fragment(run_every= … viz_panel(llm)
 
 app/render.py: def build(events: list[dict])
     def build(events: list[dict]) -> dict:
-        data = {"model": None, "family": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
+        data: dict = {"model": None, "family": None, "harness": None, "settings": {}, "steps": [], "end": None, "error": None, "last": None, "t": 0}
         for ev in events:
             kind = ev["type"]
             data["last"], data["t"] = kind, ev["t"]
             if kind == "run_start":
-                data["model"], data["family"] = ev["model"], families.get(ev["family"])
-                data["settings"] = ev["settings"]
+                # A harness that does not know how the model writes its turns (pi) sends no family.
+                data["model"], data["family"] = ev["model"], model_families.get(ev["family"]) if ev.get("family") else None
+                data["harness"], data["settings"] = ev.get("harness", "simple"), ev["settings"]
             elif kind == "step_start":
                 data["steps"].append({
                     "n": ev["step"], "t0": ev["t"], "t1": ev["t"], "context": None, "prefill": None,
-                    "tokens": [], "done": None, "parsed": None, "calls": {},
+                    "tokens": [], "text": [], "request": None, "done": None, "parsed": None, "calls": {},
                 })
             elif kind == "run_end":
                 data["end"] = ev
@@ -1510,7 +1720,12 @@ app/render.py: def build(events: list[dict])
                 step["t1"] = ev["t"]
                 if kind == "token":
                     step["tokens"].append(ev)
-                elif kind in ("context", "prefill", "parsed"):
+                elif kind == "delta":  # kept as runs of one channel: [{"channel", "text"}]
+                    if step["text"] and step["text"][-1]["channel"] == ev["channel"]:
+                        step["text"][-1] = {**step["text"][-1], "text": step["text"][-1]["text"] + ev["text"]}
+                    else:
+                        step["text"].append({"channel": ev["channel"], "text": ev["text"]})
+                elif kind in ("request", "context", "prefill", "parsed"):
                     step[kind] = ev
                 elif kind == "model_end":
                     step["done"] = ev
@@ -1537,10 +1752,12 @@ app/render.py: def build(events: list[dict])
 
 app/render.py: state["active"], state["edge"] = {
     state["active"], state["edge"] = {
-        "step_start": ("context", "env-context" if step and step["n"] > 1 else None),
+        # pi sends the request as its turn starts, and says nothing more until the model's output comes back.
+        "step_start": ("context", "context-model" if data["harness"] == "pi" else "env-context" if step and step["n"] > 1 else None),
         "context": ("context", "context-model"),
         "prefill": ("model", "context-model"),
         "token": ("model", None),
+        "delta": ("model", None),
         "model_end": ("harness", "model-harness"),
         "parsed": ("harness", "model-harness"),
         "tool_call": ("harness", None),
@@ -1562,7 +1779,7 @@ app/page.py: def absorb_finished(
                     st.session_state.history = end["messages"]
                 run.absorbed = True
 
-harness/agent.py: def stop(self): … def decide(self, call_id
+agent/harnesses/simple_harness.py: def stop(self): … def decide(self, call_id
     def stop(self):
         self._stop.set()
         with self._decided:
@@ -1573,46 +1790,70 @@ harness/agent.py: def stop(self): … def decide(self, call_id
             self._decisions[call_id] = approved
             self._decided.notify_all()
 
+[[agent/harnesses/pi_harness.py|def _abort(self, reason: str)]]
+    def _abort(self, reason: str):
+
+agent/harnesses/pi_harness.py: def _abort(self, reason: str):
+    def _abort(self, reason: str):
+        if self._aborting:
+            return
+        self._aborting = reason
+        for call_id, (dialog, _) in list(self._pending.items()):
+            timed_out = reason == "approval_timeout"
+            self.emit("approval", step=self._calls[call_id]["step"], call_id=call_id, approved=False, timed_out=timed_out, stopped=not timed_out)
+            self.pi.send({"type": "extension_ui_response", "id": dialog, "cancelled": True})
+        self._pending.clear()
+        self.pi.send({"type": "abort"})
+        self._kill_at = time.monotonic() + STOP_GRACE
+        with self._unserved:  # a request waiting for its step learns now, not after WAIT_FOR_STEP, that none will open
+            self._unserved.notify_all()
+
 == events ==
 
-[[harness/agent.py|"run_start", run_id=]]
-    "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+[[agent/harnesses/simple_harness.py|"run_start", run_id=]]
+    "run_start", run_id=self.id, harness="simple", model=self.llm.model_id, family=family.key,
 
-[[harness/agent.py|self.emit("step_start"]]
+[[agent/harnesses/simple_harness.py|self.emit("step_start"]]
     self.emit("step_start", step=step)
 
-[[harness/agent.py|"context",]]
+[[agent/harnesses/pi_harness.py|self.emit("request"]]
+    self.emit("request", step=self._step, text=text, added_from=added_from, added_to=added_to,
+
+[[agent/harnesses/simple_harness.py|"context",]]
     "context",
 
-[[harness/backends/simple_backend.py|yield {"type": "prefill"]]
+[[agent/model_backends/simple_backend.py|yield {"type": "prefill"]]
     yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
 
-[[harness/backends/simple_backend.py|"type": "token",]]
+[[agent/model_backends/simple_backend.py|"type": "token",]]
     "type": "token",
 
-[[harness/agent.py|self.emit("model_end"]]
+[[agent/harnesses/pi_harness.py|self.emit("delta"]]
+    self.emit("delta", step=self._step, channel=channel, text=text)
+
+[[agent/harnesses/simple_harness.py|self.emit("model_end"]]
     self.emit("model_end", step=step, raw=raw, **done)
 
-[[harness/agent.py|self.emit("parsed"]]
+[[agent/harnesses/simple_harness.py|self.emit("parsed"]]
     self.emit("parsed", step=step, thinking=parsed["thinking"], content=parsed["content"], tool_calls=calls)
 
-[[harness/agent.py|"tool_call",]]
+[[agent/harnesses/simple_harness.py|"tool_call",]]
     "tool_call",
 
-[[harness/agent.py|self.emit("approval_request"]]
+[[agent/harnesses/simple_harness.py|self.emit("approval_request"]]
     self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)
 
-[[harness/agent.py|self.emit("approval",]]
+[[agent/harnesses/simple_harness.py|self.emit("approval",]]
     self.emit("approval", step=step, call_id=cid, approved=approved, timed_out=self._timed_out, stopped=stopped)
 
-[[harness/agent.py|self.emit("tool_start"]]
+[[agent/harnesses/simple_harness.py|self.emit("tool_start"]]
     self.emit("tool_start", step=step, call_id=cid, name=call["name"], environment=tool.environment)
 
-[[harness/agent.py|self.emit("tool_result"]]
+[[agent/harnesses/simple_harness.py|self.emit("tool_result"]]
     self.emit("tool_result", step=step, call_id=cid, name=name, ok=ok, result=text, truncated=truncated, ms=round(ms, 1), images=images)
 
-[[harness/agent.py|self.emit("error"]]
+[[agent/harnesses/simple_harness.py|self.emit("error"]]
     self.emit("error", message=f"{type(e).__name__}: {e}", **texts)
 
-[[harness/agent.py|self.emit("run_end"]]
+[[agent/harnesses/simple_harness.py|self.emit("run_end"]]
     self.emit("run_end", stop_reason=stop_reason, final=final, messages=self.messages)

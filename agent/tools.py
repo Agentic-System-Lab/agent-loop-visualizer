@@ -24,19 +24,20 @@ import os
 import re
 import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from harness.i18n import pick
+from agent.i18n import pick
 
 WIKI_HEADERS = {"User-Agent": f"agent-loop-visualizer/0.1 (https://github.com/cyyeh/agent-atlas-learning) httpx/{httpx.__version__}"}
-SANDBOX_IMAGE = "agent-loop-sandbox"  # docker build -t agent-loop-sandbox harness/sandbox
+SANDBOX_IMAGE = "agent-loop-sandbox"  # docker build -t agent-loop-sandbox agent/sandbox
 SANDBOX_VERSION = "2"  # the agent-loop-sandbox.version label in sandbox/Dockerfile; for an older image the page asks for a rebuild
 DOCKER_INSTALL = "https://docs.docker.com/get-started/get-docker/"
 SANDBOX_TIMEOUT = 30  # seconds a piece of code may run
@@ -110,7 +111,7 @@ BIN_OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
     ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: operator.pow,
 }
-UNARY_OPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+UNARY_OPS: dict[type, Callable] = {ast.UAdd: operator.pos, ast.USub: operator.neg}
 FUNCS = {
     name: getattr(math, name)
     for name in ["sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "log", "log2", "log10", "exp", "floor", "ceil", "factorial"]
@@ -258,7 +259,7 @@ def sandbox_command(name: str, files: Path | None) -> list[str]:
 def sandbox_problem() -> dict[str, str] | None:
     """Why run_python cannot run right now, in both languages (Markdown), or None when Docker and an up-to-date
     sandbox image are there."""
-    build = f"`docker build -t {SANDBOX_IMAGE} harness/sandbox`"
+    build = f"`docker build -t {SANDBOX_IMAGE} agent/sandbox`"
     label = '{{ index .Config.Labels "agent-loop-sandbox.version" }}'
     try:
         found = subprocess.run(["docker", "image", "inspect", "--format", label, SANDBOX_IMAGE], capture_output=True, text=True, timeout=10)

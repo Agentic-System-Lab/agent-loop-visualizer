@@ -10,13 +10,13 @@ from pathlib import Path
 import pytest
 from huggingface_hub import try_to_load_from_cache
 
+from agent import media, model_families
+from agent.harnesses.simple_harness import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
+from agent.model_backends import simple_backend
+from agent.model_backends.simple_backend import MODELS_DIR, SimpleBackend
+from agent.tools import TOOLS
 from app import render
 from fakes import FakeLLM, gemma_call, qwen_call
-from harness import families, media
-from harness.agent import SYSTEM_NO_TOOLS, SYSTEM_WITH_TOOLS, Run, RunSettings
-from harness.backends import simple_backend
-from harness.backends.simple_backend import MODELS_DIR, SimpleBackend
-from harness.tools import TOOLS
 from html_check import assert_balanced
 
 SAMPLES = Path(__file__).resolve().parent.parent / "app" / "assets" / "examples"
@@ -28,14 +28,14 @@ CALL_END = {"gemma4": "<|tool_response>", "qwen3_5": "<|im_end|>"}
 OBSERVATION = {"gemma4": "response:{name}{{value:", "qwen3_5": "<|im_start|>user\n<tool_response>\n"}
 
 
-@pytest.fixture(scope="module", params=list(families.MODELS))
+@pytest.fixture(scope="module", params=list(model_families.MODELS))
 def model(request):
     """A SimpleBackend with the real tokenizer and family but no weights."""
     from transformers import AutoConfig, AutoTokenizer
 
     # Look for the files themselves: with only config.json cached, local_files_only=True fails on Gemma's
     # tokenizer with a ValueError and loads Qwen's empty, rather than raising an OSError.
-    revision = families.REVISIONS.get(request.param)
+    revision = model_families.REVISIONS.get(request.param)
     files = [try_to_load_from_cache(request.param, f, cache_dir=MODELS_DIR, revision=revision) for f in ("config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja")]
     if not all(isinstance(f, str) for f in files):
         pytest.skip(f"{request.param} at {revision} is not downloaded into {MODELS_DIR}")
@@ -43,7 +43,7 @@ def model(request):
     m = SimpleBackend.__new__(SimpleBackend)
     m.tokenizer = AutoTokenizer.from_pretrained(folder)
     m.config = AutoConfig.from_pretrained(folder)
-    m.family = families.for_model_type(m.config.model_type)
+    m.family = model_families.for_model_type(m.config.model_type)
     m.folder, m.model_id = folder, request.param
     return m
 
@@ -78,7 +78,7 @@ def call_text(family, name, args):
 
 
 def after_call(name, args, result='{"ok": true}'):
-    """The messages the harness has after one tool call, built the way agent.Run builds them."""
+    """The messages the harness has after one tool call, built the way simple_harness.SimpleHarness builds them."""
     return [
         system(),
         {"role": "user", "content": "問題"},
@@ -91,9 +91,9 @@ def after_call(name, args, result='{"ok": true}'):
 
 def test_every_file_in_the_model_folder_is_explained_and_has_the_fields_its_note_names(model):
     folders = [(model.folder, model.family.file_notes)]
-    if model.model_id in families.DRAFTERS:
-        drafter = families.DRAFTERS[model.model_id]
-        config = try_to_load_from_cache(drafter, "config.json", cache_dir=MODELS_DIR, revision=families.REVISIONS.get(drafter))
+    if model.model_id in model_families.DRAFTERS:
+        drafter = model_families.DRAFTERS[model.model_id]
+        config = try_to_load_from_cache(drafter, "config.json", cache_dir=MODELS_DIR, revision=model_families.REVISIONS.get(drafter))
         if isinstance(config, str):
             folders.append((os.path.dirname(config), model.family.drafter_file_notes))
     for folder, notes in folders:
@@ -239,7 +239,7 @@ def test_step_card_marks_only_the_observation_as_new(model, monkeypatch, before,
     end = "好。" + next(iter(family.stop_tokens))
     events = []
     llm = TemplateLLM(model, [scripted(family, before, args, thinking), end])
-    Run(llm, [], "ReAct 是誰提出的？", RunSettings(thinking=thinking), events.append).run()
+    SimpleHarness(llm, [], "ReAct 是誰提出的？", RunSettings(thinking=thinking), events.append).run()
     [parsed, _] = [e for e in events if e["type"] == "parsed"]
     assert [c["arguments"] for c in parsed["tool_calls"]] == [args]
     first, second = (e for e in events if e["type"] == "context")
@@ -266,7 +266,7 @@ def test_with_media_the_step_card_still_marks_only_the_observation_as_new(with_p
              (("receipt.png", "image"), ("ball.mp4", "video"))]
     events = []
     llm = MediaTemplateLLM(with_processor, [scripted(family, "", {"query": "ReAct"}, False), "好。" + next(iter(family.stop_tokens))])
-    Run(llm, [], "這是什麼？", RunSettings(), events.append, files).run()
+    SimpleHarness(llm, [], "這是什麼？", RunSettings(), events.append, files).run()
     first, second = (e for e in events if e["type"] == "context")
     assert first["media_tokens"]["image"] > 100 and first["media_tokens"]["video"] > 100
     assert first["n_tokens"] == len(with_processor.tokenizer(first["prompt"], add_special_tokens=False).input_ids)

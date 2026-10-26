@@ -139,6 +139,9 @@
 .tok:hover { outline: 1.5px solid var(--ink); }
 .tok.ch-thought { font-style: italic; color: var(--muted); }
 .tok.ch-tool_call { font-family: var(--mono); font-size: 12.5px; color: var(--c-harness); }
+/* Text streamed by a harness that sees no tokens (pi): the same channels, without token boundaries. */
+.run.ch-thought { font-style: italic; color: var(--muted); }
+.run.ch-tool_call { font-family: var(--mono); font-size: 12.5px; color: var(--c-harness); }
 .tok.special, .sp {
   font: 600 11px/1 var(--mono);
   font-style: normal;

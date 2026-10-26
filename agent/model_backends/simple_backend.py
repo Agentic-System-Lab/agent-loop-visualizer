@@ -16,7 +16,7 @@ Images, sound and video go in through the model's processor: encode() expands ea
 chat template wrote into the tokens of its file, and the prefill hands the encoders their inputs.
 After the prefill, decoding is the same as for text.
 
-The models download into MODELS_DIR (the project's models/) at the commits families.REVISIONS pins,
+The models download into MODELS_DIR (the project's models/) at the commits model_families.REVISIONS pins,
 and describe_folder() lists what a model's folder holds for the Model tab.
 """
 
@@ -27,15 +27,16 @@ import os
 import threading
 import time
 from collections import Counter
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any
 
 import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoProcessor
 
-from harness import families, media
-from harness.backends.backend import Encoded, Sampling
+from agent import media, model_families
+from agent.model_backends.backend import Encoded, Sampling
 
 TOP_N = 5
 ROOT = Path(__file__).resolve().parents[2]  # the project's folder
@@ -49,7 +50,7 @@ MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expand
 
 def _download(model_id: str, only: str | None = None) -> str:
     """The model's folder in MODELS_DIR, after fetching the files it lacks (only `only`, if given), at the revision
-    families.REVISIONS pins it to.
+    model_families.REVISIONS pins it to.
 
     from_pretrained(local_files_only=True) is no test of the cache: once config.json is cached, a tokenizer whose
     own files are missing raises a ValueError (Gemma 4) or loads empty (Qwen3.5) rather than an OSError.
@@ -57,12 +58,12 @@ def _download(model_id: str, only: str | None = None) -> str:
     can't be reached it returns the cached folder, so a downloaded model still starts offline."""
     if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
         return model_id
-    return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
+    return snapshot_download(model_id, revision=model_families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
 
 
 def describe_folder(folder: str, notes: dict) -> dict:
     """A checkpoint's folder as the Model tab lists it: where it is, the Hub revision it was downloaded at, and every
-    file with its size and the values of the fields its family's note on it names (families.FileNote). In the cache a
+    file with its size and the values of the fields its family's note on it names (model_families.FileNote). In the cache a
     file is a link into blobs/, and the size is that of the file it links to."""
     path = Path(folder).absolute()
     files = []
@@ -136,12 +137,12 @@ class SimpleBackend:
         if self.device == "mps":
             # Loading weights onto MPS from several threads can hang (seen with Qwen3.5); one thread is fast enough.
             os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
-        self.drafter_id = families.DRAFTERS.get(model_id)
-        self.drafter = None  # loaded the first time MTP is switched on
+        self.drafter_id = model_families.DRAFTERS.get(model_id)
+        self.drafter: Any = None  # loaded the first time MTP is switched on
         self._drafter_lock = threading.Lock()
         start = time.perf_counter()
         # config.json alone says which family the model belongs to; an unsupported one fails before the weights download.
-        self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
+        self.family = model_families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
         files = self.folder = _download(model_id)
         # The processor holds the tokenizer and, for a model that reads more than text, what turns files into its inputs.
         self.processor = AutoProcessor.from_pretrained(files)
@@ -222,7 +223,7 @@ class SimpleBackend:
             pass
 
     def load_drafter(self):
-        """Load the MTP drafter that goes with this model (families.DRAFTERS), if any, and warm it up."""
+        """Load the MTP drafter that goes with this model (model_families.DRAFTERS), if any, and warm it up."""
         with self._drafter_lock:
             if self.drafter is not None or self.drafter_id is None:
                 return
@@ -260,7 +261,7 @@ class SimpleBackend:
             ids = self.tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids
             return Encoded(prompt, ids, ids.shape[-1])
         files = {kind: [p["path"] for p in parts if p["type"] == kind] for kind in media.MEDIA}
-        inputs = {}
+        inputs: dict = {}
         if files["image"]:
             inputs["images"] = [media.load_image(path) for path in files["image"]]
         if files["audio"]:
@@ -301,7 +302,7 @@ class SimpleBackend:
             yield {"type": "prefill", "n_tokens": ids.shape[-1], "ms": round(prefill_ms, 1)}
 
             decode_start = time.perf_counter()
-            tokens = self._drafted(out, sampling, mtp) if drafting else self._one_at_a_time(out, sampling)
+            tokens = self._drafted(out, sampling, mtp) if mtp is not None else self._one_at_a_time(out, sampling)
             for token_id, details in tokens:
                 if should_stop():
                     finish = "user_stopped"
@@ -367,7 +368,7 @@ class SimpleBackend:
         for kind in ("image", "video"):
             encoder = getattr(base, f"get_{kind}_features", None)
             args = {k: inputs[k] for k in inspect.signature(encoder).parameters if k in inputs} if encoder else {}
-            if any(k.startswith("pixel_values") for k in args):
+            if encoder and any(k.startswith("pixel_values") for k in args):
                 encoded[kind] = encoder(**args, return_dict=True)
         if not encoded:
             return inputs
@@ -420,7 +421,7 @@ class SimpleBackend:
         comes in through its input, the embedding of the last guess next to the drafter's last hidden state."""
         embed = self.model.get_input_embeddings()
         positions = torch.tensor([[position]], device=self.device)
-        guesses = []
+        guesses: list[int] = []
         while len(guesses) < self.draft_tokens and token_id not in self.eos_ids:
             x = torch.cat([embed(torch.tensor([[token_id]], device=self.device)), hidden], -1)
             out = self.drafter(inputs_embeds=x, position_ids=positions, shared_kv_states=shared)
@@ -453,7 +454,7 @@ class SimpleBackend:
             kept = int(((cand_probs.cumsum(-1) - cand_probs) < s.top_p).sum())
             cand_ids, cand_probs = cand_ids[:kept], cand_probs[:kept] / cand_probs[:kept].sum()
             weights = cand_probs
-            at = (cand_ids == draft).nonzero().flatten() if draft is not None else []
+            at: torch.Tensor | list = (cand_ids == draft).nonzero().flatten() if draft is not None else []
             if len(at) and float(torch.rand(())) < float(cand_probs[at[0]]):
                 pick = int(at[0])
             else:

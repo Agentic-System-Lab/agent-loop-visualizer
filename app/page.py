@@ -3,28 +3,33 @@ sidebar) on the left and watch every step of its agent loop on the right.
 
 Run with:  uv run streamlit run streamlit_app.py  (which calls main() here on every rerun)
 
-This is the app's side of the project: the harness (harness/) runs the turn, and this page only starts it, draws
+This is the app's side of the project: the agent (agent/) runs the turn, and this page only starts it, draws
 its events (render.py) and passes on the user's clicks. The settings read from the environment below are read once,
 when the module is first imported.
 
-The agent runs in a background thread (harness.agent.Run) and appends one event per loop
+The agent runs in a background thread (agent.harnesses.simple_harness.SimpleHarness) and appends one event per loop
 stage to a list. While a run is live, a fragment redraws the page from that list
 every half second. Clicking stop or approve reruns the script but not the thread,
 so the loop keeps going.
 
-With VLLM_URL set, a vLLM server runs the model instead of this machine (harness/backends/vllm_backend.py), and the
+The sidebar can also hand the loop to pi (agent/harnesses/pi_harness.py), a coding agent that runs its own, and the
+page draws what pi says it does, with the request pi sends the model. pi asks either the page's own model, which
+agent/harnesses/model_endpoint.py serves it on 127.0.0.1, so every token still shows, or a model it has credentials
+for (Claude, GPT…), of which only the text shows, and then no model loads here.
+
+With VLLM_URL set, a vLLM server runs the model instead of this machine (agent/model_backends/vllm_backend.py), and the
 model menu lists what that server serves, marking those the page does not support; picking one of those says why
 and offers a GitHub issue asking for it, already filled in. Without it, the sidebar can still pick vLLM: the page then starts a
-vLLM server in Docker from docker-compose/compose.yaml (harness/backends/vllm_docker.py). Either way, the model in
+vLLM server in Docker from docker-compose/compose.yaml (agent/model_backends/vllm_docker.py). Either way, the model in
 memory is let go before the next one loads, so switching models or what runs them never holds two.
 
 The top bar also links to 運作說明 (How it works), a walk through the loop with the code behind it:
 a static page that app/guide.py builds and GitHub Pages serves.
 
-The page is in Traditional Chinese or English (harness/i18n.py). It starts in the language last picked on the
+The page is in Traditional Chinese or English (agent/i18n.py). It starts in the language last picked on the
 switch at the top right, kept in a cookie, or else in the browser's language.
 
-A question can come with files (harness/media.py): images, sound and video the model reads, and, when the sidebar
+A question can come with files (agent/media.py): images, sound and video the model reads, and, when the sidebar
 lets the model write code, data files for run_python. Only then does the page look for Docker, which
 run_python's sandbox needs, and say how to install it when it is missing. The charts run_python draws are
 shown in the chat and in the step that drew them.
@@ -37,23 +42,27 @@ import shutil
 import threading
 import uuid
 import weakref
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
 import streamlit as st
 
+from agent import media, model_families, tools
+from agent.harnesses import model_endpoint, pi_harness
+from agent.harnesses.harness import Harness
+from agent.harnesses.simple_harness import RunSettings, SimpleHarness
+from agent.i18n import LANGS, from_locale, pick
+from agent.model_backends import vllm_backend, vllm_docker
+from agent.model_backends.backend import Backend, Sampling
+from agent.model_backends.simple_backend import SimpleBackend, empty_cache
+from agent.tools import TOOLS
 from app import render
-from harness import families, media, tools
-from harness.agent import Run, RunSettings
-from harness.backends import vllm_backend, vllm_docker
-from harness.backends.backend import Backend, Sampling
-from harness.backends.simple_backend import SimpleBackend, empty_cache
-from harness.i18n import LANGS, from_locale, pick
-from harness.tools import TOOLS
 
 # The model menu; MODEL_ID picks the one selected at first, and may name a model the menu does not list.
-DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(families.MODELS)))
-MODELS = {**families.MODELS, DEFAULT_MODEL: families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
+DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(model_families.MODELS)))
+MODELS = {**model_families.MODELS, DEFAULT_MODEL: model_families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
 # Where a vLLM server listens (http://localhost:8000, say); with it set, the server runs the model, not this machine.
 VLLM_URL = os.environ.get("VLLM_URL")
 ASSETS = Path(__file__).parent / "assets"
@@ -108,7 +117,7 @@ EXAMPLES = {
         ("Use Python to read this sales data: which month had the highest total revenue, and what was the revenue for the whole year?", "sales.csv"),
     ],
 }
-EXAMPLE_ICONS = {"image": ":material/image:", "audio": ":material/graphic_eq:", "video": ":material/movie:", "file": ":material/table_chart:", "python": ":material/code:"}
+EXAMPLE_ICONS: dict[str | None, str] = {"image": ":material/image:", "audio": ":material/graphic_eq:", "video": ":material/movie:", "file": ":material/table_chart:", "python": ":material/code:"}
 SAMPLE_FILES = sorted(p.name for p in SAMPLES.iterdir() if p.is_file() and not p.name.startswith("."))
 
 
@@ -126,7 +135,7 @@ def model_menu() -> dict[str, str]:
         return MODELS
     # A LoRA adapter (a card with a parent) is left out: its root is the adapter's folder on the server.
     served = (card.get("root") or card["id"] for card in vllm_backend.served_models(VLLM_URL) if not card.get("parent"))
-    return {model_id: ("⚠ " if supported(model_id) is False else "") + families.MODELS.get(model_id, model_id) for model_id in served}
+    return {model_id: ("⚠ " if supported(model_id) is False else "") + model_families.MODELS.get(model_id, model_id) for model_id in served}
 
 
 @st.cache_data(show_spinner=False)
@@ -141,7 +150,7 @@ def served_family(model_id: str) -> str | None:
 def supported(model_id: str) -> bool | None:
     """Whether the page runs a model the menu lists; None when that cannot be told (no way to the Hub, or a folder
     only on the server, which then says why it does not load)."""
-    if model_id in families.MODELS:
+    if model_id in model_families.MODELS:
         return True
     try:
         return served_family(model_id) is not None
@@ -237,6 +246,87 @@ def current_llm() -> Backend:
     return llm
 
 
+# ---------- pi ----------
+
+@dataclass
+class PiAgent:
+    """pi and the model it asks, where the page would otherwise have a Backend: what the chat needs to know of it. The
+    model is the page's own (`llm`, served to pi by model_endpoint.py) or one of pi's own (`model`, at a provider)."""
+    model_id: str  # the page's model id, or "provider/id", as pi's own model menu names it
+    version: str
+    llm: Backend | None = None
+    model: dict = field(default_factory=dict)  # pi's model object for one of its own (pi_harness.probe)
+
+    @property
+    def modalities(self) -> tuple[str, ...]:
+        """What pi sends the model besides text: images alone, and those only to a model that reads them."""
+        reads = self.llm.modalities if self.llm else self.model.get("input", ())
+        return ("image",) if "image" in reads else ()
+
+    @property
+    def info(self) -> dict:
+        return self.llm.info if self.llm else {}  # a provider's model has no server or folder here
+
+
+def pi_picked() -> bool:
+    return st.session_state.get("harness") == "pi"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def pi_found() -> dict:
+    """What pi can run (pi_harness.probe), asked again at most every minute; a PiError is not kept, and is asked again."""
+    return pi_harness.probe()
+
+
+def retry_pi():
+    pi_found.clear()
+
+
+def pi_settings(who: PiAgent) -> pi_harness.PiSettings:
+    s = st.session_state
+    if who.llm:  # Thinking mode, which pi sends as its thinking level and the endpoint turns into the template's switch
+        provider, model, thinking = model_endpoint.PROVIDER, who.llm.model_id, "medium" if s.thinking else "off"
+    else:
+        provider, model, thinking = who.model["provider"], who.model["id"], s.pi_thinking
+    return pi_harness.PiSettings(provider, model, thinking=thinking, tools=tuple(s.pi_tools), approve_tools=s.approve_tools,
+                                 max_steps=s.max_steps, lang=s.lang)
+
+
+def pi_picker(busy: bool) -> PiAgent:
+    """Which model pi asks: the page's own, with the model menu and what runs it as the built-in harness has them, or one
+    of the models pi has credentials for. pi is started once to ask which (and again after a minute)."""
+    with st.spinner(tr("問 pi 它能用哪些模型…", "Asking pi which models it can use…")):
+        found = pi_found()
+    with st.sidebar:
+        sources = {"page": tr("這個網頁的模型", "This page's model"), "pi": tr("pi 自己的模型", "pi's own models")}
+        st.segmented_control(
+            tr("pi 問的模型", "The model pi asks"), list(sources), format_func=sources.__getitem__, key="pi_source", required=True,
+            on_change=new_chat, disabled=busy,
+            help=tr("這個網頁的模型：Gemma 或 Qwen，跑在 transformers 或 vLLM 上，由網頁在 127.0.0.1 上當成一個相容 OpenAI 的端點提供給 pi；"
+                    "每個 token 和模型讀到的字串都看得到。pi 自己的模型：pi 登入過的 provider 的模型（Claude、GPT…），只看得到文字。",
+                    "This page's model: Gemma or Qwen, on transformers or vLLM, which the page serves to pi as an OpenAI-compatible endpoint on 127.0.0.1; "
+                    "every token and the string the model reads show. pi's own models: those of the providers pi is logged in to (Claude, GPT…); only their text shows."),
+        )
+    if st.session_state.pi_source == "page":
+        model_picker(model_menu(), busy)
+        return PiAgent(st.session_state.model_id, found["version"], llm=current_llm())
+    models = {f'{m["provider"]}/{m["id"]}': m for m in found["models"]}
+    if not models:
+        raise pi_harness.PiError(
+            "pi 還沒有可以用的模型。在終端機執行 `pi`，用 `/login` 登入一個 provider；或在啟動這個 app 之前設好 API key"
+            "（例如 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`），或在 pi 的 `models.json` 加上一個相容的端點。然後按「再試一次」。",
+            "pi has no model it can use yet. Run `pi` in a terminal and log in to a provider with `/login`, or set an API key "
+            "(such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) before starting this app, or add a compatible endpoint to pi's `models.json`. Then press Try again.",
+        )
+    if st.session_state.get("pi_model") not in models:
+        st.session_state.pi_model = found["default"] if found["default"] in models else next(iter(models))
+    with st.sidebar:
+        st.selectbox(tr("模型", "Model"), list(models), key="pi_model", on_change=new_chat, disabled=busy,
+                     help=tr("pi 有登入資訊的模型（provider/模型 id）。換模型會開始新的對話。",
+                             "The models pi has credentials for (provider/model id). Switching models starts a new conversation."))
+    return PiAgent(st.session_state.pi_model, found["version"], model=models[st.session_state.pi_model])
+
+
 class Slot:
     """One model, one run at a time, across every browser tab. The run is kept here as well as in
     session state so another tab can see it and stop it, e.g. after the tab that started it was reloaded."""
@@ -252,15 +342,15 @@ def generation_slot() -> Slot:
 
 
 class LiveRun:
-    """One user turn: the harness thread and the events it has emitted so far."""
+    """One user turn: the harness thread and the events it has emitted so far. `make` makes the harness (simple_harness.SimpleHarness
+    or pi_harness.PiHarness) given the function it sends its events to."""
 
-    def __init__(self, llm: Backend, history: list[dict], text: str, attachments: list[media.Attachment], files: Path,
-                 settings: RunSettings, slot: Slot):
+    def __init__(self, make: Callable[[Callable[[dict], None]], Harness], text: str, attachments: list[media.Attachment], slot: Slot):
         self.text = text
         self.attachments = attachments
         self.events: list[dict] = []
         self.absorbed = False
-        self.run = Run(llm, history, text, settings, self.events.append, attachments, files)
+        self.run = make(self.events.append)
         self._slot = slot
         slot.run = self
         self.thread = threading.Thread(target=self._work, daemon=True)
@@ -287,6 +377,15 @@ class LiveRun:
 def init_state():
     for key, value in DEFAULTS.items():
         st.session_state.setdefault(key, value)
+    st.session_state.setdefault("harness", "simple")  # what runs the loop: this project's harness, or pi
+    st.session_state.setdefault("pi_tools", list(pi_harness.DEFAULT_TOOLS))
+    st.session_state.setdefault("pi_thinking", "off")
+    st.session_state.setdefault("pi_source", "page")  # the model pi asks: the page's own, or one of pi's
+    # The sidebar draws only one harness's settings; Streamlit would forget the other's, whose widgets are not drawn,
+    # unless they are set again here.
+    for key in [*DEFAULTS, "model_id", "pi_model", "pi_tools", "pi_thinking", "pi_source"]:
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
     st.session_state.setdefault("runs", [])
     st.session_state.setdefault("history", [])
     st.session_state.setdefault("view", None)
@@ -336,12 +435,15 @@ def sandbox_problem() -> dict | None:
 
 
 def code_allowed() -> bool:
-    """Whether the sidebar lets the model write code; Docker is looked for only then."""
+    """Whether the sidebar lets the model write code: run_python, for which Docker is looked for only then, or with
+    pi its bash tool."""
+    if pi_picked():
+        return "bash" in st.session_state.pi_tools
     return st.session_state.use_tools and st.session_state.python
 
 
 def code_ready() -> bool:
-    return code_allowed() and sandbox_problem() is None
+    return code_allowed() and (pi_picked() or sandbox_problem() is None)
 
 
 def offered_tools() -> tuple[str, ...]:
@@ -349,21 +451,32 @@ def offered_tools() -> tuple[str, ...]:
     return tuple(name for name in TOOLS if name != "run_python" or code_ready())
 
 
-def start_run(llm: Backend, text: str, uploads: list[tuple[str, bytes]] = ()) -> bool:
+def start_run(who: "Backend | PiAgent", text: str, uploads: Sequence[tuple[str, bytes]] = ()) -> bool:
     """Ask the question in a new run, with `uploads` (file name, contents) saved in the conversation's folder first."""
     slot = generation_slot()
     if not slot.lock.acquire(blocking=False):
         st.toast(tr("另一個 agent 正在執行（可能在別的分頁），請稍等。", "Another agent is running (maybe in another tab). Please wait."))
         return False
     try:
-        attachments = [media.save(chat_folder(), name, data, llm.modalities) for name, data in uploads]
-        run = LiveRun(llm, st.session_state.history, text, attachments, chat_folder(), current_settings(llm), slot)
+        attachments = [media.save(chat_folder(), name, data, who.modalities) for name, data in uploads]
+        run = LiveRun(harness_for(who, text, attachments), text, attachments, slot)
     except Exception:
         slot.lock.release()
         raise
     st.session_state.runs.append(run)
     st.session_state.view = len(st.session_state.runs) - 1
     return True
+
+
+def harness_for(who: "Backend | PiAgent", text: str, attachments: list[media.Attachment]) -> Callable[[Callable[[dict], None]], Harness]:
+    """What runs the turn: pi, or this project's harness on the model in memory, with the sidebar's settings now."""
+    history, folder = st.session_state.history, chat_folder()
+    if isinstance(who, PiAgent):
+        settings, session = pi_settings(who), st.session_state.chat_id
+        page = pi_harness.PageModel(who.llm, current_settings(who.llm).sampling) if who.llm else None
+        return lambda emit: pi_harness.PiHarness(settings, history, text, emit, attachments, folder, session, page)
+    run_settings = current_settings(who)
+    return lambda emit: SimpleHarness(who, history, text, run_settings, emit, attachments, folder)
 
 
 def other_tab_run() -> LiveRun | None:
@@ -438,25 +551,43 @@ def show_run(run_index: int):
 
 # ---------- sidebar ----------
 
+def harness_picker(busy: bool):
+    """The very top of the sidebar: what runs the loop. It is drawn before anything can fail, so that the other can
+    always be picked."""
+    with st.sidebar:
+        st.markdown(tr("### Agent Loop 可視化", "### Agent Loop Visualizer"))
+        names = {"simple": tr("內建 harness", "Built-in harness"), "pi": "pi"}
+        st.segmented_control(
+            tr("用什麼跑迴圈", "What runs the loop"), list(names), format_func=names.__getitem__, key="harness", required=True,
+            on_change=new_chat, disabled=busy,
+            help=tr("內建 harness：這個專案自己寫的迴圈（`agent/harnesses/simple_harness.py`），模型在這台電腦或 vLLM 上跑，每個 token 都看得到。"
+                    "pi：把迴圈交給 pi 這個 coding agent，網頁畫出它每一步做了什麼，和它送給模型的請求。pi 可以問這個網頁的模型，每個 token 都看得到；"
+                    "或問你在 pi 裡設定好的模型（Claude、GPT…），只看得到文字。pi 的工具在這台電腦上執行，沒有沙箱。換過去會開始新的對話。",
+                    "Built-in harness: this project's own loop (`agent/harnesses/simple_harness.py`), with the model on this computer or on vLLM, and every token in view. "
+                    "pi: hands the loop to pi, a coding agent, and the page draws what it does at each step, with the request it sends the model. "
+                    "pi can ask this page's model, with every token in view, or a model you set up in pi (Claude, GPT…), of which only the text shows. "
+                    "pi's tools run on this computer, without a sandbox. Switching starts a new conversation."),
+        )
+
+
 def model_picker(menu: dict[str, str], busy: bool):
     """The top of the sidebar: the model, and, without VLLM_URL, what runs it. It is drawn before the model loads, so
     that while vLLM starts, or after it failed to, another model or transformers can still be picked."""
     with st.sidebar:
-        st.markdown(tr("### Agent Loop 可視化", "### Agent Loop Visualizer"))
         about = tr("換模型會開始新的對話，解碼設定也換成新模型的建議值。harness、工具和畫面都不變。",
                    "Switching models starts a new conversation and resets the decoding settings to what the new model recommends. "
                    "The harness, the tools and the page stay the same.")
         if VLLM_URL:
-            names = [f.name for f in families.FAMILIES.values()]
+            names = [f.name for f in model_families.FAMILIES.values()]
             about += tr(f"\n\n標 ⚠ 的模型，這個網頁還不支援它的家族（目前支援 {'、'.join(names)}）；選了會說明原因，也可以直接到 GitHub 提 issue。",
                         f"\n\nA model marked ⚠ is of a family this page does not support yet (it supports {', '.join(names)}); "
                         "picking it says why, and offers a GitHub issue asking for it.")
-        st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.get, key="model_id", on_change=switch_model, disabled=busy, help=about)
+        st.selectbox(tr("模型", "Model"), list(menu), format_func=menu.__getitem__, key="model_id", on_change=switch_model, disabled=busy, help=about)
         if not VLLM_URL:
             # The same in both languages: with full-width parentheses the two options no longer fit side by side.
             engines = {"local": "transformers", "vllm": "vLLM (Docker)"}
             st.segmented_control(
-                tr("用什麼跑模型", "What runs the model"), list(engines), format_func=engines.get, key="engine", required=True,
+                tr("用什麼跑模型", "What runs the model"), list(engines), format_func=engines.__getitem__, key="engine", required=True,
                 on_change=switch_engine, disabled=busy,
                 help=tr("transformers：模型載入這個程式，在這台電腦上跑，每個 token 的細節都看得到。"
                         "vLLM：用專案的 docker-compose/compose.yaml 在 Docker 裡啟動 vLLM 伺服器，有 NVIDIA GPU 就用 GPU，否則用 CPU；"
@@ -468,16 +599,21 @@ def model_picker(menu: dict[str, str], busy: bool):
             )
 
 
+def model_caption(llm: Backend) -> str:
+    """The model in memory and what runs it, under the model menu."""
+    info = llm.info
+    if server := info.get("server"):
+        where = tr(f" · Docker（{st.session_state.vllm_device.upper()}）", f" · Docker ({st.session_state.vllm_device.upper()})") if docker_vllm() else ""
+        where += " · MTP" if docker_vllm() and st.session_state.mtp else ""
+        return f"`{llm.model_id}` · {llm.family.name} · {server['engine']} {server.get('version') or ''} · {server['url']}{where}"
+    return (f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · "
+            + tr(f"載入 {info['load_seconds']} s", f"loaded in {info['load_seconds']} s"))
+
+
 def sidebar(llm: Backend, live: bool, busy: bool):
-    info, lang = llm.info, st.session_state.lang
+    lang = st.session_state.lang
     with st.sidebar:
-        if server := info.get("server"):
-            where = tr(f" · Docker（{st.session_state.vllm_device.upper()}）", f" · Docker ({st.session_state.vllm_device.upper()})") if docker_vllm() else ""
-            where += " · MTP" if docker_vllm() and st.session_state.mtp else ""
-            st.caption(f"`{llm.model_id}` · {llm.family.name} · {server['engine']} {server.get('version') or ''} · {server['url']}{where}")
-        else:
-            st.caption(f"`{llm.model_id}` · {llm.family.name} · {info['device'].upper()} · {info['dtype']} · "
-                       + tr(f"載入 {info['load_seconds']} s", f"loaded in {info['load_seconds']} s"))
+        st.caption(model_caption(llm))
 
         st.markdown(tr("##### 迴圈", "##### Loop"))
         st.toggle(tr("使用工具", "Use tools"), key="use_tools", help=tr("關掉就只是聊天機器人：模型看不到任何工具。", "Off, it is just a chatbot: the model sees no tools."))
@@ -492,7 +628,13 @@ def sidebar(llm: Backend, live: bool, busy: bool):
         st.toggle(tr("執行工具前先問我", "Ask me before running a tool"), key="approve_tools",
                   help=tr("由 harness 擋下等你確認，而不是寫在 prompt 裡請模型遵守。",
                           "The harness holds the call until you confirm it, instead of a line in the prompt asking the model to check first."))
+    decoding_controls(llm, live, busy, tr("harness 的迴圈最多跑幾圈（step），跑滿就停。", "How many times (steps) the harness may go around the loop before it stops."))
 
+
+def decoding_controls(llm: Backend, live: bool, busy: bool, steps_help: str):
+    """The decoding settings of the model in memory and the loop's limits, for either harness that runs on it."""
+    info = llm.info
+    with st.sidebar:
         st.markdown(tr("##### 解碼與上限", "##### Decoding and limits"))
         if (info.get("server") or {}).get("refuses_greedy"):
             # vLLM refuses greedy decoding and an unlimited top-k once it was started with --return-sampling-mask, so the
@@ -511,11 +653,52 @@ def sidebar(llm: Backend, live: bool, busy: bool):
             st.slider("top-p", 0.05, 1.0, step=0.05, key="top_p")
             st.slider("top-k", 0, 128, key="top_k", help=tr("0 = 不限。", "0 = no limit."))
         st.toggle(tr("MTP 推測解碼", "MTP speculative decoding"), key="mtp", on_change=switch_mtp, disabled=busy or not can_mtp(llm), help=mtp_help(llm))
-        st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps",
-                  help=tr("harness 的迴圈最多跑幾圈（step），跑滿就停。", "How many times (steps) the harness may go around the loop before it stops."))
+        st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps", help=steps_help)
         st.slider(tr("每步 token 上限", "Max tokens per step"), 64, 8192, step=64, key="max_new_tokens",
                   help=tr("一次推論最多生成幾個 token。", "The most tokens one inference may generate."))
         st.button(tr("還原成模型建議值", "Reset to the model's defaults"), on_click=reset_settings, args=(info["defaults"],), width="stretch")
+        st.button(tr("新對話", "New chat"), on_click=new_chat, disabled=live, width="stretch")
+        st.caption(tr("設定會套用到下一個問題。", "Settings apply to the next question."))
+
+
+PI_STEPS_HELP = {"zh": "pi 自己沒有步數上限；迴圈跑滿這麼多步，網頁就請 pi 中止。",
+                 "en": "pi has no step limit of its own; once the loop has gone around this many times, the page asks pi to abort."}
+
+
+def pi_sidebar(who: PiAgent, live: bool, busy: bool):
+    """pi's settings: its tools, how much its model thinks, asking first, and the step limit the page keeps for it; on
+    the page's own model, its decoding settings too."""
+    lang = st.session_state.lang
+    with st.sidebar:
+        if who.llm:
+            st.caption(f"pi {who.version} · " + model_caption(who.llm))
+        else:
+            st.caption(f"pi {who.version} · `{who.model_id}` · " + tr("在 provider 那邊跑", "runs at the provider"))
+        st.markdown(tr("##### 迴圈", "##### Loop"))
+        st.pills(tr("pi 的工具", "pi's tools"), list(pi_harness.TOOLS), selection_mode="multi", key="pi_tools",
+                 help=tr("模型看得到哪些 pi 的工具。全部取消就只是聊天機器人。", "Which of pi's tools the model sees. With none, it is just a chatbot."))
+        st.caption(tr("pi 的工具在這台電腦上、這段對話的資料夾裡執行，沒有沙箱：bash 碰得到你碰得到的一切。",
+                      "pi's tools run on this computer, in this conversation's folder, without a sandbox: bash reaches whatever you can."))
+        if who.llm:
+            st.toggle(tr("思考模式", "Thinking mode"), key="thinking",
+                      help=who.llm.family.thinking_help[lang] + tr("（pi 把它當成思考等級送出，模型端點再換成 chat template 的思考開關。）",
+                                                                    " (pi sends it as its thinking level, which the model endpoint turns into the chat template's thinking switch.)"))
+        else:
+            levels = pi_harness.THINKING if who.model.get("reasoning") else ("off",)
+            if st.session_state.pi_thinking not in levels:
+                st.session_state.pi_thinking = "off"
+            st.segmented_control(tr("思考", "Thinking"), list(levels), key="pi_thinking", required=True,
+                                 help=tr("pi 的思考等級：越高，模型回覆前想得越多。模型不會思考時只有 off。",
+                                         "pi's thinking level: the higher, the more the model thinks before it replies. A model that does not think has only off."))
+        st.toggle(tr("執行工具前先問我", "Ask me before running a tool"), key="approve_tools",
+                  help=tr("pi 自己不問；網頁讓 pi 載入的 extension（`pi_extension.ts`）在每次執行工具前都先等你確認。",
+                          "pi does not ask by itself; the extension the page loads into pi (`pi_extension.ts`) waits for you before every tool call."))
+    if who.llm:
+        decoding_controls(who.llm, live, busy, PI_STEPS_HELP[lang])
+        return
+    with st.sidebar:
+        st.markdown(tr("##### 上限", "##### Limits"))
+        st.slider(tr("步數上限", "Max steps"), 1, 100, key="max_steps", help=PI_STEPS_HELP[lang])
         st.button(tr("新對話", "New chat"), on_click=new_chat, disabled=live, width="stretch")
         st.caption(tr("設定會套用到下一個問題。", "Settings apply to the next question."))
 
@@ -536,8 +719,8 @@ def mtp_help(llm: Backend) -> str:
                       "vLLM 0.32's CPU image cannot decode either model speculatively: Qwen3.5 needs a Triton kernel without a CPU version, and Gemma 4's "
                       "drafter sets up CUDA graphs. So vLLM (Docker) runs without MTP on a CPU; on an NVIDIA GPU it can.")
         if not (config := vllm_docker.speculative(llm.model_id, "gpu")):
-            return tr("vLLM 推測解碼這個模型的方式還沒有設定（`families.VLLM_SPECULATIVE`）。",
-                      "How vLLM decodes this model speculatively is not set up (`families.VLLM_SPECULATIVE`).")
+            return tr("vLLM 推測解碼這個模型的方式還沒有設定（`model_families.VLLM_SPECULATIVE`）。",
+                      "How vLLM decodes this model speculatively is not set up (`model_families.VLLM_SPECULATIVE`).")
         n, drafter = config["num_speculative_tokens"], config.get("model")
         how = (tr(f"用草稿模型 {drafter}", f"with the drafter {drafter}") if drafter
                else tr("用它自己 checkpoint 裡的 MTP 層（transformers 用不了）", "with the MTP layer in its own checkpoint, which transformers cannot use"))
@@ -555,7 +738,7 @@ def mtp_help(llm: Backend) -> str:
         )
     if not llm.drafter_id:
         on_vllm = (tr("在有 NVIDIA GPU 的 vLLM (Docker) 上，它可以推測解碼。", " On vLLM (Docker) with an NVIDIA GPU it can decode speculatively.")
-                   if llm.model_id in families.VLLM_SPECULATIVE and not VLLM_URL else "")
+                   if llm.model_id in model_families.VLLM_SPECULATIVE and not VLLM_URL else "")
         return tr("transformers 沒有這個模型搭配的 MTP 草稿模型，目前只有 Gemma 4 E2B 有。" + on_vllm,
                   "transformers has no MTP drafter for this model; for now only Gemma 4 E2B has one." + on_vllm)
     return tr(
@@ -569,7 +752,7 @@ def mtp_help(llm: Backend) -> str:
 
 # ---------- left: chat ----------
 
-def chat_panel(llm: Backend, live_run: LiveRun | None, other: LiveRun | None):
+def chat_panel(llm: "Backend | PiAgent", live_run: LiveRun | None, other: LiveRun | None):
     runs = st.session_state.runs
     busy = live_run is not None or other is not None
     box = st.container(height=BOX_HEIGHT, border=False, key="chat_box")
@@ -629,7 +812,7 @@ def chat_panel(llm: Backend, live_run: LiveRun | None, other: LiveRun | None):
         sample_picker(sample_row, samples, llm, busy)
 
 
-def sample_picker(row, samples: list[str], llm: Backend, busy: bool):
+def sample_picker(row, samples: list[str], llm: "Backend | PiAgent", busy: bool):
     """The sample files from assets/examples that this model can use, to ask a question of one's own about: a file
     picked here goes with the next question typed in the input box, as one attached with the + would."""
     readable = llm.modalities  # not the model: Streamlit keeps format_func after the run, and with it the model
@@ -648,9 +831,10 @@ def uploaded(sent) -> list[tuple[str, bytes]]:
     return files + ([("recording.wav", audio.getvalue())] if (audio := sent.get("audio")) else [])
 
 
-def examples(llm: Backend, busy: bool):
+def examples(llm: "Backend | PiAgent", busy: bool):
     """The page language's examples that this model can try: one that attaches a file shows only if the model reads
-    that kind, and one that needs Python only once the model may write code, disabled until Docker is ready."""
+    that kind, and one that needs Python only once the model may write code, disabled until Docker is ready (with pi,
+    once it has bash)."""
     lang, hidden = st.session_state.lang, False
     for i, (question, needs) in enumerate(EXAMPLES[lang]):
         sample = needs if needs not in (None, "python") else None
@@ -660,12 +844,14 @@ def examples(llm: Backend, busy: bool):
         if kind in ("python", "file") and not code_allowed():
             hidden = True
             continue
-        problem = sandbox_problem() if kind in ("python", "file") else None
+        problem = sandbox_problem() if kind in ("python", "file") and not pi_picked() else None
         note = problem[lang] if problem else tr(f"會附上範例檔案 {sample}", f"Attaches the sample file {sample}") if sample else None
         if st.button(question, key=f"example-{i}", icon=EXAMPLE_ICONS.get(kind), help=note, disabled=busy or problem is not None):
             if start_run(llm, question, [(sample, (SAMPLES / sample).read_bytes())] if sample else []):
                 st.rerun()
-    if hidden:
+    if hidden and pi_picked():
+        st.caption(tr("在側欄給 pi 它的 bash 工具，還有要寫 Python 的範例。", "Give pi its bash tool in the sidebar for examples that need Python."))
+    elif hidden:
         st.caption(tr("打開側欄的「讓模型寫程式」，還有要寫 Python 的範例。", "Turn on Let the model write code in the sidebar for examples that need Python."))
 
 
@@ -675,8 +861,8 @@ def attachments_view(attachments: list[media.Attachment]):
             st.image(a.path, width=240)
         elif a.kind == "audio":
             st.audio(a.path, format=media.mime(a.name) or "audio/wav")
-        elif a.kind == "video" and media.mime(a.name):
-            st.video(a.path, format=media.mime(a.name))
+        elif a.kind == "video" and (mime := media.mime(a.name)):
+            st.video(a.path, format=mime)
         elif a.kind == "video":  # a video some browsers cannot play: the frames the model reads instead
             st.image(frame_grid(a.path), width=320, caption=tr("瀏覽器不一定播得了這種影片；這是模型讀到的其中幾張畫格",
                                                      "Browsers may not play this kind of video; here are some of the frames the model reads"))
@@ -730,7 +916,7 @@ def assistant_message(i: int, run: LiveRun):
 
 # ---------- right: the loop ----------
 
-def viz_panel(llm: Backend):
+def viz_panel(llm: "Backend | PiAgent"):
     runs = st.session_state.runs
     index = st.session_state.view
     run = runs[index] if runs and index is not None else None
@@ -739,7 +925,7 @@ def viz_panel(llm: Backend):
     # The switcher keeps its own width; in a narrow column the caption wraps under it.
     with st.container(horizontal=True, vertical_alignment="center"):
         names = {"loop": tr("迴圈", "Loop"), "context": tr("脈絡", "Context"), "model": tr("模型", "Model")}
-        view = st.segmented_control(tr("檢視", "View"), list(names), format_func=names.get, key="viz_tab", required=True, label_visibility="collapsed")
+        view = st.segmented_control(tr("檢視", "View"), list(names), format_func=names.__getitem__, key="viz_tab", required=True, label_visibility="collapsed")
         if run and len(runs) > 1:
             st.caption(tr(f"第 {index + 1} 輪：{run.text[:40]}", f"Turn {index + 1}: {run.text[:40]}"))
 
@@ -748,16 +934,19 @@ def viz_panel(llm: Backend):
         if view == "context":
             context_panel(index, data)
         elif view == "model":
-            model_panel(llm, data)
+            if isinstance(llm, PiAgent):
+                pi_model_panel(llm, data)
+            else:
+                model_panel(llm, data)
         else:
             loop_panel(index, run, data, llm.model_id)
 
 
 def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_id: str):
-    lang = st.session_state.lang
-    st.html(render.diagram_html(data, st.context.theme.type == "dark", lang, model=model_id))
-    if data is None:
-        st.html(render.INTRO[lang])
+    lang, harness = st.session_state.lang, st.session_state.harness
+    st.html(render.diagram_html(data, st.context.theme.type == "dark", lang, model=model_id, harness=harness))
+    if data is None or run is None:
+        st.html(render.PI_INTRO[st.session_state.pi_source][lang] if harness == "pi" else render.INTRO[lang])
         return
     st.caption(render.run_stats(data, lang))
     # A fixed height makes it scroll; style.css shrinks it to the space left under the diagram.
@@ -769,7 +958,7 @@ def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_
                 st.html(render.step_html(step, data, lang, live=live_step))
                 for path in render.images([step]):
                     st.image(path, width=320, caption=Path(path).name)
-                if step["context"]:
+                if step["context"] or step["request"]:
                     st.button(tr("看這一步的完整脈絡 →", "See this step's full context →"), key=f"ctx-{index}-{step['n']}", type="tertiary",
                               on_click=show_context, args=(index, step["n"]))
         if data["end"]:
@@ -778,8 +967,13 @@ def loop_panel(index: int | None, run: LiveRun | None, data: dict | None, model_
 
 def context_panel(index: int | None, data: dict | None):
     lang = st.session_state.lang
-    steps = [s for s in data["steps"] if s["context"]] if data else []
-    if not steps:
+    steps = [s for s in data["steps"] if s["context"] or s["request"]] if data else []
+    if not steps and pi_picked():
+        st.info(tr("送出問題後，這裡會顯示 pi 每一步送給模型的請求；pi 問的是這個網頁的模型時，還有模型實際讀到的完整字串。",
+                   "Once you send a question, this shows the request pi sends the model in each step, and, when pi asks this page's model, "
+                   "the whole string the model read."))
+        return
+    if not steps or data is None:
         st.info(tr("送出問題後，這裡會顯示每一步模型實際讀到的完整字串。", "Once you send a question, this shows the whole string the model read in each step."))
         return
     key = f"ctx_step_{index}"
@@ -789,8 +983,18 @@ def context_panel(index: int | None, data: dict | None):
         tr("步驟", "Step"), [s["n"] for s in steps], key=key, required=True, format_func=lambda n: f"Step {n}"
     )
     step = next((s for s in steps if s["n"] == choice), steps[-1])
-    st.caption(render.context_summary(step, lang))
-    st.html(render.CONTEXT_LEGEND[lang] + render.context_html(step, data["family"], lang))
+    if step["context"]:
+        st.caption(render.context_summary(step, lang))
+        st.html(render.CONTEXT_LEGEND[lang] + render.context_html(step, data["family"], lang))
+    if step["request"] and step["context"]:  # pi asking the page's model: what pi sent, before the template wrote it out
+        with st.expander(tr("pi 送出的請求（JSON），chat template 把它寫成上面那個字串", "The request pi sent (JSON), which the chat template wrote out as the string above")):
+            st.caption(render.request_summary(step, lang))
+            st.html(render.REQUEST_LEGEND[lang] + render.request_html(step))
+    elif step["request"]:
+        st.caption(render.request_summary(step, lang))
+        st.html(render.REQUEST_LEGEND[lang] + render.request_html(step))
+        st.caption(tr("API 那邊怎麼把這個請求寫成模型讀的字串，pi 和 provider 都不說。",
+                      "How the API writes this request out as the string the model reads, neither pi nor the provider says."))
 
 
 def model_panel(llm: Backend, data: dict | None):
@@ -807,6 +1011,27 @@ def model_panel(llm: Backend, data: dict | None):
     st.html(render.tools_html(TOOLS, settings["use_tools"], llm.family, lang, offered))
     st.html(render.special_tokens_html(llm.info, lang))
     st.html(render.folder_html(llm.info, lang))
+
+
+def pi_model_panel(who: PiAgent, data: dict | None):
+    lang, s = st.session_state.lang, st.session_state
+    if who.llm:  # the page's own model, as the built-in harness shows it, with what pi does with it
+        llm = who.llm
+        st.html(render.model_html(llm.info, lang))
+        settings = data["settings"] if data else {**DEFAULTS, **{k: s[k] for k in DEFAULTS}, "tools": s.pi_tools, "page_model": True,
+                                                  "thinking": "medium" if s.thinking else "off"}
+        st.html(render.knobs_html({**settings, "mtp": None} if VLLM_URL else settings, llm.info["defaults"], lang))
+    else:
+        st.html(render.pi_model_html(who.model, who.version, lang))
+        settings = data["settings"] if data else {"thinking": s.pi_thinking, "approve_tools": s.approve_tools, "max_steps": s.max_steps, "tools": s.pi_tools}
+    st.html(render.pi_settings_html(settings, lang))
+    if data and data["steps"]:
+        st.markdown(tr("##### 每一步的推論", "##### Inference in each step") if who.llm else tr("##### 每一步的請求", "##### The request in each step"))
+        st.dataframe(render.step_rows(data, lang), hide_index=True, width="stretch")
+    st.html(render.pi_tools_html(pi_harness.TOOLS, settings["tools"], lang))
+    if who.llm:
+        st.html(render.special_tokens_html(who.llm.info, lang))
+        st.html(render.folder_html(who.llm.info, lang))
 
 
 def issue_url(error: vllm_backend.UnsupportedModel) -> str:
@@ -853,20 +1078,35 @@ def agent_page():
         init_state()
         own_live = any(run.live for run in st.session_state.runs)
         polling = own_live or other_tab_run() is not None
-        model_picker(model_menu(), polling)
-        llm = current_llm()
-    except (vllm_backend.ServerError, vllm_docker.DockerError) as e:  # the vLLM server is down, refused or did not start
+        harness_picker(polling)
+        if pi_picked():
+            llm: Backend | PiAgent = pi_picker(polling)
+        else:
+            model_picker(model_menu(), polling)
+            llm = current_llm()
+    except (vllm_backend.ServerError, vllm_docker.DockerError, pi_harness.PiError) as e:  # vLLM is down, refused or did not start, or pi
         unsupported = isinstance(e, vllm_backend.UnsupportedModel)
         st.error(e.text[st.session_state.lang], icon=":material/extension_off:" if unsupported else ":material/cloud_off:")
         if isinstance(e, vllm_docker.DockerError):  # the sidebar still has the menu and the switch back to transformers
             st.button(tr("再試一次", "Try again"), icon=":material/refresh:", on_click=retry_vllm)
-        if unsupported:  # and the menu has the models the page does support
+        if isinstance(e, pi_harness.PiError):  # and the switch back to the built-in harness
+            st.button(tr("再試一次", "Try again"), icon=":material/refresh:", on_click=retry_pi)
+        if isinstance(e, vllm_backend.UnsupportedModel):  # and the menu has the models the page does support
             ask_for_model(e)
         st.stop()
-    sidebar(llm, own_live, polling)
-    # Streamlit keeps the fragment after the run, to run it again on its own; held weakly, the model can still be let go
-    # (release_model()) the moment another is picked, rather than once the next run has replaced the fragment.
-    model = weakref.ref(llm)
+    model: Callable[[], Backend | PiAgent | None]  # what the workspace draws, None once it has been let go
+    if isinstance(llm, PiAgent):
+        pi_sidebar(llm, own_live, polling)
+        if llm.llm:  # the page's own model, held weakly as below
+            backend, model_id, version = weakref.ref(llm.llm), llm.model_id, llm.version
+            model = lambda: PiAgent(model_id, version, llm=b) if (b := backend()) else None
+        else:  # pi's own model: nothing in memory here to let go
+            model = lambda: llm
+    else:
+        sidebar(llm, own_live, polling)
+        # Streamlit keeps the fragment after the run, to run it again on its own; held weakly, the model can still be let go
+        # (release_model()) the moment another is picked, rather than once the next run has replaced the fragment.
+        model = weakref.ref(llm)
 
     @st.fragment(run_every=POLL_SECONDS if polling else None)
     def workspace():
@@ -899,7 +1139,7 @@ def language_switch():
         picked = st.context.cookies.get(LANG_COOKIE)
         st.session_state.lang = picked if picked in LANGS else from_locale(st.context.locale)
     with st.container(key="lang_switch"):
-        st.segmented_control("Language / 語言", list(LANGS), format_func=LANGS.get, key="lang", required=True,
+        st.segmented_control("Language / 語言", list(LANGS), format_func=LANGS.__getitem__, key="lang", required=True,
                              label_visibility="collapsed", on_change=pick_lang)
         if st.session_state.get("lang_picked"):
             cookie = f"{LANG_COOKIE}={st.session_state.lang}; path=/; max-age=31536000; SameSite=Lax"  # a year

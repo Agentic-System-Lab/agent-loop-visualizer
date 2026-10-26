@@ -51,6 +51,7 @@ def _audio(path: Path, container_format: str, codec: str):
         frames = [r for frame in source.decode(audio=0) for r in resampler.resample(frame)] + resampler.resample(None)
     with av.open(str(path), "w", format=container_format) as out:
         stream = out.add_stream(codec, rate=rate, layout="mono")
+        assert isinstance(stream, av.AudioStream)  # codec names an audio codec
         for frame in frames:
             frame.pts = None
             for packet in stream.encode(frame):
@@ -75,6 +76,7 @@ def ball_frames(n: int = 32, size=(320, 240)):
 def _video(path: Path, container_format: str, codec: str):
     with av.open(str(path), "w", format=container_format) as out:
         stream = out.add_stream(codec, rate=Fraction(4))
+        assert isinstance(stream, av.VideoStream)  # codec names a video codec
         stream.width, stream.height, stream.pix_fmt = 320, 240, "yuv420p"
         for pixels in ball_frames():
             for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format="rgb24")):
@@ -104,6 +106,7 @@ def _data(path: Path, ext: str):
 
         book = Workbook()
         sheet = book.active
+        assert sheet is not None  # a new workbook has one sheet
         sheet.append(columns)
         for row in rows:
             sheet.append([row["month"], row["region"], int(row["units"]), int(row["revenue"])])

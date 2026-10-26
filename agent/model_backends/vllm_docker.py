@@ -8,10 +8,10 @@ the app, so that only one of the two holds the model at a time; every tab follow
 Docker Compose keeps track of the container: `docker compose up -d` with the model already running leaves it be,
 with another model replaces it, and the first time pulls or builds the image. Where Docker has the nvidia runtime
 (Linux with the NVIDIA Container Toolkit), compose.gpu.yaml goes on top and runs vLLM's CUDA image on the GPU, where
-it can also decode speculatively (MTP, families.VLLM_SPECULATIVE), which the page asks for by default;
+it can also decode speculatively (MTP, model_families.VLLM_SPECULATIVE), which the page asks for by default;
 elsewhere, a Mac say, compose.yaml runs vLLM's CPU image (vllm-cpu/). AGENT_LOOP_VLLM_DEVICE=cpu or gpu decides instead.
 
-The server never downloads anything. The weights come into models/ here first, at the commit families.REVISIONS pins,
+The server never downloads anything. The weights come into models/ here first, at the commit model_families.REVISIONS pins,
 and the container reads that folder read-only, so it loads the very files the page renders the prompt with. As with
 run_python's sandbox, the page runs `docker` only once vLLM is picked.
 """
@@ -24,15 +24,15 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import httpx
 from huggingface_hub import snapshot_download
 
-from harness import families
-from harness.backends.simple_backend import MODELS_DIR
-from harness.tools import DOCKER_INSTALL
+from agent import model_families
+from agent.model_backends.simple_backend import MODELS_DIR
+from agent.tools import DOCKER_INSTALL
 
 COMPOSE_DIR = Path(__file__).resolve().parents[2] / "docker-compose"  # compose.yaml, compose.gpu.yaml and vllm-cpu/
 PROJECT = "agent-loop-vllm"  # the name in compose.yaml
@@ -85,6 +85,7 @@ def _stream(args: list[str], env: dict, on_line: Callable[[str], None]) -> tuple
         process = subprocess.Popen(["docker", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     except FileNotFoundError as e:
         raise _not_installed() from e
+    assert process.stdout is not None  # a pipe, as asked
     tail: deque[str] = deque(maxlen=LOG_LINES)
     try:
         for line in process.stdout:
@@ -108,19 +109,19 @@ def _env(model_id: str, config: dict | None = None) -> dict:
     """What the compose files read: the model, the commit to load it at, the folder it was downloaded into, and on the
     GPU how it is decoded speculatively ("None" is vLLM's word for not at all), with each step's counts in detail, which
     vLLM refuses without a config."""
-    return {**os.environ, "VLLM_MODEL": model_id, "VLLM_REVISION": families.REVISIONS.get(model_id, "main"),
+    return {**os.environ, "VLLM_MODEL": model_id, "VLLM_REVISION": model_families.REVISIONS.get(model_id, "main"),
             "AGENT_LOOP_MODELS": str(MODELS_DIR), "VLLM_SPECULATIVE_CONFIG": json.dumps(config) if config else "None",
             "VLLM_SPEC_DECODE_METRICS": "detailed" if config else "none"}
 
 
 def speculative(model_id: str, where: str) -> dict | None:
-    """The --speculative-config of model_id on `where` (families.VLLM_SPECULATIVE, a drafter at its pinned commit), or
+    """The --speculative-config of model_id on `where` (model_families.VLLM_SPECULATIVE, a drafter at its pinned commit), or
     None: on the CPU, where vLLM 0.32's image runs neither model's MTP, and for a model without one."""
-    config = families.VLLM_SPECULATIVE.get(model_id)
+    config: dict | None = model_families.VLLM_SPECULATIVE.get(model_id)
     if where != "gpu" or not config:
         return None
     if drafter := config.get("model"):
-        return {**config, "revision": families.REVISIONS.get(drafter, "main")}
+        return {**config, "revision": model_families.REVISIONS.get(drafter, "main")}
     return dict(config)
 
 
@@ -188,7 +189,7 @@ def start(model_id: str, say: Callable[[str, str], None], mtp: bool = False) -> 
             raise DockerError("這台電腦的 Docker 沒有 Compose（`docker compose`）。請更新 Docker，或另外安裝 Docker Compose。",
                               "This computer's Docker has no Compose (`docker compose`). Update Docker, or install Docker Compose.")
         say("download", "")
-        snapshot_download(model_id, revision=families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
+        snapshot_download(model_id, revision=model_families.REVISIONS.get(model_id), cache_dir=MODELS_DIR)
         if config and (drafter := config.get("model")):  # the server reads models/ offline, its drafter's weights too
             snapshot_download(drafter, revision=config["revision"], cache_dir=MODELS_DIR)
         env = _env(model_id, config)

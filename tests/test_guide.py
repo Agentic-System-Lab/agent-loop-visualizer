@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
+from agent.i18n import LANGS
 from app import guide
 from app.guide import Code, Tabs, span, statement_end
-from harness.i18n import LANGS
 from html_check import assert_balanced
 
 CODES = [item for sec in guide.SECTIONS for item in guide.parts(sec.body) if isinstance(item, Code)]
@@ -142,10 +142,10 @@ def test_the_snapshot_follows_the_quoted_code_not_its_line_numbers(tmp_path, mon
         shutil.copy(guide.ROOT / file, tmp_path / file)
     monkeypatch.setattr(guide, "ROOT", tmp_path)
     before = quoted_sections()
-    agent_py = tmp_path / "harness/agent.py"
+    agent_py = tmp_path / "agent/harnesses/simple_harness.py"
     agent_py.write_text("# a line that moves every other one down\n" + agent_py.read_text(encoding="utf-8"), encoding="utf-8")
     assert quoted_sections() == before
-    code = next(code for code in CODES if code.file == "harness/agent.py")
+    code = next(code for code in CODES if code.file == "agent/harnesses/simple_harness.py")
     lines = agent_py.read_text(encoding="utf-8").splitlines()
     lines[span(code)[0] - 1] += "  # edited"
     agent_py.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -169,7 +169,7 @@ def test_event_table_points_at_the_line_that_sends_it(kind, file, text, _carries
 
 def test_event_table_covers_every_event_the_harness_sends():
     events = set()
-    for file in ("harness/agent.py", "harness/backends/simple_backend.py"):
+    for file in ("agent/harnesses/simple_harness.py", "agent/model_backends/simple_backend.py", "agent/harnesses/pi_harness.py"):
         for node in ast.walk(guide.source(file)[1]):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "emit" and isinstance(node.args[0], ast.Constant):
                 events.add(node.args[0].value)
@@ -234,10 +234,10 @@ def test_every_file_and_line_on_the_page_links_to_it_on_github(lang):
     assert len(chips) == html.count('<code class="ref"') > 50  # every chip, in the text and in the event table
     excerpts = re.findall(rf'<figcaption><b>([\w./-]+)</b><span class="src-lines">[^<]+</span>{link}', html)
     assert len(excerpts) == html.count('<figure class="src">') == len(CODES)
-    for file, line, linked, lo, hi, title, label in chips:
+    for file, line, linked, lo, hi, _title, label in chips:
         assert (linked, lo, hi) == (file, line, "")
         assert file in label and line in label
-    for code, (file, linked, lo, hi, title, label) in zip(CODES, excerpts):
+    for code, (file, linked, lo, hi, _title, _label) in zip(CODES, excerpts):
         assert file == linked == code.file and (int(lo), int(hi or lo)) == span(code)
     for *_, title, label in chips + excerpts:
         assert "GitHub" in title and "GitHub" in label
@@ -330,20 +330,20 @@ def test_the_root_page_sends_a_reader_to_their_language(tmp_path):
 
 
 def test_prose_markup_is_escaped():
-    html = guide.prose_html("a <b> `x<y>` **粗** [[harness/agent.py|def run(self):]] {{stop}}", "zh", "0123456789abcdef")
+    html = guide.prose_html("a <b> `x<y>` **粗** [[agent/harnesses/simple_harness.py|def run(self):]] {{stop}}", "zh", "0123456789abcdef")
     assert html.startswith("a &lt;b&gt; <code>x&lt;y&gt;</code> <b>粗</b> ")
-    line = guide.find_line("harness/agent.py", "def run(self):")
-    assert f'>harness/agent.py:{line}</code><a class="g-gh" href="{guide.REPO}/blob/0123456789abcdef/harness/agent.py#L{line}"' in html
+    line = guide.find_line("agent/harnesses/simple_harness.py", "def run(self):")
+    assert f'>agent/harnesses/simple_harness.py:{line}</code><a class="g-gh" href="{guide.REPO}/blob/0123456789abcdef/agent/harnesses/simple_harness.py#L{line}"' in html
     assert 'title="def run(self):"' in html and 'href="#g-stop"' in html
 
 
 def test_find_line_wants_exactly_one_match():
     with pytest.raises(LookupError, match="0 lines"):
-        guide.find_line("harness/agent.py", "no such text anywhere")
+        guide.find_line("agent/harnesses/simple_harness.py", "no such text anywhere")
     with pytest.raises(LookupError, match="lines, expected exactly 1"):
-        guide.find_line("harness/agent.py", "self.emit(")
+        guide.find_line("agent/harnesses/simple_harness.py", "self.emit(")
     with pytest.raises(LookupError):
-        span(Code("harness/agent.py", "def run(self):", end="no such text anywhere"))
+        span(Code("agent/harnesses/simple_harness.py", "def run(self):", end="no such text anywhere"))
 
 
 def test_statement_end():

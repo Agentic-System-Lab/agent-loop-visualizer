@@ -1,4 +1,4 @@
-"""The harness: the program around the model.
+"""SimpleHarness: this project's own harness, the program around the model.
 
 Each step renders the conversation into one prompt, lets the model generate, and
 reads what came out. A tool call is parsed, validated, optionally approved by the
@@ -6,7 +6,8 @@ user, executed, and its result goes back into the conversation for the next step
 A reply without a tool call ends the run; so do the step limit, the per-step token
 limit, repeated malformed calls and the stop button. Every stage is emitted as an
 event so the browser can draw it. The model is whatever Backend (backend.py) the page
-hands it, so the loop is the same whichever runs the model.
+hands it, so the loop is the same whichever runs the model. It is one Harness
+(harness.py); the page can hand a turn to pi instead (pi_harness.py).
 
 A run keeps the page's language from when it started: the errors and refusals the model reads come
 back in it. The system prompt is the same in both languages.
@@ -19,14 +20,14 @@ import json
 import threading
 import time
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
-from harness import media
-from harness.backends.backend import Backend, Sampling
-from harness.i18n import pick
-from harness.tools import TOOLS, ToolError, ToolResult
+from agent import media
+from agent.i18n import pick
+from agent.model_backends.backend import Backend, Sampling
+from agent.tools import TOOLS, ToolError, ToolResult
 
 MAX_RESULT_CHARS = 2000
 MAX_FORMAT_ERRORS = 3
@@ -62,9 +63,9 @@ def common_prefix(a: str, b: str) -> int:
     return i
 
 
-class Run:
+class SimpleHarness:
     def __init__(self, llm: Backend, history: list[dict], user_text: str, settings: RunSettings, emit: Callable[[dict], None],
-                 attachments: list[media.Attachment] = (), files: Path | None = None):
+                 attachments: Sequence[media.Attachment] = (), files: Path | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.llm = llm
         self.settings = settings
@@ -102,7 +103,7 @@ class Run:
         schemas = {t.name: t.parameters for t in TOOLS.values()}
         system = {"role": "system", "content": SYSTEM_WITH_TOOLS if tools else SYSTEM_NO_TOOLS}
         self.emit(
-            "run_start", run_id=self.id, model=self.llm.model_id, family=family.key,
+            "run_start", run_id=self.id, harness="simple", model=self.llm.model_id, family=family.key,
             settings=_settings_dict(s), tools=list(self.tools),
         )
 
@@ -137,6 +138,7 @@ class Run:
                         done = ev
                     else:
                         self.emit(kind, step=step, **ev)
+                assert done is not None  # generate() always ends with done
                 raw = done.pop("raw")
                 self.emit("model_end", step=step, raw=raw, **done)
 
@@ -228,6 +230,7 @@ class Run:
         )
         if errors:
             return self._observe(step, cid, call["name"], {"error": "; ".join(errors)}, ok=False, ms=0)
+        assert tool is not None  # a call to no tool has an error
 
         if self.settings.approve_tools:
             self.emit("approval_request", step=step, call_id=cid, name=call["name"], arguments=args)
