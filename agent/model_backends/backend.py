@@ -20,7 +20,7 @@ Nothing here imports torch, so a backend can be written, and the interface read,
 from dataclasses import dataclass, field
 from typing import Callable, Iterator, Protocol, runtime_checkable
 
-from harness import families
+from agent import model_families
 
 
 @dataclass
@@ -67,11 +67,11 @@ class Backend(Protocol):
     """What runs the model. The page holds one at a time (app.page.current_llm) and runs one turn on it at a time."""
 
     model_id: str
-    family: families.Family  # how the model writes its turns, thinking and tool calls (families/)
+    family: model_families.Family  # how the model writes its turns, thinking and tool calls (model_families/)
     modalities: tuple[str, ...]  # what it reads besides text: "image", "audio", "video"
     context_length: int  # the most tokens it reads at once
     info: dict  # what the Model tab shows, and in "defaults" the recommended temperature, top_p and top_k
-    drafter_id: str | None  # the MTP drafter that goes with the model (families.DRAFTERS), if any
+    drafter_id: str | None  # the MTP drafter that goes with the model (model_families.DRAFTERS), if any
     drafter: object | None  # that drafter once load_drafter() has loaded it; Sampling.mtp turns it on only then
 
     def warmup(self) -> None:

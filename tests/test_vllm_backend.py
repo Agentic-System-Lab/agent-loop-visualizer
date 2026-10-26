@@ -27,14 +27,14 @@ from transformers import AutoProcessor
 
 from app import render
 from fakes import MEDIA_TOKENS, PLACEHOLDERS, FakeLLM, fake_folder, pieces, qwen_tool_call, tool_call
-from harness import families, media
-from harness.backends import vllm_backend
-from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
-from harness.backends.simple_backend import MODELS_DIR
-from harness.backends.vllm_backend import GENERATE, UNREPORTED, ServerError, UnsupportedModel, VLLMBackend
-from harness.families import GEMMA4, QWEN3_5
-from harness.harnesses.simple_harness import RunSettings, SimpleHarness
-from harness.i18n import LANGS, pick
+from agent import model_families, media
+from agent.model_backends import vllm_backend
+from agent.model_backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
+from agent.model_backends.simple_backend import MODELS_DIR
+from agent.model_backends.vllm_backend import GENERATE, UNREPORTED, ServerError, UnsupportedModel, VLLMBackend
+from agent.model_families import GEMMA4, QWEN3_5
+from agent.harnesses.simple_harness import RunSettings, SimpleHarness
+from agent.i18n import LANGS, pick
 from html_check import assert_balanced
 from test_render import render_everything
 
@@ -49,7 +49,7 @@ class Tokenizer:
     """A tokenizer for the fakes' chat format (FakeLLM.render): a control token is one token, any other character
     one token each. Ids are handed out as pieces are first seen, the family's control tokens first."""
 
-    def __init__(self, family: families.Family):
+    def __init__(self, family: model_families.Family):
         self.family = family
         self.vocab: dict[str, int] = {}
         self.fake = FakeLLM(family=family)
@@ -468,7 +468,7 @@ def test_the_api_key_goes_with_every_request(hub, monkeypatch):
 
 def test_the_checkpoint_downloads_without_its_weights_at_the_pinned_revision(hub):
     connect(Server([]))
-    assert hub["downloads"] == [{"model_id": "google/gemma-4-E2B-it", "revision": families.REVISIONS["google/gemma-4-E2B-it"],
+    assert hub["downloads"] == [{"model_id": "google/gemma-4-E2B-it", "revision": model_families.REVISIONS["google/gemma-4-E2B-it"],
                                  "cache_dir": MODELS_DIR, "ignore": vllm_backend.WEIGHTS}]
     assert "*.safetensors" in vllm_backend.WEIGHTS
 
@@ -726,7 +726,7 @@ def test_the_family_of_a_served_model_comes_from_its_config_json_alone(config_hu
     assert vllm_backend.family_of("google/gemma-4-E2B-it") is GEMMA4
     assert config_hub["asked"] == [
         {"repo_id": "Qwen/Qwen3.5-4B", "filename": "config.json", "revision": None, "cache_dir": MODELS_DIR},  # main, as the server loads it
-        {"repo_id": "google/gemma-4-E2B-it", "filename": "config.json", "revision": families.REVISIONS["google/gemma-4-E2B-it"], "cache_dir": MODELS_DIR},
+        {"repo_id": "google/gemma-4-E2B-it", "filename": "config.json", "revision": model_families.REVISIONS["google/gemma-4-E2B-it"], "cache_dir": MODELS_DIR},
     ]
 
 
@@ -1148,7 +1148,7 @@ def test_drafted_tokens_follow_the_verify_steps(accepted, drafted, n_tokens, mar
 
 def downloaded(model_id: str) -> str | None:
     """The model's folder in models/ when its tokenizer and chat template are there."""
-    revision = families.REVISIONS.get(model_id)
+    revision = model_families.REVISIONS.get(model_id)
     files = [try_to_load_from_cache(model_id, f, cache_dir=MODELS_DIR, revision=revision) for f in ("config.json", "tokenizer.json", "chat_template.jinja")]
     return os.path.dirname(files[0]) if all(isinstance(f, str) for f in files) else None
 
@@ -1159,7 +1159,7 @@ REAL_REPLIES = {
 }
 
 
-@pytest.mark.parametrize("model_id", list(families.MODELS))
+@pytest.mark.parametrize("model_id", list(model_families.MODELS))
 def test_with_the_real_tokenizer_the_server_reads_the_prompt_the_page_shows(model_id, monkeypatch):
     folder = downloaded(model_id)
     if folder is None:

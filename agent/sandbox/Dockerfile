@@ -3,7 +3,7 @@
 # for to look at a table, and matplotlib, whose charts come back to the page (agent_loop_figures.py), with a
 # font for Chinese labels. Build it once, before letting the model write code, and again when this file changes:
 #
-#     docker build -t agent-loop-sandbox harness/sandbox
+#     docker build -t agent-loop-sandbox agent/sandbox
 #
 # Every call starts a new container from this image with no network, a read-only file system, limited
 # memory, CPU and processes, as an unprivileged user, and the conversation's files read-only at /data.

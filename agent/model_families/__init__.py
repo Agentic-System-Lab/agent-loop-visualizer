@@ -123,8 +123,8 @@ class Family:
         return re.compile("|".join(re.escape(p) for p in pieces))
 
 
-from harness.families.gemma4 import GEMMA4  # noqa: E402  (the family modules import Family from here)
-from harness.families.qwen3_5 import QWEN3_5  # noqa: E402
+from agent.model_families.gemma4 import GEMMA4  # noqa: E402  (the family modules import Family from here)
+from agent.model_families.qwen3_5 import QWEN3_5  # noqa: E402
 
 FAMILIES = {f.key: f for f in (GEMMA4, QWEN3_5)}
 
@@ -139,6 +139,6 @@ def for_model_type(model_type: str) -> Family:
             return family
     known = ", ".join(t for f in FAMILIES.values() for t in f.model_types)
     raise ValueError(
-        f"Models of model_type {model_type!r} are not supported; supported: {known}. families/__init__.py says how to add a family. "
-        f"（不支援 model_type {model_type!r} 的模型；目前支援：{known}。新增模型家族的方法見 families/__init__.py。）"
+        f"Models of model_type {model_type!r} are not supported; supported: {known}. model_families/__init__.py says how to add a family. "
+        f"（不支援 model_type {model_type!r} 的模型；目前支援：{known}。新增模型家族的方法見 model_families/__init__.py。）"
     )

@@ -12,11 +12,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from harness import families
-from harness.backends import simple_backend
-from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend
-from harness.backends.simple_backend import SimpleBackend, Sampling
-from harness.families import GEMMA4, FileNote
+from agent import model_families
+from agent.model_backends import simple_backend
+from agent.model_backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend
+from agent.model_backends.simple_backend import SimpleBackend, Sampling
+from agent.model_families import GEMMA4, FileNote
 
 VOCAB = [
     "<pad>", "<eos>", "<turn|>", "<|tool_response>", "<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>",
@@ -487,7 +487,7 @@ def media_llm(monkeypatch):
 
 def test_encode_hands_the_processor_each_kind_of_media_in_order(monkeypatch):
     m = media_llm(monkeypatch)
-    m.family = simple_backend.families.QWEN3_5
+    m.family = simple_backend.model_families.QWEN3_5
     parts = [{"type": "image", "path": "a.png"}, {"type": "video", "path": "v.mp4"}, {"type": "image", "path": "b.png"}]
     encoded = m.encode("look <|tool_call>", parts)
     [call] = m.processor.calls
@@ -624,7 +624,7 @@ def test_models_download_at_their_pinned_revision_into_the_project_folder_git_ig
     simple_backend._download("google/gemma-4-E2B-it")
     simple_backend._download("someone/unpinned", "config.json")
     assert seen == [
-        {"revision": families.REVISIONS["google/gemma-4-E2B-it"], "allow_patterns": None, "cache_dir": simple_backend.MODELS_DIR},
+        {"revision": model_families.REVISIONS["google/gemma-4-E2B-it"], "allow_patterns": None, "cache_dir": simple_backend.MODELS_DIR},
         {"revision": None, "allow_patterns": "config.json", "cache_dir": simple_backend.MODELS_DIR},  # main
     ]
     root = Path(simple_backend.__file__).resolve().parents[2]  # the project's folder

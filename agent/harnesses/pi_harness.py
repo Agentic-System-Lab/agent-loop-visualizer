@@ -43,11 +43,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from harness import media
-from harness.backends.backend import Backend, Sampling
-from harness.harnesses import model_endpoint
-from harness.harnesses.simple_harness import APPROVAL_TIMEOUT, common_prefix
-from harness.i18n import pick
+from agent import media
+from agent.model_backends.backend import Backend, Sampling
+from agent.harnesses import model_endpoint
+from agent.harnesses.simple_harness import APPROVAL_TIMEOUT, common_prefix
+from agent.i18n import pick
 
 # How to start pi: the `pi` on the PATH, unless PI_COMMAND says otherwise (a path, or "npx -y @earendil-works/pi-coding-agent").
 PI_COMMAND = shlex.split(os.environ.get("PI_COMMAND", "pi"))

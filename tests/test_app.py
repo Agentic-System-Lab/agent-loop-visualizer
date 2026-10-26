@@ -23,11 +23,11 @@ from streamlit.testing.v1 import AppTest
 from app import page, render
 from fake_pi import FakePi
 from fakes import MEDIA_TOKENS, FakeLLM, tool_call
-from harness import tools
-from harness.backends import vllm_backend, vllm_docker
-from harness.backends.backend import Sampling
-from harness.families import GEMMA4, QWEN3_5
-from harness.harnesses import pi_harness, simple_harness
+from agent import tools
+from agent.model_backends import vllm_backend, vllm_docker
+from agent.model_backends.backend import Sampling
+from agent.model_families import GEMMA4, QWEN3_5
+from agent.harnesses import pi_harness, simple_harness
 
 APP = Path(__file__).resolve().parent.parent / "streamlit_app.py"
 ANSWER = "答案是 42。<turn|>"

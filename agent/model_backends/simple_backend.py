@@ -16,7 +16,7 @@ Images, sound and video go in through the model's processor: encode() expands ea
 chat template wrote into the tokens of its file, and the prefill hands the encoders their inputs.
 After the prefill, decoding is the same as for text.
 
-The models download into MODELS_DIR (the project's models/) at the commits families.REVISIONS pins,
+The models download into MODELS_DIR (the project's models/) at the commits model_families.REVISIONS pins,
 and describe_folder() lists what a model's folder holds for the Model tab.
 """
 
@@ -34,8 +34,8 @@ import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMultimodalLM, AutoProcessor
 
-from harness import families, media
-from harness.backends.backend import Encoded, Sampling
+from agent import model_families, media
+from agent.model_backends.backend import Encoded, Sampling
 
 TOP_N = 5
 ROOT = Path(__file__).resolve().parents[2]  # the project's folder
@@ -49,7 +49,7 @@ MODELS_DIR = Path(os.environ.get("AGENT_LOOP_MODELS") or ROOT / "models").expand
 
 def _download(model_id: str, only: str | None = None) -> str:
     """The model's folder in MODELS_DIR, after fetching the files it lacks (only `only`, if given), at the revision
-    families.REVISIONS pins it to.
+    model_families.REVISIONS pins it to.
 
     from_pretrained(local_files_only=True) is no test of the cache: once config.json is cached, a tokenizer whose
     own files are missing raises a ValueError (Gemma 4) or loads empty (Qwen3.5) rather than an OSError.
@@ -57,12 +57,12 @@ def _download(model_id: str, only: str | None = None) -> str:
     can't be reached it returns the cached folder, so a downloaded model still starts offline."""
     if os.path.isdir(model_id):  # a checkpoint on disk rather than a Hugging Face id
         return model_id
-    return snapshot_download(model_id, revision=families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
+    return snapshot_download(model_id, revision=model_families.REVISIONS.get(model_id), allow_patterns=only, cache_dir=MODELS_DIR)
 
 
 def describe_folder(folder: str, notes: dict) -> dict:
     """A checkpoint's folder as the Model tab lists it: where it is, the Hub revision it was downloaded at, and every
-    file with its size and the values of the fields its family's note on it names (families.FileNote). In the cache a
+    file with its size and the values of the fields its family's note on it names (model_families.FileNote). In the cache a
     file is a link into blobs/, and the size is that of the file it links to."""
     path = Path(folder).absolute()
     files = []
@@ -136,12 +136,12 @@ class SimpleBackend:
         if self.device == "mps":
             # Loading weights onto MPS from several threads can hang (seen with Qwen3.5); one thread is fast enough.
             os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
-        self.drafter_id = families.DRAFTERS.get(model_id)
+        self.drafter_id = model_families.DRAFTERS.get(model_id)
         self.drafter = None  # loaded the first time MTP is switched on
         self._drafter_lock = threading.Lock()
         start = time.perf_counter()
         # config.json alone says which family the model belongs to; an unsupported one fails before the weights download.
-        self.family = families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
+        self.family = model_families.for_model_type(AutoConfig.from_pretrained(_download(model_id, "config.json")).model_type)
         files = self.folder = _download(model_id)
         # The processor holds the tokenizer and, for a model that reads more than text, what turns files into its inputs.
         self.processor = AutoProcessor.from_pretrained(files)
@@ -222,7 +222,7 @@ class SimpleBackend:
             pass
 
     def load_drafter(self):
-        """Load the MTP drafter that goes with this model (families.DRAFTERS), if any, and warm it up."""
+        """Load the MTP drafter that goes with this model (model_families.DRAFTERS), if any, and warm it up."""
         with self._drafter_lock:
             if self.drafter is not None or self.drafter_id is None:
                 return

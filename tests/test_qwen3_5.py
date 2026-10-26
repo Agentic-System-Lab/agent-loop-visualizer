@@ -3,9 +3,9 @@
 import pytest
 
 from fakes import qwen_call, qwen_tool_call, record_run
-from harness.families import QWEN3_5
-from harness.families.qwen3_5 import convert, parse_output
-from harness.tools import TOOLS
+from agent.model_families import QWEN3_5
+from agent.model_families.qwen3_5 import convert, parse_output
+from agent.tools import TOOLS
 
 SCHEMAS = {t.name: t.parameters for t in TOOLS.values()}
 TYPED = {"f": {"properties": {

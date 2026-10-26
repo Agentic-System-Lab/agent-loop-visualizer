@@ -13,9 +13,9 @@ import re
 import time
 from types import SimpleNamespace
 
-from harness import families
-from harness.backends.backend import Encoded
-from harness.families import GEMMA4, QWEN3_5
+from agent import model_families
+from agent.model_backends.backend import Encoded
+from agent.model_families import GEMMA4, QWEN3_5
 
 STR = '<|"|>'
 
@@ -100,11 +100,11 @@ PLACEHOLDERS = {
 }
 
 
-def family_of(model_id: str) -> families.Family:
+def family_of(model_id: str) -> model_families.Family:
     return QWEN3_5 if "qwen" in model_id.lower() else GEMMA4
 
 
-def pieces(text: str, family: families.Family = GEMMA4) -> list[str]:
+def pieces(text: str, family: model_families.Family = GEMMA4) -> list[str]:
     """Control tokens stay whole; everything else becomes one token per character."""
     out = []
     for part in re.split(f"({family.special_re.pattern})", text):
@@ -137,7 +137,7 @@ def qwen_call(name: str, args: dict) -> str:
 
 
 class FakeTokenizer:
-    def __init__(self, family: families.Family = GEMMA4):
+    def __init__(self, family: model_families.Family = GEMMA4):
         self.family = family
 
     def __call__(self, text: str, add_special_tokens: bool = False):
@@ -145,7 +145,7 @@ class FakeTokenizer:
 
 
 class FakeLLM:
-    def __init__(self, outputs: list[str] | None = None, model_id: str | None = None, family: families.Family | None = None):
+    def __init__(self, outputs: list[str] | None = None, model_id: str | None = None, family: model_families.Family | None = None):
         self.family = family or family_of(model_id or "")
         info = QWEN_INFO if self.family is QWEN3_5 else INFO
         self.model_id = model_id or info["model_id"]
@@ -153,7 +153,7 @@ class FakeLLM:
         self.outputs = outputs if outputs is not None else []  # shared on purpose: tests append to it
         self.tokenizer = FakeTokenizer(self.family)
         self.context_length = info["context_length"]
-        self.drafter_id = families.DRAFTERS.get(self.model_id)
+        self.drafter_id = model_families.DRAFTERS.get(self.model_id)
         self.drafter = None
         self.info = {**info, "model_id": self.model_id, "drafter_id": self.drafter_id}
         self.renders: list[dict] = []
@@ -331,8 +331,8 @@ def qwen_tool_call(name: str, **args) -> str:
 def record_run(outputs: list, user: str = "台北現在幾點？", history: list | None = None, sampling=None, family=None,
                attachments=(), files=None, **settings):
     """Run the harness to the end on the calling thread; return the run, its events and the fake model."""
-    from harness.backends.backend import Sampling
-    from harness.harnesses.simple_harness import RunSettings, SimpleHarness
+    from agent.model_backends.backend import Sampling
+    from agent.harnesses.simple_harness import RunSettings, SimpleHarness
 
     fake = FakeLLM(list(outputs), family=family)
     if sampling and sampling.mtp:  # a model with a drafter, already loaded

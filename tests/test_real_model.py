@@ -15,12 +15,12 @@ import torch
 
 import samples
 from app import render
-from harness import families, media, tools
-from harness.backends.backend import Backend
-from harness.backends.simple_backend import SimpleBackend, Sampling
-from harness.harnesses import model_endpoint, pi_harness
-from harness.harnesses.simple_harness import SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
-from harness.tools import TOOLS
+from agent import model_families, media, tools
+from agent.model_backends.backend import Backend
+from agent.model_backends.simple_backend import SimpleBackend, Sampling
+from agent.harnesses import model_endpoint, pi_harness
+from agent.harnesses.simple_harness import SYSTEM_WITH_TOOLS, RunSettings, SimpleHarness
+from agent.tools import TOOLS
 from html_check import assert_balanced
 from test_render import render_everything
 
@@ -32,7 +32,7 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module", params=list(families.MODELS))
+@pytest.fixture(scope="module", params=list(model_families.MODELS))
 def gemma(request):
     return SimpleBackend(request.param)
 
@@ -253,7 +253,7 @@ def test_letting_a_warmed_up_model_go_hands_its_gpu_memory_back():
     script = """
 import gc, sys, torch
 sys.path.insert(0, sys.argv[1])
-from harness.backends.simple_backend import SimpleBackend, empty_cache
+from agent.model_backends.simple_backend import SimpleBackend, empty_cache
 llm = SimpleBackend("Qwen/Qwen3.5-0.8B")
 llm.warmup()
 loaded = torch.cuda.memory_reserved()

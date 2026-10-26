@@ -24,10 +24,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from harness import media
-from harness.backends.backend import Backend, Sampling
-from harness.i18n import pick
-from harness.tools import TOOLS, ToolError, ToolResult
+from agent import media
+from agent.model_backends.backend import Backend, Sampling
+from agent.i18n import pick
+from agent.tools import TOOLS, ToolError, ToolResult
 
 MAX_RESULT_CHARS = 2000
 MAX_FORMAT_ERRORS = 3

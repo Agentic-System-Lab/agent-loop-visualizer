@@ -1,4 +1,4 @@
-"""A scripted stand-in for pi in RPC mode (harness/harnesses/pi_harness.py), run as a child process the way pi is.
+"""A scripted stand-in for pi in RPC mode (agent/harnesses/pi_harness.py), run as a child process the way pi is.
 
 It speaks pi's protocol as pi 1.4 does (docs/rpc.md, docs/json.md): commands on stdin, responses and events on
 stdout, one JSON object per line. What its model says comes from the JSON file in FAKE_PI_SCRIPT:
@@ -332,7 +332,7 @@ class FakePi:
     what each pi started was given and was sent."""
 
     def __init__(self, monkeypatch, folder):
-        from harness.harnesses import pi_harness  # only in the test's process
+        from agent.harnesses import pi_harness  # only in the test's process
 
         self.script, self.log_file = folder / "fake_pi_script.json", folder / "fake_pi.log"
         monkeypatch.setattr(pi_harness, "PI_COMMAND", [sys.executable, __file__])

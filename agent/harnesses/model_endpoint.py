@@ -28,9 +28,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
-from harness import media
-from harness.backends.backend import Backend, Sampling
-from harness.harnesses.simple_harness import common_prefix
+from agent import media
+from agent.model_backends.backend import Backend, Sampling
+from agent.harnesses.simple_harness import common_prefix
 
 PROVIDER = "agent-loop"  # what pi calls the endpoint, as pi_extension.ts registers it
 WAIT_FOR_STEP = 10  # seconds a request waits for the turn it belongs to before it is served undrawn

@@ -18,8 +18,8 @@ import html
 import json
 import re
 
-from harness import families
-from harness.i18n import pick
+from agent import model_families
+from agent.i18n import pick
 
 STOP_REASONS = {
     "zh": {
@@ -70,7 +70,7 @@ PARAM_PARTS = {
     "en": {"language_model": "language model", "audio_tower": "audio encoder", "vision_tower": "vision encoder", "visual": "vision encoder"},
 }
 # Each kind of file a checkpoint's folder may hold, in the order the Model tab lists them: language -> (what it is,
-# what it is for and what reads it). What one holds in a family's checkpoints is the family's (families.FileNote).
+# what it is for and what reads it). What one holds in a family's checkpoints is the family's (model_families.FileNote).
 MODEL_FILES = {
     "config.json": {
         "zh": ("架構", "模型由什麼組成：類別、層數、寬度、head 數、詞彙量和脈絡上限。`AutoConfig` 最先讀它：`model_type` 決定 family，這個分頁上方的規格也來自它。"),
@@ -285,7 +285,7 @@ def prose_html(text: str) -> str:
     return "".join(f'<span class="tk">{p}</span>' if i % 2 else p for i, p in enumerate(parts))
 
 
-def meaning_html(piece: str, family: families.Family, lang: str) -> str:
+def meaning_html(piece: str, family: model_families.Family, lang: str) -> str:
     """A special token's name and what it is for; empty for tokens we have no note on."""
     if piece not in family.special_tokens:
         return ""
@@ -293,12 +293,12 @@ def meaning_html(piece: str, family: families.Family, lang: str) -> str:
     return f"<b>{esc(name)}</b><span>{prose_html(desc)}</span>"
 
 
-def stop_meaning(piece: str, family: families.Family, lang: str) -> str:
+def stop_meaning(piece: str, family: model_families.Family, lang: str) -> str:
     """What stopping at this token means, e.g. that the model waits for a tool result."""
     return family.stop_tokens.get(piece, {}).get(lang, "")
 
 
-def chip(piece: str, family: families.Family, lang: str, count: int = 1) -> str:
+def chip(piece: str, family: model_families.Family, lang: str, count: int = 1) -> str:
     """A special token as a dark chip, with ×count for a run of it; hovering it pops up what the token is for."""
     meaning = meaning_html(piece, family, lang)
     tip = f'<span class="sp-tip">{meaning}</span>' if meaning else ""
@@ -306,7 +306,7 @@ def chip(piece: str, family: families.Family, lang: str, count: int = 1) -> str:
     return f'<span class="sp">{esc(piece)}{times}{tip}</span>'
 
 
-def segments(text: str, family: families.Family) -> list[tuple[str, int]]:
+def segments(text: str, family: model_families.Family) -> list[tuple[str, int]]:
     """Text split into plain text, (text, 0), and runs of one control token, (token, how many in a row)."""
     out, last = [], 0
     for m in family.special_re.finditer(text):
@@ -322,7 +322,7 @@ def segments(text: str, family: families.Family) -> list[tuple[str, int]]:
     return out
 
 
-def special_html(text: str, family: families.Family, lang: str, last: int | None = None) -> str:
+def special_html(text: str, family: model_families.Family, lang: str, last: int | None = None) -> str:
     """Escape text and turn the family's control tokens, such as <|turn>, into chips; a run of RUN_MIN or more of one
     token is one chip with its count. With `last`, only about the last that many characters are drawn, after an
     ellipsis, a run counting as one token, so a cut never lands inside one."""
@@ -385,7 +385,7 @@ def build(events: list[dict]) -> dict:
         data["last"], data["t"] = kind, ev["t"]
         if kind == "run_start":
             # A harness that does not know how the model writes its turns (pi) sends no family.
-            data["model"], data["family"] = ev["model"], families.get(ev["family"]) if ev.get("family") else None
+            data["model"], data["family"] = ev["model"], model_families.get(ev["family"]) if ev.get("family") else None
             data["harness"], data["settings"] = ev.get("harness", "simple"), ev["settings"]
         elif kind == "step_start":
             data["steps"].append({
@@ -725,12 +725,12 @@ def heat(p: float) -> str:
     return f"{min(1.0, max(0.0, 1 - p)) * 0.6:.3f}"
 
 
-def special_note(tok: dict, family: families.Family, lang: str) -> str:
+def special_note(tok: dict, family: model_families.Family, lang: str) -> str:
     meaning = meaning_html(tok["piece"], family, lang) if tok.get("special") else ""
     return f'<span class="tip-what">{meaning}</span>' if meaning else ""
 
 
-def draft_note(tok: dict, family: families.Family, lang: str) -> str:
+def draft_note(tok: dict, family: model_families.Family, lang: str) -> str:
     """What MTP did at this position: the drafter's guess was kept, or turned down and replaced."""
     draft = tok.get("draft")
     if not draft:
@@ -761,7 +761,7 @@ def draft_note(tok: dict, family: families.Family, lang: str) -> str:
     ) + "</span>"
 
 
-def tip_html(tok: dict, family: families.Family, lang: str) -> str:
+def tip_html(tok: dict, family: model_families.Family, lang: str) -> str:
     """A finished token's popover: the token, what it means if it is special, what MTP did there, and the numbers
     and candidates the backend reported for it (backend.TOKEN_DETAILS); a number it did not report is left out."""
     numbers = [
@@ -781,7 +781,7 @@ def tip_html(tok: dict, family: families.Family, lang: str) -> str:
     )
 
 
-def candidates_html(tok: dict, family: families.Family, lang: str) -> str:
+def candidates_html(tok: dict, family: model_families.Family, lang: str) -> str:
     """The most likely tokens at this position, the chosen one highlighted and those top-k / top-p cut grayed out,
     when the backend reported them; a candidate it did not say was cut or kept is drawn as it is."""
     top = tok.get("top")
@@ -817,7 +817,7 @@ def reported(tokens: list[dict], key: str) -> bool:
     return not tokens or any(known(t, key) for t in tokens)
 
 
-def tokens_html(tokens: list[dict], with_tips: bool, family: families.Family, lang: str) -> str:
+def tokens_html(tokens: list[dict], with_tips: bool, family: model_families.Family, lang: str) -> str:
     """Generated tokens with heat. Finished steps get a popover per token; while a step is still
     generating, only special tokens get one, and it just says what the token is for."""
     out = []
@@ -1141,7 +1141,7 @@ def context_summary(step: dict, lang: str) -> str:
     ) + f" · {roles}" + (pick(lang, f" · 其中 {media_line(media, lang)} tokens", f" · of which {media_line(media, lang)} tokens") if media else "")
 
 
-def context_html(step: dict, family: families.Family, lang: str) -> str:
+def context_html(step: dict, family: model_families.Family, lang: str) -> str:
     prompt = step["context"]["prompt"]
     start = max(prompt.rfind(family.user_turn), 0) if step["n"] == 1 else step["context"]["added_from"]
     gen = step["done"]["raw"] if step["done"] else "".join(t["text"] for t in step["tokens"])
@@ -1179,7 +1179,7 @@ def request_html(step: dict) -> str:
 def model_html(info: dict, lang: str) -> str:
     """The model's card. A model a server runs (info["server"], vllm_backend.py) has no device, precision, parameter
     count or load time here, since its weights are not loaded on this machine; the card leaves those out."""
-    family = families.get(info["family"])
+    family = model_families.get(info["family"])
     server = info.get("server")
     colors = {"language_model": "var(--c-model)", "audio_tower": "var(--c-env)", "vision_tower": "var(--c-context)", "visual": "var(--c-context)"}
     other = pick(lang, "其他", "other")
@@ -1338,7 +1338,7 @@ def step_rows(data: dict, lang: str) -> list[dict]:
     return rows
 
 
-def tools_html(tools: dict, enabled: bool, family: families.Family, lang: str, offered: list[str] | None = None) -> str:
+def tools_html(tools: dict, enabled: bool, family: model_families.Family, lang: str, offered: list[str] | None = None) -> str:
     """Every tool with its schema and environment; one not in `offered` (when given) is marked as kept from the model."""
     items = []
     for t in tools.values():
@@ -1366,7 +1366,7 @@ def tools_html(tools: dict, enabled: bool, family: families.Family, lang: str, o
 
 def special_tokens_html(info: dict, lang: str) -> str:
     """Every special token of the model's tokenizer, grouped, with its id and what it is for."""
-    family = families.get(info["family"])
+    family = model_families.get(info["family"])
     ids = info["special_tokens"]
     groups = [(title, sub, [p for p, _, _ in rows if p in ids]) for title, sub, rows in family.special_groups[lang]]
     extra = [p for p in ids if p not in family.special_tokens]
@@ -1412,7 +1412,7 @@ def field_value(value) -> str:
     return text if len(text) <= 80 else text[:79] + "…"
 
 
-def files_html(folder: dict, notes: dict, family: families.Family, lang: str, served: bool = False) -> str:
+def files_html(folder: dict, notes: dict, family: model_families.Family, lang: str, served: bool = False) -> str:
     """One folder's files, in MODEL_FILES order: size, what the kind of file is for, what the family's note says it
     holds and the values of the fields the note names. A file the family has a note on but the folder lacks is listed too;
     when a server runs the model (`served`), the weights it lacks are on the server."""
@@ -1446,12 +1446,12 @@ def files_html(folder: dict, notes: dict, family: families.Family, lang: str, se
 
 def folder_html(info: dict, lang: str) -> str:
     """The files in the model's folder, and in its MTP drafter's once that is loaded."""
-    family = families.get(info["family"])
+    family = model_families.get(info["family"])
     folder = info["folder"]
     where = f'<span class="tk">{esc(folder["path"])}</span>'
     if folder["revision"]:
         rev = folder["revision"][:7]
-        if families.REVISIONS.get(info["model_id"]) == folder["revision"]:
+        if model_families.REVISIONS.get(info["model_id"]) == folder["revision"]:
             which = pick(lang, f"從 Hub 下載的 checkpoint，revision {rev}：app 固定下載這個 commit（`REVISIONS`），所以每次下載都是同樣的檔案。",
                          f"A checkpoint downloaded from the Hub at revision {rev}, the commit the app pins it to (`REVISIONS`), so every download gets these same files. ")
         else:

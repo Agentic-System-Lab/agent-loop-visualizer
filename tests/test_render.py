@@ -15,14 +15,14 @@ import pytest
 from app import render
 from fake_pi import FakePi
 from fakes import DRAFTER, INFO, MEDIA_TOKENS, QWEN_INFO, FakeLLM, qwen_tool_call, record_run, tool_call
-from harness import families
-from harness.backends.backend import TOKEN_DETAILS, Sampling
-from harness.families import GEMMA4, QWEN3_5
-from harness.harnesses import model_endpoint, pi_harness, simple_harness
-from harness.harnesses.simple_harness import RunSettings, SimpleHarness
-from harness.i18n import LANGS
-from harness.media import Attachment
-from harness.tools import TOOLS, ToolResult
+from agent import model_families
+from agent.model_backends.backend import TOKEN_DETAILS, Sampling
+from agent.model_families import GEMMA4, QWEN3_5
+from agent.harnesses import model_endpoint, pi_harness, simple_harness
+from agent.harnesses.simple_harness import RunSettings, SimpleHarness
+from agent.i18n import LANGS
+from agent.media import Attachment
+from agent.tools import TOOLS, ToolResult
 from html_check import assert_balanced
 
 ANSWER = "現在是下午三點。<turn|>"
@@ -212,7 +212,7 @@ def test_an_english_page_has_no_chinese_left(scenario):
 
 @pytest.mark.parametrize("info", [INFO, {**INFO, "drafter_id": DRAFTER["model_id"]}, {**INFO, "drafter_id": DRAFTER["model_id"], "drafter": DRAFTER}, QWEN_INFO])
 def test_the_model_tab_in_english_has_no_chinese(info):
-    family = families.get(info["family"])
+    family = model_families.get(info["family"])
     pieces = [
         render.model_html(info, lang="en"), render.special_tokens_html(info, lang="en"), render.folder_html(info, lang="en"),
         render.INTRO["en"], render.CONTEXT_LEGEND["en"],
@@ -676,7 +676,7 @@ def test_the_model_folder_lists_each_file_with_its_size_what_it_is_and_what_it_h
     assert "<b>git settings</b>" in html and "Gemma 4: " not in html.split(".gitattributes")[1]  # no family note on it
     assert "gloss-head" not in html  # no drafter loaded, so one folder
     assert "a later download may get a newer one" in html  # fake/gemma-test is not pinned
-    pinned = render.folder_html({**INFO, "model_id": "google/gemma-4-E2B-it", "folder": {**INFO["folder"], "revision": families.REVISIONS["google/gemma-4-E2B-it"]}}, "en")
+    pinned = render.folder_html({**INFO, "model_id": "google/gemma-4-E2B-it", "folder": {**INFO["folder"], "revision": model_families.REVISIONS["google/gemma-4-E2B-it"]}}, "en")
     assert "revision 3e22461, the commit the app pins it to" in pinned
     assert_balanced(html)
 
@@ -726,7 +726,7 @@ def test_the_model_folder_escapes_what_the_files_hold():
 
 
 def test_every_file_a_family_notes_is_a_kind_the_page_knows():
-    for family in families.FAMILIES.values():
+    for family in model_families.FAMILIES.values():
         for name in (*family.file_notes, *family.drafter_file_notes):
             assert render.file_kind(name) == name
 

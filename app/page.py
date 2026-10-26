@@ -3,33 +3,33 @@ sidebar) on the left and watch every step of its agent loop on the right.
 
 Run with:  uv run streamlit run streamlit_app.py  (which calls main() here on every rerun)
 
-This is the app's side of the project: the harness (harness/) runs the turn, and this page only starts it, draws
+This is the app's side of the project: the agent (agent/) runs the turn, and this page only starts it, draws
 its events (render.py) and passes on the user's clicks. The settings read from the environment below are read once,
 when the module is first imported.
 
-The agent runs in a background thread (harness.harnesses.simple_harness.SimpleHarness) and appends one event per loop
+The agent runs in a background thread (agent.harnesses.simple_harness.SimpleHarness) and appends one event per loop
 stage to a list. While a run is live, a fragment redraws the page from that list
 every half second. Clicking stop or approve reruns the script but not the thread,
 so the loop keeps going.
 
-The sidebar can also hand the loop to pi (harness/harnesses/pi_harness.py), a coding agent that runs its own, and the
+The sidebar can also hand the loop to pi (agent/harnesses/pi_harness.py), a coding agent that runs its own, and the
 page draws what pi says it does, with the request pi sends the model. pi asks either the page's own model, which
-harness/harnesses/model_endpoint.py serves it on 127.0.0.1, so every token still shows, or a model it has credentials
+agent/harnesses/model_endpoint.py serves it on 127.0.0.1, so every token still shows, or a model it has credentials
 for (Claude, GPT…), of which only the text shows, and then no model loads here.
 
-With VLLM_URL set, a vLLM server runs the model instead of this machine (harness/backends/vllm_backend.py), and the
+With VLLM_URL set, a vLLM server runs the model instead of this machine (agent/model_backends/vllm_backend.py), and the
 model menu lists what that server serves, marking those the page does not support; picking one of those says why
 and offers a GitHub issue asking for it, already filled in. Without it, the sidebar can still pick vLLM: the page then starts a
-vLLM server in Docker from docker-compose/compose.yaml (harness/backends/vllm_docker.py). Either way, the model in
+vLLM server in Docker from docker-compose/compose.yaml (agent/model_backends/vllm_docker.py). Either way, the model in
 memory is let go before the next one loads, so switching models or what runs them never holds two.
 
 The top bar also links to 運作說明 (How it works), a walk through the loop with the code behind it:
 a static page that app/guide.py builds and GitHub Pages serves.
 
-The page is in Traditional Chinese or English (harness/i18n.py). It starts in the language last picked on the
+The page is in Traditional Chinese or English (agent/i18n.py). It starts in the language last picked on the
 switch at the top right, kept in a cookie, or else in the browser's language.
 
-A question can come with files (harness/media.py): images, sound and video the model reads, and, when the sidebar
+A question can come with files (agent/media.py): images, sound and video the model reads, and, when the sidebar
 lets the model write code, data files for run_python. Only then does the page look for Docker, which
 run_python's sandbox needs, and say how to install it when it is missing. The charts run_python draws are
 shown in the chat and in the step that drew them.
@@ -50,19 +50,19 @@ from urllib.parse import quote, urlencode
 import streamlit as st
 
 from app import render
-from harness import families, media, tools
-from harness.backends import vllm_backend, vllm_docker
-from harness.backends.backend import Backend, Sampling
-from harness.backends.simple_backend import SimpleBackend, empty_cache
-from harness.harnesses import model_endpoint, pi_harness
-from harness.harnesses.harness import Harness
-from harness.harnesses.simple_harness import RunSettings, SimpleHarness
-from harness.i18n import LANGS, from_locale, pick
-from harness.tools import TOOLS
+from agent import model_families, media, tools
+from agent.model_backends import vllm_backend, vllm_docker
+from agent.model_backends.backend import Backend, Sampling
+from agent.model_backends.simple_backend import SimpleBackend, empty_cache
+from agent.harnesses import model_endpoint, pi_harness
+from agent.harnesses.harness import Harness
+from agent.harnesses.simple_harness import RunSettings, SimpleHarness
+from agent.i18n import LANGS, from_locale, pick
+from agent.tools import TOOLS
 
 # The model menu; MODEL_ID picks the one selected at first, and may name a model the menu does not list.
-DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(families.MODELS)))
-MODELS = {**families.MODELS, DEFAULT_MODEL: families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
+DEFAULT_MODEL = os.environ.get("MODEL_ID", next(iter(model_families.MODELS)))
+MODELS = {**model_families.MODELS, DEFAULT_MODEL: model_families.MODELS.get(DEFAULT_MODEL, DEFAULT_MODEL)}
 # Where a vLLM server listens (http://localhost:8000, say); with it set, the server runs the model, not this machine.
 VLLM_URL = os.environ.get("VLLM_URL")
 ASSETS = Path(__file__).parent / "assets"
@@ -135,7 +135,7 @@ def model_menu() -> dict[str, str]:
         return MODELS
     # A LoRA adapter (a card with a parent) is left out: its root is the adapter's folder on the server.
     served = (card.get("root") or card["id"] for card in vllm_backend.served_models(VLLM_URL) if not card.get("parent"))
-    return {model_id: ("⚠ " if supported(model_id) is False else "") + families.MODELS.get(model_id, model_id) for model_id in served}
+    return {model_id: ("⚠ " if supported(model_id) is False else "") + model_families.MODELS.get(model_id, model_id) for model_id in served}
 
 
 @st.cache_data(show_spinner=False)
@@ -150,7 +150,7 @@ def served_family(model_id: str) -> str | None:
 def supported(model_id: str) -> bool | None:
     """Whether the page runs a model the menu lists; None when that cannot be told (no way to the Hub, or a folder
     only on the server, which then says why it does not load)."""
-    if model_id in families.MODELS:
+    if model_id in model_families.MODELS:
         return True
     try:
         return served_family(model_id) is not None
@@ -560,10 +560,10 @@ def harness_picker(busy: bool):
         st.segmented_control(
             tr("用什麼跑迴圈", "What runs the loop"), list(names), format_func=names.get, key="harness", required=True,
             on_change=new_chat, disabled=busy,
-            help=tr("內建 harness：這個專案自己寫的迴圈（`harness/harnesses/simple_harness.py`），模型在這台電腦或 vLLM 上跑，每個 token 都看得到。"
+            help=tr("內建 harness：這個專案自己寫的迴圈（`agent/harnesses/simple_harness.py`），模型在這台電腦或 vLLM 上跑，每個 token 都看得到。"
                     "pi：把迴圈交給 pi 這個 coding agent，網頁畫出它每一步做了什麼，和它送給模型的請求。pi 可以問這個網頁的模型，每個 token 都看得到；"
                     "或問你在 pi 裡設定好的模型（Claude、GPT…），只看得到文字。pi 的工具在這台電腦上執行，沒有沙箱。換過去會開始新的對話。",
-                    "Built-in harness: this project's own loop (`harness/harnesses/simple_harness.py`), with the model on this computer or on vLLM, and every token in view. "
+                    "Built-in harness: this project's own loop (`agent/harnesses/simple_harness.py`), with the model on this computer or on vLLM, and every token in view. "
                     "pi: hands the loop to pi, a coding agent, and the page draws what it does at each step, with the request it sends the model. "
                     "pi can ask this page's model, with every token in view, or a model you set up in pi (Claude, GPT…), of which only the text shows. "
                     "pi's tools run on this computer, without a sandbox. Switching starts a new conversation."),
@@ -578,7 +578,7 @@ def model_picker(menu: dict[str, str], busy: bool):
                    "Switching models starts a new conversation and resets the decoding settings to what the new model recommends. "
                    "The harness, the tools and the page stay the same.")
         if VLLM_URL:
-            names = [f.name for f in families.FAMILIES.values()]
+            names = [f.name for f in model_families.FAMILIES.values()]
             about += tr(f"\n\n標 ⚠ 的模型，這個網頁還不支援它的家族（目前支援 {'、'.join(names)}）；選了會說明原因，也可以直接到 GitHub 提 issue。",
                         f"\n\nA model marked ⚠ is of a family this page does not support yet (it supports {', '.join(names)}); "
                         "picking it says why, and offers a GitHub issue asking for it.")
@@ -719,8 +719,8 @@ def mtp_help(llm: Backend) -> str:
                       "vLLM 0.32's CPU image cannot decode either model speculatively: Qwen3.5 needs a Triton kernel without a CPU version, and Gemma 4's "
                       "drafter sets up CUDA graphs. So vLLM (Docker) runs without MTP on a CPU; on an NVIDIA GPU it can.")
         if not (config := vllm_docker.speculative(llm.model_id, "gpu")):
-            return tr("vLLM 推測解碼這個模型的方式還沒有設定（`families.VLLM_SPECULATIVE`）。",
-                      "How vLLM decodes this model speculatively is not set up (`families.VLLM_SPECULATIVE`).")
+            return tr("vLLM 推測解碼這個模型的方式還沒有設定（`model_families.VLLM_SPECULATIVE`）。",
+                      "How vLLM decodes this model speculatively is not set up (`model_families.VLLM_SPECULATIVE`).")
         n, drafter = config["num_speculative_tokens"], config.get("model")
         how = (tr(f"用草稿模型 {drafter}", f"with the drafter {drafter}") if drafter
                else tr("用它自己 checkpoint 裡的 MTP 層（transformers 用不了）", "with the MTP layer in its own checkpoint, which transformers cannot use"))
@@ -738,7 +738,7 @@ def mtp_help(llm: Backend) -> str:
         )
     if not llm.drafter_id:
         on_vllm = (tr("在有 NVIDIA GPU 的 vLLM (Docker) 上，它可以推測解碼。", " On vLLM (Docker) with an NVIDIA GPU it can decode speculatively.")
-                   if llm.model_id in families.VLLM_SPECULATIVE and not VLLM_URL else "")
+                   if llm.model_id in model_families.VLLM_SPECULATIVE and not VLLM_URL else "")
         return tr("transformers 沒有這個模型搭配的 MTP 草稿模型，目前只有 Gemma 4 E2B 有。" + on_vllm,
                   "transformers has no MTP drafter for this model; for now only Gemma 4 E2B has one." + on_vllm)
     return tr(

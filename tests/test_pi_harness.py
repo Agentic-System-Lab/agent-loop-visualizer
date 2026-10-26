@@ -19,12 +19,12 @@ import pytest
 
 from fake_pi import FakePi
 from fakes import FakeLLM, qwen_tool_call, tool_call
-from harness.backends.backend import Sampling
-from harness.families import QWEN3_5
-from harness.harnesses import model_endpoint, pi_harness
-from harness.harnesses.harness import ALWAYS, SOMETIMES, Harness
-from harness.harnesses.simple_harness import RunSettings, SimpleHarness
-from harness.media import Attachment
+from agent.model_backends.backend import Sampling
+from agent.model_families import QWEN3_5
+from agent.harnesses import model_endpoint, pi_harness
+from agent.harnesses.harness import ALWAYS, SOMETIMES, Harness
+from agent.harnesses.simple_harness import RunSettings, SimpleHarness
+from agent.media import Attachment
 
 TIME = {"tool": "bash", "args": {"command": "date"}, "result": "Mon Oct 26 14:00:00 CST 2026\n"}
 ANSWER = {"text": "It is 2 pm."}

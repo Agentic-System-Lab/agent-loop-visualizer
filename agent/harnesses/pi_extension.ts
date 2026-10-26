@@ -1,5 +1,5 @@
 /**
- * The Agent Loop Visualizer's extension for pi (harness/harnesses/pi_harness.py), loaded into every pi the page starts.
+ * The Agent Loop Visualizer's extension for pi (agent/harnesses/pi_harness.py), loaded into every pi the page starts.
  * It does three things, each set by an environment variable that pi_harness.py sets:
  *
  * - Before every request pi sends a model, it tells the page what the request holds, as a notification, which in RPC

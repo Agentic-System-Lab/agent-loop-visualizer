@@ -3,7 +3,7 @@
 The page (app/page.py) runs one turn at a time and reaches the loop only through a Harness: it makes one with a
 function that appends each event to the turn's list, calls run() in a background thread, and passes the user's
 clicks on with stop() and decide(). render.py draws the list. This project's own harness is
-simple_harness.SimpleHarness, which runs the model through a Backend (backends/backend.py), so it knows every token;
+simple_harness.SimpleHarness, which runs the model through a Backend (model_backends/backend.py), so it knows every token;
 pi_harness.PiHarness hands the loop to pi, a coding agent that runs its own and says what it does as JSON. Another
 agent that reports its loop as events, such as the Claude Agent SDK or Codex, would be one more; this module says
 what it has to send.
@@ -20,7 +20,7 @@ from typing import Protocol, runtime_checkable
 
 # The events every harness sends: run_start first, a step_start each time around the loop, and run_end last (after
 # an error event when something failed). run_start carries which harness ran the turn (`harness`: "simple", "pi"), the
-# model, its family (a key of families.FAMILIES, or None when the harness does not know how the model writes its turns),
+# model, its family (a key of model_families.FAMILIES, or None when the harness does not know how the model writes its turns),
 # the turn's settings and the tools the model gets; run_end the stop reason, the final reply and the conversation.
 ALWAYS = ("run_start", "step_start", "run_end")
 # The events a harness sends in a step when it knows what they say, in the order they come:

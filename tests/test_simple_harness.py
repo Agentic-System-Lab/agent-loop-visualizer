@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 from fakes import MEDIA_TOKENS, FakeLLM, record_run, tool_call
-from harness.backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
-from harness.families import GEMMA4, QWEN3_5
-from harness.harnesses import simple_harness
-from harness.harnesses.simple_harness import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, RunSettings, SimpleHarness, common_prefix
-from harness.media import Attachment
-from harness.tools import TOOLS, ToolError, ToolResult
+from agent.model_backends.backend import TOKEN_DETAILS, TOKEN_FIELDS, Backend, Sampling
+from agent.model_families import GEMMA4, QWEN3_5
+from agent.harnesses import simple_harness
+from agent.harnesses.simple_harness import MAX_FORMAT_ERRORS, MAX_RESULT_CHARS, RunSettings, SimpleHarness, common_prefix
+from agent.media import Attachment
+from agent.tools import TOOLS, ToolError, ToolResult
 
 ANSWER = "現在是下午三點。<turn|>"
 

@@ -10,8 +10,8 @@ import pytest
 from PIL import Image
 
 import samples
-from harness import media
-from harness.media import Attachment
+from agent import media
+from agent.media import Attachment
 
 GEMMA = ("image", "audio", "video")
 QWEN = ("image", "video")

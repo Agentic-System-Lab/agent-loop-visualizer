@@ -1,7 +1,7 @@
 # A vLLM server in Docker: what runs the model when the sidebar's "What runs the model" is vLLM (Docker). The page
 # (vllm_docker.py) starts it with the model picked in the sidebar,
 #
-#     VLLM_MODEL=<Hugging Face id> VLLM_REVISION=<its commit in families.REVISIONS> docker compose -f docker-compose/compose.yaml up -d
+#     VLLM_MODEL=<Hugging Face id> VLLM_REVISION=<its commit in model_families.REVISIONS> docker compose -f docker-compose/compose.yaml up -d
 #
 # waits until it answers, and runs `docker compose down` when transformers is picked again. Started by hand, it serves
 # Qwen3.5 0.8B unless VLLM_MODEL and VLLM_REVISION say otherwise, and VLLM_URL=http://localhost:8000 points the page
