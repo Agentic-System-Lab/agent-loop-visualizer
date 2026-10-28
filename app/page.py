@@ -743,10 +743,10 @@ def mtp_help(llm: Backend) -> str:
                   "transformers has no MTP drafter for this model; for now only Gemma 4 E2B has one." + on_vllm)
     return tr(
         f"用 {llm.drafter_id} 當草稿模型：每生成一個 token，它就從主模型的狀態一口氣猜接下來幾個 token，"
-        "主模型再用一次 forward 全部驗證。輸出的分布和不開一樣，只是比較快。第一次打開會載入草稿模型（約 160 MB）。",
+        "主模型再用一次 forward 全部驗證。輸出的分布和不開一樣，只是比較快。第一次打開會載入草稿模型（約 190 MB）。",
         f"Uses {llm.drafter_id} as the drafter: after every token it guesses the next few at once from the model's state, "
         "and the model checks them all in one forward pass. The output follows the same distribution as without it, only faster. "
-        "Switching it on the first time loads the drafter (about 160 MB).",
+        "Switching it on the first time loads the drafter (about 190 MB).",
     )
 
 
