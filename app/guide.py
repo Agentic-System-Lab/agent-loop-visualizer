@@ -46,7 +46,7 @@ from app import render
 
 ROOT = Path(__file__).resolve().parent.parent  # the project's folder, which the files the guide quotes are named from
 ASSETS = Path(__file__).parent / "assets"
-REPO = "https://github.com/cyyeh/agent-loop-visualizer"
+REPO = "https://github.com/Agentic-System-Lab/agent-loop-visualizer"
 FONTS = "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap"
 HTML_LANG = {"zh": "zh-Hant", "en": "en"}
 STAGES = {

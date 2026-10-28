@@ -6,7 +6,7 @@
 
 ![上方可以切換到「運作說明」頁，右上角可以切換語言，側欄可以選用什麼跑迴圈（內建 harness 或 pi）、模型和用什麼跑它；左邊是對話，輸入框上方是可以拿來問的範例檔案，右邊是迴圈圖與第 1 步的 token。滑鼠停在 <|tool_call> 這個特殊 token 上，浮窗說明它的用途，並顯示它的機率、排名與前 5 名候選](docs/screenshot-zh.png)
 
-這個專案是學習用的：用更直覺、更視覺化的方式，讓你看懂 agent 迴圈在底層怎麼運作。Agent 的聊天框背後跑著一個迴圈：一步接著一步，模型提出動作、harness 去執行，直到停止。一般的聊天 app 只讓你看到問題和答案；這個網頁在每一步發生的當下把它畫出來，細到模型寫下的每一個 token，整個機制攤開在你眼前。畫面上的每個部分都對應 [Agent Atlas 技術與實戰交流](https://cyyeh.github.io/agent-atlas-learning/) unit 01 導讀的一節，本專案就是它的專案之一；[可以試試看的實驗](#可以試試看的實驗)則把這些概念變成可以自己動手試的實驗。
+這個專案是學習用的：用更直覺、更視覺化的方式，讓你看懂 agent 迴圈在底層怎麼運作。Agent 的聊天框背後跑著一個迴圈：一步接著一步，模型提出動作、harness 去執行，直到停止。一般的聊天 app 只讓你看到問題和答案；這個網頁在每一步發生的當下把它畫出來，細到模型寫下的每一個 token，整個機制攤開在你眼前。畫面上的每個部分都對應 [Agent Atlas 技術與實戰交流](https://github.com/Agentic-System-Lab/agent-atlas-learning) unit 01 導讀的一節，本專案就是它的專案之一；[可以試試看的實驗](#可以試試看的實驗)則把這些概念變成可以自己動手試的實驗。
 
 - 模型：側欄可以選 [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it) 或 [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)，在本機用 Hugging Face `transformers` 推論，也可以用 [vLLM](https://docs.vllm.ai/) 跑：在側欄的「用什麼跑模型」選 vLLM (Docker)，網頁會替你在 Docker 裡啟動一台 vLLM 伺服器，有 NVIDIA GPU 就用 GPU，否則用 CPU；或是設定 `VLLM_URL`，連到你自己的伺服器，在這台電腦上或有 GPU 的 Linux 機器上都行（見[在 vLLM 伺服器上跑模型](#在-vllm-伺服器上跑模型)）
 - Harness：迴圈是這個專案自己寫的（`agent/harnesses/simple_harness.py`），也可以在側欄的「用什麼跑迴圈」選 [pi](https://pi.dev) 這個 coding agent。pi 可以問上面兩個模型，跑在 transformers 或 vLLM 上，由網頁在 127.0.0.1 上提供給它，這時每個 token 都和內建 harness 一樣看得到；也可以問 Claude、GPT 或其他它登入過的模型，這時網頁照 pi 回報的事件畫出它的每一步，看不到 token（「[pi 當 harness](#pi-當-harness)」）
@@ -18,7 +18,7 @@
 
 左邊是像 ChatGPT 的聊天介面，右邊一步一步畫出 agent 迴圈：模型讀進脈絡、提出動作、harness 去執行、結果接回脈絡，直到停止。模型跑在你自己的電腦上，或是跑在一台會把每個 token 的 log 機率傳回來的 vLLM 伺服器上，所以每個 token 的機率、候選 token、特殊 token、prefill 和生成速度都看得到（用 vLLM 時，看得到多少要看伺服器開了哪些參數）。不同模型跑的是同一個 harness，換模型時只有它們的文字格式不同，正好可以對照。
 
-[運作說明](https://cyyeh.github.io/agent-loop-visualizer/zh/)把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段，點一下就能在 GitHub 上看到那幾行。兩個模型、transformers 和 vLLM，或內建 harness 和 pi 做法不一樣的步驟，分成頁籤各自說明，選了一個，整頁同一類的頁籤都跟著換。它放在 GitHub Pages 上，app 上方的「運作說明」會在新分頁打開它，語言和網頁當下的語言一樣。
+[運作說明](https://agentic-system-lab.github.io/agent-loop-visualizer/zh/)把一輪對話從送出到回覆的每一步對應到程式碼，附上檔名、行號和程式片段，點一下就能在 GitHub 上看到那幾行。兩個模型、transformers 和 vLLM，或內建 harness 和 pi 做法不一樣的步驟，分成頁籤各自說明，選了一個，整頁同一類的頁籤都跟著換。它放在 GitHub Pages 上，app 上方的「運作說明」會在新分頁打開它，語言和網頁當下的語言一樣。
 
 ## 畫面上看得到什麼
 
@@ -242,7 +242,7 @@ VLLM_URL=http://localhost:8000 uv run streamlit run streamlit_app.py
 - **模型分頁**寫出伺服器和它的版本；規格來自 `config.json`，脈絡上限來自伺服器。裝置、精度和參數量是伺服器的，這裡不顯示；模型資料夾卡片把權重列成「只在伺服器上」。
 - **和 `generate()` 不一定一樣**：vLLM 會把請求合成一批跑，也有自己的 kernel，所以 greedy 的輸出不一定和 `transformers` 逐 token 相同；`simple_backend.py` 的會。
 
-[運作說明](https://cyyeh.github.io/agent-loop-visualizer/zh/)在兩個 backend 做法不一樣的每一步，從它們各自讀 `models/` 裡的哪些檔案到 MTP，都用頁籤分開說明，另有一段講它們共用的 `Backend` 介面，都附上程式碼。
+[運作說明](https://agentic-system-lab.github.io/agent-loop-visualizer/zh/)在兩個 backend 做法不一樣的每一步，從它們各自讀 `models/` 裡的哪些檔案到 MTP，都用頁籤分開說明，另有一段講它們共用的 `Backend` 介面，都附上程式碼。
 
 ### 由網頁在 Docker 裡啟動 vLLM
 
@@ -300,7 +300,7 @@ harness（`harnesses/simple_harness.py`）、解碼迴圈（`simple_backend.py`�
 1. 同一個家族的另一個 checkpoint（例如更大的 Gemma 4 或 Qwen3.5）：在 `agent/model_families/__init__.py` 的 `MODELS` 加一行，`REVISIONS` 也加一行，寫上要下載的 commit。Gemma 4 的其他 checkpoint 也有對應的 MTP 草稿模型（`google/gemma-4-*-it-assistant`），在 `DRAFTERS` 加一行（草稿模型的 commit 也加進 `REVISIONS`），側欄的 MTP 開關就能用。
 2. 新的家族：照 `agent/model_families/qwen3_5.py` 寫一個模組（輸出的 parser 加上特殊 token 的說明，中英文都要），把它的 `Family` 加進 `FAMILIES`。載入模型時會用 checkpoint `config.json` 裡的 `model_type` 自動找到它。`tests/test_chat_template.py` 會拿真的 tokenizer 和 chat template 檢查新家族：每個特殊 token 都有說明、模板寫進歷史的工具呼叫讀得回來、step 卡片標成「新加入」的剛好是工具結果。
 
-也可以提出需求：在 vLLM 伺服器上選了網頁不認得的家族的模型，網頁會附上一個已經填好的 GitHub issue；其他想看看的模型，也歡迎到 https://github.com/cyyeh/agent-loop-visualizer/issues 提。
+也可以提出需求：在 vLLM 伺服器上選了網頁不認得的家族的模型，網頁會附上一個已經填好的 GitHub issue；其他想看看的模型，也歡迎到 https://github.com/Agentic-System-Lab/agent-loop-visualizer/issues 提。
 
 ### 兩個模型的格式
 

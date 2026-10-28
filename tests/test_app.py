@@ -525,7 +525,7 @@ def test_a_model_the_page_does_not_support_says_why_and_offers_a_github_issue_fi
 
     [button] = at.link_button
     url = urlsplit(button.proto.url)
-    assert f"{url.scheme}://{url.netloc}{url.path}" == "https://github.com/cyyeh/agent-loop-visualizer/issues/new"
+    assert f"{url.scheme}://{url.netloc}{url.path}" == "https://github.com/Agentic-System-Lab/agent-loop-visualizer/issues/new"
     query = parse_qs(url.query)
     [body] = query["body"]
     assert query["title"] == [title] and asks in body
@@ -839,7 +839,7 @@ def test_guide_is_a_link_to_github_pages_in_the_page_language(at, monkeypatch, l
     lang_switch(at).set_value(lang).run()
     assert not at.exception, at.exception
     guide = next(p for p in pages[-2:] if p.title == title)
-    assert guide.external_url == f"https://cyyeh.github.io/agent-loop-visualizer/{lang}/"
+    assert guide.external_url == f"https://agentic-system-lab.github.io/agent-loop-visualizer/{lang}/"
 
 
 # ---------- the human in the loop ----------

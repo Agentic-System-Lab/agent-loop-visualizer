@@ -71,8 +71,8 @@ SAMPLES = ASSETS / "examples"  # the files some examples attach, and the sample 
 # the one every Docker setup (Docker Desktop, OrbStack, Colima) shares with its containers.
 UPLOADS = Path(os.environ.get("AGENT_LOOP_UPLOADS", Path.home() / ".cache" / "agent-loop-visualizer" / "uploads"))
 MAX_UPLOAD_MB = 50
-GUIDE_URL = "https://cyyeh.github.io/agent-loop-visualizer/"  # built from app/guide.py; zh/ and en/ under it are the two languages
-ISSUES_URL = "https://github.com/cyyeh/agent-loop-visualizer/issues"  # where a model the page does not support yet can be asked for
+GUIDE_URL = "https://agentic-system-lab.github.io/agent-loop-visualizer/"  # built from app/guide.py; zh/ and en/ under it are the two languages
+ISSUES_URL = "https://github.com/Agentic-System-Lab/agent-loop-visualizer/issues"  # where a model the page does not support yet can be asked for
 LANG_COOKIE = "agent_loop_lang"  # the language last picked on the switch
 POLL_SECONDS = 0.5
 BOX_HEIGHT = 620  # the chat and each tab scroll in a box this tall; side by side, style.css fits them to the window
