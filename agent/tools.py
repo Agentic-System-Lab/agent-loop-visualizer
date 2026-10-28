@@ -36,7 +36,7 @@ import httpx
 
 from agent.i18n import pick
 
-WIKI_HEADERS = {"User-Agent": f"agent-loop-visualizer/0.1 (https://github.com/Agentic-System-Lab/agent-atlas-learning) httpx/{httpx.__version__}"}
+WIKI_HEADERS = {"User-Agent": f"agent-loop-visualizer/0.1 (https://agentic-system-lab.github.io/agent-atlas-learning/) httpx/{httpx.__version__}"}
 SANDBOX_IMAGE = "agent-loop-sandbox"  # docker build -t agent-loop-sandbox agent/sandbox
 SANDBOX_VERSION = "2"  # the agent-loop-sandbox.version label in sandbox/Dockerfile; for an older image the page asks for a rebuild
 DOCKER_INSTALL = "https://docs.docker.com/get-started/get-docker/"
