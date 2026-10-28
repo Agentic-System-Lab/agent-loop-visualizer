@@ -18,7 +18,7 @@ This project is for learning: it shows how an agent loop works underneath, in a 
 
 On the left is a chat like ChatGPT's; on the right the agent loop is drawn step by step: the model reads the context and proposes an action, the harness carries it out, and the result goes back into the context, until it stops. The model runs on your own computer, or on a vLLM server that sends back each token's log probabilities, so every token's probability, the candidate tokens, the special tokens, the prefill and the generation speed are all in view (on vLLM, as much of it as the server's flags let it send). The models run the same harness, so switching models changes only their text formats, which makes them easy to compare.
 
-[How it works](https://cyyeh.github.io/agent-loop-visualizer/en/) maps each step of one turn, from sending a question to the reply, to the code that does it, with file names, line numbers and excerpts, each a click away from those lines on GitHub. Where the two models, transformers and vLLM, or the built-in harness and pi do a step differently, the step tells each in a tab of its own, and picking one switches every tab of that kind on the page. It lives on GitHub Pages; How it works at the top of the app opens it in a new tab, in the language the app is in.
+[How it works](https://agentic-system-lab.github.io/agent-loop-visualizer/en/) maps each step of one turn, from sending a question to the reply, to the code that does it, with file names, line numbers and excerpts, each a click away from those lines on GitHub. Where the two models, transformers and vLLM, or the built-in harness and pi do a step differently, the step tells each in a tab of its own, and picking one switches every tab of that kind on the page. It lives on GitHub Pages; How it works at the top of the app opens it in a new tab, in the language the app is in.
 
 ## What the page shows
 
@@ -242,7 +242,7 @@ What the page leaves out it does not make up (`backend.TOKEN_DETAILS`). In detai
 - **The Model tab** names the server and its version; the specs come from `config.json` and the context limit from the server. The device, the precision and the parameter count are the server's and are not shown, and the folder card lists the weights as on the server only.
 - **Not identical to `generate()`**: vLLM batches requests and has kernels of its own, so greedy output need not match `transformers`' token for token, as `simple_backend.py`'s does.
 
-[How it works](https://cyyeh.github.io/agent-loop-visualizer/en/) tells the two backends apart in tabs at every step where they differ, from what each reads in `models/` to MTP, and has a section on the `Backend` interface they share, all with their code.
+[How it works](https://agentic-system-lab.github.io/agent-loop-visualizer/en/) tells the two backends apart in tabs at every step where they differ, from what each reads in `models/` to MTP, and has a section on the `Backend` interface they share, all with their code.
 
 ### vLLM in Docker, started by the page
 
@@ -300,7 +300,7 @@ To add a model:
 1. Another checkpoint of a family that is already here (a bigger Gemma 4 or Qwen3.5, say): add a line to `MODELS` in `agent/model_families/__init__.py`, and one to `REVISIONS` with the commit to download it at. Other Gemma 4 checkpoints have MTP drafters too (`google/gemma-4-*-it-assistant`); add a line to `DRAFTERS` (and the drafter's commit to `REVISIONS`) and the sidebar's MTP switch works for them.
 2. A new family: write a module like `agent/model_families/qwen3_5.py` (a parser for the output plus notes on the special tokens, in both languages) and add its `Family` to `FAMILIES`. Loading a model finds it automatically by the `model_type` in the checkpoint's `config.json`. `tests/test_chat_template.py` checks a new family against the real tokenizer and chat template: every special token has a note, tool calls the template writes into the history parse back, and what the step card marks as new is exactly the tool result.
 
-Or ask for it: on a vLLM server, picking a model of a family the page does not know offers a GitHub issue already filled in, and an issue for any other model you would like to watch is welcome too, at https://github.com/cyyeh/agent-loop-visualizer/issues.
+Or ask for it: on a vLLM server, picking a model of a family the page does not know offers a GitHub issue already filled in, and an issue for any other model you would like to watch is welcome too, at https://github.com/Agentic-System-Lab/agent-loop-visualizer/issues.
 
 ### The two models' formats
 
