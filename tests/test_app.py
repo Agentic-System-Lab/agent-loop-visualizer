@@ -531,7 +531,11 @@ def test_a_model_the_page_does_not_support_says_why_and_offers_a_github_issue_fi
     assert query["title"] == [title] and asks in body
     assert "`meta-llama/Llama-3.2-1B-Instruct`" in body and "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct" in body and "`llama`" in body
     assert "localhost" not in button.proto.url  # never the server's address, which may be a private one
-    [invite] = [m.value for m in at.markdown if "github.com" in m.value]
+    [invite] = [
+        m.value
+        for m in at.markdown
+        if (urlsplit(m.value).hostname in {"github.com"} or (urlsplit(m.value).hostname or "").endswith(".github.com"))
+    ]
     assert f"{page.ISSUES_URL}?q=is%3Aissue%20llama" in invite  # a search for one someone opened already
     if locale == "en-US":
         assert not CJK.search(button.label + title + body + invite)
